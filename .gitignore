@@ -1,1 +1,96 @@
-.idea
+# Sensitive
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+
+.claude/settings.local.json
+
+# Spring Boot profiles / secrets
+src/main/resources/application-secret.yml
+src/main/resources/application-local.yml
+src/main/resources/application-dev.yml
+src/main/resources/application-prod.yml
+
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+# Kotlin DSL cache
+.kotlin/
+
+# Java / Spring Boot build outputs
+*.class
+*.jar
+*.war
+*.nar
+*.ear
+out/
+
+# Logs
+*.log
+*.log.gz
+*.log.*
+logs/
+
+# IntelliJ IDEA
+.idea/
+# 팀 공유 프로젝트 설정은 추적 (GraalVM JDK, Checkstyle)
+!.idea/misc.xml
+!.idea/checkstyle-idea.xml
+*.iws
+*.iml
+
+# Eclipse / STS
+.metadata/
+bin/
+tmp/
+*.tmp
+*.bak
+*.swp
+.settings/
+.loadpath
+.recommenders/
+.apt_generated/
+.apt_generated_test/
+.classpath
+.project
+.springBeans
+.sts4-cache/
+
+# NetBeans
+**/nbproject/private/
+**/nbproject/Makefile-*.mk
+**/nbproject/Package-*.bash
+nbbuild/
+dist/
+nbdist/
+.nb-gradle/
+
+# OS files
+.DS_Store
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Redis
+dump.rdb
+/redis-data/
+/docker/redis/data/
+
+# Docker / local runtime
+docker-compose.override.yml
+/mysql-data/
+/docker/mysql/data/
+
+# VS Code
+.vscode/
