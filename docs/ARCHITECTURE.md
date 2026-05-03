@@ -15,6 +15,7 @@ BlurSome은 Spring Boot 3.x 기반의 도메인 주도 REST API 서버입니다.
 | 캐시 / 세션 | Redis |
 | ORM | JPA / Hibernate |
 | API 스타일 | RESTful JSON API |
+| 환경변수 로딩 | spring-dotenv 4.0.0 |
 
 ---
 
@@ -188,7 +189,9 @@ blursome:notification:1001:unread-count
 | 인증/인가 | Spring Security + JWT |
 | 로깅 | SLF4J + Logback (구조화 로그) |
 | 입력 검증 | Jakarta Bean Validation (`@Valid`) — Controller 경계에서 수행 |
-| 환경 분리 | `application-{profile}.yml` (`local`, `dev`, `prod`) |
+| 환경 분리 | `application-{profile}.yml` (`local`, `prod`) — git 추적, 시크릿 없음 |
+| 프로파일 활성화 | `application.yml`의 `spring.profiles.default: ${ACTIVE:local}` — `.env`의 `ACTIVE` 변수로 제어 |
+| 시크릿 관리 | `.env` 파일 (`spring-dotenv` 로드) — gitignored, `.env.example` 으로 템플릿 공유 |
 | API 응답 | `common.response.ApiResponse<T>` 공통 래퍼 |
 | 예외 처리 | `common.exception.GlobalExceptionHandler` (`@RestControllerAdvice`) |
 
@@ -208,4 +211,14 @@ blursome:notification:1001:unread-count
 - 결과: <이 결정이 미치는 영향>
 ```
 
-> 아직 기록된 ADR이 없습니다. 첫 번째 중요한 아키텍처 결정 시 여기에 추가하세요.
+### ADR-001: .env 파일 기반 시크릿 관리
+- 날짜: 2026-05-03
+- 상태: 승인됨
+- 결정: `application-local.yml`, `application-prod.yml` 을 git으로 추적하되, 모든 민감값(DB 접속 정보, Redis 비밀번호 등)은 환경변수로 외부화한다. 로컬 개발 시에는 `spring-dotenv` 라이브러리가 프로젝트 루트의 `.env` 파일을 자동으로 읽어 주입한다.
+- 이유: profile yml 파일을 팀 공유 자산으로 git 추적하면서도, 시크릿이 저장소에 노출되지 않도록 분리가 필요했다. `.env` 방식은 Docker/CI 파이프라인과도 동일한 패턴으로 운영 환경 전환이 쉽다.
+- 결과:
+  - yml 파일은 환경변수 참조(`${VAR}`)만 포함 — 시크릿 없음
+  - `.env` 는 gitignore, `.env.example` 은 git 추적 (온보딩 템플릿)
+  - `spring-dotenv:4.0.0` 의존성 추가 (`build.gradle.kts`)
+  - `ACTIVE` 변수로 활성 프로파일 지정 (`ACTIVE=local` 또는 `ACTIVE=prod`), 미지정 시 `local` 폴백
+  - 프로덕션 서버는 `.env` 대신 서버 환경변수 또는 시크릿 매니저에서 동일 변수명으로 주입
