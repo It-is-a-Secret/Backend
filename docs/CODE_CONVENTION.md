@@ -177,3 +177,182 @@ void findUser_whenUserNotFound_throwsException() {
       .isInstanceOf(UserNotFoundException.class);
 }
 ```
+
+---
+
+## 9. IntelliJ IDEA 설정 가이드
+
+이 섹션에서는 위 컨벤션을 IntelliJ IDEA에서 자동으로 강제하는 방법을 설명합니다.
+
+---
+
+### 9.1 Code Style — Google Java Style 적용
+
+이 프로젝트의 코드 스타일 설정은 `.idea/` 폴더에 이미 포함되어 있습니다. 저장소를 클론하면 IntelliJ가 자동으로 읽어들입니다. 적용이 안 됐거나 재확인이 필요할 때 아래 절차를 따릅니다.
+
+**자동 적용 확인**
+
+`Settings` → `Editor` → `Code Style` → `Java` 에서 Scheme이 **Project** 로 선택되어 있는지 확인합니다.
+
+**수동으로 XML 가져오기 (재설정 필요 시)**
+
+1. [intellij-java-google-style.xml](https://github.com/google/styleguide/blob/gh-pages/intellij-java-google-style.xml) 다운로드
+2. `Settings` → `Editor` → `Code Style` → `Java`
+3. 오른쪽 상단 톱니바퀴 아이콘 → `Import Scheme` → `IntelliJ IDEA code style XML`
+4. 다운로드한 파일 선택
+
+---
+
+### 9.2 들여쓰기 및 줄 길이 확인
+
+`Settings` → `Editor` → `Code Style` → `Java`
+
+| 탭 | 항목 | 값 |
+|---|---|---|
+| **Tabs and Indents** | Use tab character | **OFF (체크 해제)** |
+| **Tabs and Indents** | Tab size | `2` |
+| **Tabs and Indents** | Indent | `2` |
+| **Tabs and Indents** | Continuation indent | `4` |
+| **Wrapping and Braces** | Right margin (columns) | `100` |
+
+> `Hard wrap at`을 `100`으로 설정하면 에디터 오른쪽에 가이드 선이 표시됩니다.
+> `Settings` → `Editor` → `Code Style` → `Hard wrap at` 항목도 동일하게 `100`으로 맞춥니다.
+
+---
+
+### 9.3 Checkstyle 플러그인 설정
+
+**플러그인 설치**
+
+`Settings` → `Plugins` → Marketplace 탭에서 `CheckStyle-IDEA` 검색 후 설치 → IDE 재시작
+
+**설정 파일 연결**
+
+1. `Settings` → `Tools` → `Checkstyle`
+2. `+` 버튼으로 Configuration 추가
+   - Description: `BlurSome Google Checks`
+   - File: `.idea/checkstyle-idea.xml` (프로젝트 루트 기준 경로 선택)
+3. 추가한 설정 옆 체크박스를 **활성화**
+4. `Scan Scope`: `All sources including tests`
+
+**실행 방법**
+
+- 에디터 하단 `Checkstyle` 탭 → `Check Current File` 또는 `Check Project`
+- 위반 항목을 클릭하면 해당 코드 라인으로 이동
+
+---
+
+### 9.4 파일 인코딩 설정
+
+`Settings` → `Editor` → `File Encodings`
+
+| 항목 | 값 |
+|---|---|
+| Global Encoding | `UTF-8` |
+| Project Encoding | `UTF-8` |
+| Default encoding for properties files | `UTF-8` |
+| Create UTF-8 files | `with NO BOM` |
+
+---
+
+### 9.5 저장 시 자동 포맷 (Actions on Save)
+
+`Settings` → `Tools` → `Actions on Save`
+
+| 항목 | 설정 |
+|---|---|
+| Reformat code | **ON** |
+| Optimize imports | **ON** |
+| Rearrange code | OFF (선택 사항) |
+| Run code cleanup | OFF (선택 사항) |
+
+> 이 설정을 켜두면 파일 저장(Ctrl+S)마다 들여쓰기, 공백, import 순서가 자동 정렬됩니다.
+
+---
+
+### 9.6 Import 순서 설정
+
+`Settings` → `Editor` → `Code Style` → `Java` → `Imports` 탭
+
+| 항목 | 값 |
+|---|---|
+| Class count to use import with '*' | `999` (와일드카드 import 방지) |
+| Names count to use static import with '*' | `999` |
+
+Import 블록 순서 (`Import Layout`):
+
+```
+import static all other imports
+<blank line>
+import java.*
+import javax.*
+<blank line>
+import org.*
+import com.*
+<blank line>
+import all other imports
+```
+
+> Google Java Style은 알파벳 순서의 단일 블록을 권장합니다. 위 설정이 자동으로 적용됩니다.
+
+---
+
+### 9.7 EditorConfig 지원 활성화
+
+EditorConfig는 에디터 무관하게 들여쓰기·인코딩 설정을 공유합니다. IntelliJ는 기본적으로 `.editorconfig`를 지원합니다.
+
+**활성화 확인**: `Settings` → `Editor` → `Code Style` → `Enable EditorConfig support` 체크
+
+프로젝트 루트에 `.editorconfig` 파일이 없다면 아래 내용으로 생성합니다:
+
+```ini
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+[*.java]
+indent_size = 2
+max_line_length = 100
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.{json}]
+indent_size = 2
+
+[*.gradle.kts]
+indent_size = 4
+```
+
+---
+
+### 9.8 자주 사용하는 포맷 단축키
+
+| 작업 | Windows / Linux | macOS |
+|---|---|---|
+| 코드 재포맷 | `Ctrl + Alt + L` | `Cmd + Option + L` |
+| Import 최적화 | `Ctrl + Alt + O` | `Cmd + Option + O` |
+| 파일 전체 정리 | `Ctrl + Alt + L` (전체 선택 후) | `Cmd + Option + L` |
+| Checkstyle 실행 | 하단 `Checkstyle` 탭 | 하단 `Checkstyle` 탭 |
+| 줄 길이 초과 확인 | `View` → `Active Editor` → `Show Right Margin` | 동일 |
+
+---
+
+### 9.9 Gradle Checkstyle 태스크 (CI 연동)
+
+로컬 IDE 설정과 별개로, CI에서도 동일한 규칙을 강제합니다.
+
+```bash
+# 전체 소스 Checkstyle 검사
+./gradlew checkstyleMain checkstyleTest
+
+# 위반 시 빌드 실패 — 커밋 전 로컬에서도 실행 권장
+```
+
+`build.gradle.kts`에 Checkstyle 태스크가 구성되어 있으면 `./gradlew build` 시 자동 실행됩니다.
