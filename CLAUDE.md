@@ -23,9 +23,10 @@ Claude Code가 이 프로젝트에서 작업할 때 반드시 이 문서를 참�
 
 | 작업 | 참조 문서 및 섹션 |
 |---|---|
-| 커밋 메시지 작성/리뷰 | `docs/GIT_CONVENTION.md § 2. 커밋 메시지 컨벤션` |
-| 브랜치 생성/네이밍 | `docs/GIT_CONVENTION.md § 1. 브랜치 전략` |
-| PR 작성/리뷰 | `docs/GIT_CONVENTION.md § 3. PR 컨벤션` |
+| 커밋 메시지 작성/리뷰 | `docs/git_convention/GIT_CONVENTION.md § 2. 커밋 메시지 컨벤션` |
+| 브랜치 생성/네이밍 | `docs/git_convention/GIT_CONVENTION.md § 1. 브랜치 전략` |
+| 이슈 작성 | `docs/git_convention/ISSUE_GUIDE.md` |
+| PR 작성/리뷰 | `docs/git_convention/GIT_CONVENTION.md § 3. PR 컨벤션` |
 | Java 코드 작성/리뷰 전반 | `docs/CODE_CONVENTION.md` |
 | 클래스/메서드/패키지 네이밍 | `docs/CODE_CONVENTION.md § 2. 네이밍 컨벤션` |
 | 새 도메인/기능 추가 | `docs/ARCHITECTURE.md § 3. 패키지 구조` + `§ 4. Facade 패턴` |
