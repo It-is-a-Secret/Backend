@@ -1,29 +1,29 @@
 package com.blursome.blursome.common.response;
 
-import lombok.Getter;
+import lombok.AccessLevel;
+import lombok.Builder;
+import org.springframework.http.HttpStatus;
 
-@Getter
-public class ApiResponse<T> {
+@Builder(access = AccessLevel.PRIVATE)
+public record ApiResponse<T>(
+    int code,
+    String message,
+    T data
+) {
 
-  private final boolean success;
-  private final T data;
-  private final String message;
-
-  private ApiResponse(boolean success, T data, String message) {
-    this.success = success;
-    this.data = data;
-    this.message = message;
+  public static <T> ApiResponse<T> response(HttpStatus httpStatus, String message, T data) {
+    return ApiResponse.<T>builder()
+        .code(httpStatus.value())
+        .message(message)
+        .data(data)
+        .build();
   }
 
-  public static <T> ApiResponse<T> success(T data) {
-    return new ApiResponse<>(true, data, "ok");
+  public static <T> ApiResponse<T> response(HttpStatus httpStatus, String message) {
+    return ApiResponse.<T>builder()
+        .code(httpStatus.value())
+        .message(message)
+        .build();
   }
 
-  public static <T> ApiResponse<T> success() {
-    return new ApiResponse<>(true, null, "ok");
-  }
-
-  public static <T> ApiResponse<T> error(String message) {
-    return new ApiResponse<>(false, null, message);
-  }
 }
