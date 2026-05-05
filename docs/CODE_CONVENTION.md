@@ -229,11 +229,8 @@ void findUser_whenUserNotFound_throwsException() {
 **설정 파일 연결**
 
 1. `Settings` → `Tools` → `Checkstyle`
-2. `+` 버튼으로 Configuration 추가
-   - Description: `BlurSome Google Checks`
-   - File: `.idea/checkstyle-idea.xml` (프로젝트 루트 기준 경로 선택)
-3. 추가한 설정 옆 체크박스를 **활성화**
-4. `Scan Scope`: `All sources including tests`
+2. 목록에 이미 있는 **`Google Checks`** 항목 왼쪽 체크박스를 **활성화**
+3. `Scan Scope`: `All sources including tests`
 
 **실행 방법**
 
