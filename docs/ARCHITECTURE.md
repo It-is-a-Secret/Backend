@@ -73,16 +73,24 @@ com.blursome
 │   ├── ChatController.java
 │   └── dto/
 │
-└── common/
+└── global/
     ├── config/                        # Spring 빈, Security, Redis 설정
     ├── exception/
-    │   ├── BlurSomeException.java     # 커스텀 예외 베이스
-    │   └── GlobalExceptionHandler.java
+    │   ├── BaseException.java         # 커스텀 예외 베이스 (BaseException.from(errorCode))
+    │   ├── GlobalExceptionHandler.java
+    │   ├── JwtAuthenticationException.java
+    │   └── code/
+    │       ├── ErrorCode.java         # 에러 코드 인터페이스
+    │       ├── GlobalErrorCode.java   # 전역 공통 에러 코드
+    │       └── JwtErrorCode.java      # JWT 에러 코드
     └── response/
-        └── ApiResponse.java           # 공통 응답 래퍼
+        ├── BaseResponse.java          # 공통 메타데이터 (status, timestamp)
+        ├── DataResponse.java          # 성공 응답 래퍼
+        ├── ErrorResponse.java         # 오류 응답 래퍼
+        └── ErrorDetail.java           # 검증 실패 필드 상세
 ```
 
-> 새 파일의 귀속 도메인이 불명확하다면 먼저 도메인 소유권을 검토하세요. `common`은 진정으로 공유되는 인프라만 포함합니다.
+> 새 파일의 귀속 도메인이 불명확하다면 먼저 도메인 소유권을 검토하세요. `global`은 횡단 관심사 인프라만 포함합니다.
 
 네이밍 규칙은 [`docs/CODE_CONVENTION.md § 네이밍 컨벤션`](CODE_CONVENTION.md#2-네이밍-컨벤션) 참고.
 
@@ -192,8 +200,9 @@ blursome:notification:1001:unread-count
 | 환경 분리 | `application-{profile}.yml` (`local`, `prod`) — git 추적, 시크릿 없음 |
 | 프로파일 활성화 | `application.yml`의 `spring.profiles.default: ${ACTIVE:local}` — `.env`의 `ACTIVE` 변수로 제어 |
 | 시크릿 관리 | `.env` 파일 (`spring-dotenv` 로드) — gitignored, `.env.example` 으로 템플릿 공유 |
-| API 응답 | `common.response.ApiResponse<T>` 공통 래퍼 |
-| 예외 처리 | `common.exception.GlobalExceptionHandler` (`@RestControllerAdvice`) |
+| API 성공 응답 | `global.response.DataResponse<T>` — `DataResponse.from(data)` / `DataResponse.ok()` |
+| API 오류 응답 | `global.response.ErrorResponse` — `GlobalExceptionHandler`가 자동 생성 |
+| 예외 처리 | `global.exception.GlobalExceptionHandler` (`@RestControllerAdvice`) |
 
 ---
 

@@ -48,8 +48,8 @@
 
 - 각 도메인 패키지는 자급자족 — 해당 도메인의 Entity, Repository, Service, Controller를 모두 포함
 - 도메인 간 접근은 반드시 **Service 레이어**를 경유 (다른 도메인의 Repository 직접 주입 금지)
-- `common` 패키지는 진정으로 공유되는 인프라만 포함 (전역 예외 핸들러, 응답 래퍼, 공통 설정 빈)
-- 도메인에 귀속되는 클래스를 `common`에 두지 않음
+- `global` 패키지는 횡단 관심사 인프라만 포함 (예외 처리, 응답 래퍼, 공통 설정 빈)
+- 도메인에 귀속되는 클래스를 `global`에 두지 않음
 
 ---
 
@@ -86,52 +86,63 @@
 
 ## 5. API 응답 컨벤션
 
-모든 API 응답은 `common.response.ApiResponse<T>` 래퍼를 사용합니다.
+API 응답은 성공·실패에 따라 `global.response` 패키지의 타입을 사용합니다.
+상세 규격은 [`docs/git_convention/API_RESPONSE_GUIDE.md`](git_convention/API_RESPONSE_GUIDE.md) 참고.
 
-`ApiResponse`는 Java record로 구현되며 `code`, `message`, `data` 세 필드를 가집니다.
+### 성공 응답 — `DataResponse<T>`
 
-**성공 응답**
+`DataResponse<T>`는 모든 성공 응답의 래퍼입니다. `status`, `timestamp`, `data` 필드를 가지며 `data`가 `null`이면 직렬화에서 제외됩니다.
+
+```java
+// 데이터 포함
+return ResponseEntity.ok(DataResponse.from(response));
+
+// 데이터 없는 성공 (클라이언트가 바디를 필요로 할 때)
+return ResponseEntity.ok(DataResponse.ok());
+
+// 바디 불필요 (삭제 등)
+return ResponseEntity.noContent().build();
+```
 
 ```json
 {
-  "code": 200,
-  "message": "ok",
-  "data": {}
+  "status": "OK",
+  "timestamp": "2026-05-08T14:30:12.123+09:00",
+  "data": { "id": 1, "name": "blur" }
 }
 ```
 
-**단순 오류 응답**
+### 오류 응답 — `ErrorResponse`
+
+`ErrorResponse`는 `GlobalExceptionHandler`가 자동으로 생성합니다. Controller·Service에서 직접 생성하지 않습니다.
+
+```java
+// Service에서 예외 발생
+throw BaseException.from(GlobalErrorCode.RESOURCE_NOT_FOUND);
+```
 
 ```json
 {
-  "code": 404,
-  "message": "사용자를 찾을 수 없습니다.",
-  "data": null
+  "status": "Not Found",
+  "timestamp": "2026-05-08T14:30:12.123+09:00",
+  "message": "요청한 리소스를 찾을 수 없습니다.",
+  "code": "CLIENT_ERROR_404_RESOURCE_NOT_FOUND"
 }
 ```
 
-**`@Valid` 검증 실패 응답** — `data`에 `ErrorDetail` 목록 반환
+`@Valid` 검증 실패 시 `reasons` 목록 포함:
 
 ```json
 {
-  "code": 400,
+  "status": "Bad Request",
+  "timestamp": "2026-05-08T14:30:12.123+09:00",
   "message": "요청 값이 올바르지 않습니다.",
-  "data": [
-    {
-      "field": "name",
-      "message": "이름은 필수입니다.",
-      "rejectedValue": ""
-    }
+  "code": "CLIENT_ERROR_400_METHOD_ARGUMENT_NOT_VALID",
+  "reasons": [
+    { "field": "name", "message": "이름은 필수입니다.", "rejectedValue": "" }
   ]
 }
 ```
-
-**팩토리 메서드**
-
-| 메서드                                               | 용도        |
-|---------------------------------------------------|-----------|
-| `ApiResponse.response(HttpStatus, message, data)` | 데이터 포함 응답 |
-| `ApiResponse.response(HttpStatus, message)`       | 데이터 없는 응답 |
 
 **HTTP 상태 코드 사용 기준**
 
@@ -139,6 +150,7 @@
 |---------------------------|---------------------------|
 | 200 OK                    | 조회, 수정 성공                 |
 | 201 Created               | 리소스 생성 성공                 |
+| 204 No Content            | 삭제 등 바디 없는 성공             |
 | 400 Bad Request           | 클라이언트 요청 오류 (유효성 검증 실패 등) |
 | 401 Unauthorized          | 인증되지 않은 요청                |
 | 403 Forbidden             | 인가되지 않은 접근                |
@@ -149,43 +161,45 @@
 
 ## 6. 예외 처리
 
-- 전역 예외 핸들러: `common.exception.GlobalExceptionHandler` (`@RestControllerAdvice`)
-- 커스텀 예외 계층: `BaseException` (베이스) → 도메인별 예외
+- 전역 예외 핸들러: `global.exception.GlobalExceptionHandler` (`@RestControllerAdvice`)
+- 베이스 예외: `global.exception.BaseException` — `BaseException.from(errorCode)` 정적 팩토리로 생성
+- 에러 코드 인터페이스: `global.exception.code.ErrorCode`
+- 전역 에러 코드: `global.exception.code.GlobalErrorCode` / `JwtErrorCode`
+- 도메인 에러 코드: 해당 도메인 패키지 내 `*ErrorCode` enum 정의 후 `ErrorCode` 인터페이스 구현
 
+**예외 발생 패턴**
+
+```java
+// 전역 에러 코드
+throw BaseException.from(GlobalErrorCode.RESOURCE_NOT_FOUND);
+
+// 도메인 에러 코드 (도메인 패키지에 *ErrorCode 정의 후)
+throw BaseException.from(UserErrorCode.USER_NOT_FOUND);
 ```
-BaseException
-├── UserNotFoundException
-├── ChatNotFoundException
-├── NotificationNotFoundException
-└── UnauthorizedException
-```
 
-**ErrorCode enum** — 모든 커스텀 예외는 `ErrorCode`를 통해 HTTP 상태 코드와 메시지를 보유합니다.
+**GlobalErrorCode 목록**
 
-| ErrorCode                   | HTTP 상태 | 메시지                  |
-|-----------------------------|---------|----------------------|
-| `USER_NOT_FOUND`            | 404     | 사용자를 찾을 수 없습니다.      |
-| `CHAT_NOT_FOUND`            | 404     | 채팅을 찾을 수 없습니다.       |
-| `NOTIFICATION_NOT_FOUND`    | 404     | 알림을 찾을 수 없습니다.       |
-| `UNAUTHORIZED`              | 401     | 인증되지 않은 요청입니다.       |
-| `PARAMETER_NOT_FOUND`       | 400     | 필수 요청 파라미터가 누락되었습니다. |
-| `INVALID_REQUEST_BODY`      | 400     | 요청 본문 형식이 올바르지 않습니다. |
-| `METHOD_ARGUMENT_NOT_VALID` | 400     | 요청 값이 올바르지 않습니다.     |
-| `RESOURCE_NOT_FOUND`        | 404     | 요청한 리소스를 찾을 수 없습니다.  |
-| `INTERNAL_SERVER_ERROR`     | 500     | 서버 내부 오류가 발생했습니다.    |
+| 상수                          | HTTP 상태 | 애플리케이션 코드                                | 메시지                   |
+|-----------------------------|---------|---------------------------------------------|------------------------|
+| `INVALID_REQUEST`           | 400     | `CLIENT_ERROR_400_INVALID_REQUEST`           | 유효하지 않은 요청입니다.        |
+| `PARAMETER_NOT_FOUND`       | 400     | `CLIENT_ERROR_400_PARAMETER_NOT_FOUND`       | 필수 요청 파라미터가 누락되었습니다.  |
+| `INVALID_REQUEST_BODY`      | 400     | `CLIENT_ERROR_400_INVALID_REQUEST_BODY`      | 요청 본문 형식이 올바르지 않습니다.  |
+| `METHOD_ARGUMENT_NOT_VALID` | 400     | `CLIENT_ERROR_400_METHOD_ARGUMENT_NOT_VALID` | 요청 값이 올바르지 않습니다.      |
+| `RESOURCE_NOT_FOUND`        | 404     | `CLIENT_ERROR_404_RESOURCE_NOT_FOUND`        | 요청한 리소스를 찾을 수 없습니다.   |
+| `INTERNAL_SERVER_ERROR`     | 500     | `SERVER_ERROR_500_INTERNAL_SERVER_ERROR`     | 서버 내부 오류가 발생했습니다.     |
 
 **GlobalExceptionHandler 처리 목록**
 
-| 예외 클래스                                    | 로그 레벨 | 응답                               |
-|-------------------------------------------|-------|----------------------------------|
-| `BaseException`                           | WARN  | `ErrorCode`의 상태·메시지              |
-| `MissingServletRequestParameterException` | WARN  | 400, `PARAMETER_NOT_FOUND`       |
-| `HttpMessageNotReadableException`         | WARN  | 400, `INVALID_REQUEST_BODY`      |
-| `MethodArgumentNotValidException`         | WARN  | 400, `data`에 `List<ErrorDetail>` |
-| `NoResourceFoundException`                | WARN  | 404, `RESOURCE_NOT_FOUND`        |
-| `Exception` (미처리)                         | ERROR | 500, `INTERNAL_SERVER_ERROR`     |
+| 예외 클래스                                    | 로그 레벨 | 응답                                    |
+|-------------------------------------------|-------|---------------------------------------|
+| `BaseException`                           | WARN  | `BaseException`의 상태·메시지·코드            |
+| `MissingServletRequestParameterException` | WARN  | 400, `PARAMETER_NOT_FOUND`            |
+| `HttpMessageNotReadableException`         | WARN  | 400, `INVALID_REQUEST_BODY`           |
+| `MethodArgumentNotValidException`         | WARN  | 400, `reasons`에 `List<ErrorDetail>`   |
+| `NoResourceFoundException`                | WARN  | 404, `RESOURCE_NOT_FOUND`             |
+| `Exception` (미처리)                         | ERROR | 500, `INTERNAL_SERVER_ERROR`          |
 
-**ErrorDetail** — `@Valid` 검증 실패 시 필드별 오류 정보를 담는 응답 객체 (`common.response.ErrorDetail`)
+**ErrorDetail** — `@Valid` 검증 실패 시 `reasons`에 포함되는 필드별 오류 정보 (`global.response.ErrorDetail`)
 
 ```java
 ErrorDetail.of(field, message, rejectedValue)
@@ -193,7 +207,8 @@ ErrorDetail.of(field, message, rejectedValue)
 
 **규칙:**
 
-- 모든 커스텀 예외는 `ErrorCode`를 인자로 받아 `BaseException`을 상속
+- 모든 커스텀 예외는 `BaseException.from(errorCode)` 패턴으로 생성
+- 도메인 고유 에러 코드는 해당 도메인 패키지 내 `*ErrorCode` enum으로 정의하고 `ErrorCode` 인터페이스 구현
 - 예외를 조용히 삼키지 않음 (빈 catch 블록 금지)
 - 예외 로깅은 적절한 레벨로 — 클라이언트 오류는 WARN, 서버 오류는 ERROR
 
@@ -276,12 +291,12 @@ void setUp() {                                        // given: 픽스처 구성
 }
 
 @Test
-@DisplayName("UserNotFoundException 발생 시 404와 ApiResponse를 반환한다")
-void handleUserNotFoundException() throws Exception {
-  mockMvc.perform(get("/test/user-not-found"))        // when
-      .andExpect(status().isNotFound())               // then
-      .andExpect(jsonPath("$.code").value(404))
-      .andExpect(jsonPath("$.message").value("사용자를 찾을 수 없습니다."));
+@DisplayName("Request Parameter 누락 시 400과 ErrorResponse를 반환한다")
+void handleMissingServletRequestParameterException() throws Exception {
+  mockMvc.perform(get("/test/required-param"))        // when
+      .andExpect(status().isBadRequest())             // then
+      .andExpect(jsonPath("$.code").value("CLIENT_ERROR_400_PARAMETER_NOT_FOUND"))
+      .andExpect(jsonPath("$.message").value("필수 요청 파라미터가 누락되었습니다."));
 }
 ```
 
