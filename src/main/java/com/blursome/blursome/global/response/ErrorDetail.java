@@ -1,4 +1,4 @@
-package com.blursome.blursome.common.response;
+package com.blursome.blursome.global.response;
 
 import lombok.Getter;
 
