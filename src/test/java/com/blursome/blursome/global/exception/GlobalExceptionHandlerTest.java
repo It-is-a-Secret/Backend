@@ -3,6 +3,8 @@ package com.blursome.blursome.global.exception;
 import com.blursome.blursome.global.exception.code.GlobalErrorCode;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import lombok.Getter;
+import lombok.Setter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -17,12 +19,16 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
+import static org.hamcrest.Matchers.matchesPattern;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 class GlobalExceptionHandlerTest {
+
+  private static final String TIMESTAMP_PATTERN =
+      "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}[+-]\\d{2}:\\d{2}";
 
   private MockMvc mockMvc;
 
@@ -59,18 +65,12 @@ class GlobalExceptionHandlerTest {
     }
   }
 
+  @Getter
+  @Setter
   static class TestRequest {
 
     @NotBlank(message = "이름은 필수입니다.")
     private String name;
-
-    public String getName() {
-      return name;
-    }
-
-    public void setName(String name) {
-      this.name = name;
-    }
   }
 
   @Test
@@ -78,6 +78,8 @@ class GlobalExceptionHandlerTest {
   void handleBaseException() throws Exception {
     mockMvc.perform(get("/test/base-exception"))
         .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.status").value("Bad Request"))
+        .andExpect(jsonPath("$.timestamp").value(matchesPattern(TIMESTAMP_PATTERN)))
         .andExpect(jsonPath("$.code").value("CLIENT_ERROR_400_INVALID_REQUEST"))
         .andExpect(jsonPath("$.message").value("유효하지 않은 요청입니다."));
   }
@@ -87,6 +89,8 @@ class GlobalExceptionHandlerTest {
   void handleMissingServletRequestParameterException() throws Exception {
     mockMvc.perform(get("/test/required-param"))
         .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.status").value("Bad Request"))
+        .andExpect(jsonPath("$.timestamp").value(matchesPattern(TIMESTAMP_PATTERN)))
         .andExpect(jsonPath("$.code").value("CLIENT_ERROR_400_PARAMETER_NOT_FOUND"))
         .andExpect(jsonPath("$.message").value("필수 요청 파라미터가 누락되었습니다."));
   }
@@ -97,6 +101,8 @@ class GlobalExceptionHandlerTest {
     mockMvc.perform(
             post("/test/valid").contentType(MediaType.APPLICATION_JSON).content("{\"name\":"))
         .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.status").value("Bad Request"))
+        .andExpect(jsonPath("$.timestamp").value(matchesPattern(TIMESTAMP_PATTERN)))
         .andExpect(jsonPath("$.code").value("CLIENT_ERROR_400_INVALID_REQUEST_BODY"))
         .andExpect(jsonPath("$.message").value("요청 본문 형식이 올바르지 않습니다."));
   }
@@ -107,6 +113,8 @@ class GlobalExceptionHandlerTest {
     mockMvc.perform(
             post("/test/valid").contentType(MediaType.APPLICATION_JSON).content("{\"name\":\"\"}"))
         .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.status").value("Bad Request"))
+        .andExpect(jsonPath("$.timestamp").value(matchesPattern(TIMESTAMP_PATTERN)))
         .andExpect(jsonPath("$.code").value("CLIENT_ERROR_400_METHOD_ARGUMENT_NOT_VALID"))
         .andExpect(jsonPath("$.message").value("요청 값이 올바르지 않습니다."))
         .andExpect(jsonPath("$.reasons[0].field").value("name"))
@@ -119,6 +127,8 @@ class GlobalExceptionHandlerTest {
   void handleNoResourceFoundException() throws Exception {
     mockMvc.perform(get("/test/no-resource"))
         .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.status").value("Not Found"))
+        .andExpect(jsonPath("$.timestamp").value(matchesPattern(TIMESTAMP_PATTERN)))
         .andExpect(jsonPath("$.code").value("CLIENT_ERROR_404_RESOURCE_NOT_FOUND"))
         .andExpect(jsonPath("$.message").value("요청한 리소스를 찾을 수 없습니다."));
   }
@@ -128,6 +138,8 @@ class GlobalExceptionHandlerTest {
   void handleUnexpectedException() throws Exception {
     mockMvc.perform(get("/test/server-error"))
         .andExpect(status().isInternalServerError())
+        .andExpect(jsonPath("$.status").value("Internal Server Error"))
+        .andExpect(jsonPath("$.timestamp").value(matchesPattern(TIMESTAMP_PATTERN)))
         .andExpect(jsonPath("$.code").value("SERVER_ERROR_500_INTERNAL_SERVER_ERROR"))
         .andExpect(jsonPath("$.message").value("서버 내부 오류가 발생했습니다."));
   }
