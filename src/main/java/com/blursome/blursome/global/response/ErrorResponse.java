@@ -14,7 +14,7 @@ public class ErrorResponse extends BaseResponse {
   private final String code; // 도메인 별 세부 오류 코드를 위한 필드
   private final List<ErrorDetail> reasons;
 
-  public ErrorResponse(
+  private ErrorResponse(
       HttpStatus status,
       String message,
       String code,
