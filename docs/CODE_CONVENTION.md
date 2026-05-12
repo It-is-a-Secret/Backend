@@ -13,28 +13,28 @@
 
 ## 2. 네이밍 컨벤션
 
-| 요소 | 규칙 | 예시 |
-|---|---|---|
-| 패키지 | 소문자, 도메인별 구분 | `com.blursome.user` |
-| 클래스 | UpperCamelCase, 명사 | `UserService` |
-| 인터페이스 | UpperCamelCase, 명사/형용사 | `Notifiable`, `ChatRepository` |
-| 메서드 | lowerCamelCase, 동사 | `findByEmail`, `sendNotification` |
-| 변수 | lowerCamelCase | `userId`, `chatMessage` |
-| 상수 | UPPER_SNAKE_CASE | `MAX_RETRY_COUNT` |
-| Enum 클래스 | UpperCamelCase | `UserStatus` |
-| Enum 값 | UPPER_SNAKE_CASE | `UserStatus.ACTIVE` |
+| 요소       | 규칙                     | 예시                                |
+|----------|------------------------|-----------------------------------|
+| 패키지      | 소문자, 도메인별 구분           | `com.blursome.user`               |
+| 클래스      | UpperCamelCase, 명사     | `UserService`                     |
+| 인터페이스    | UpperCamelCase, 명사/형용사 | `Notifiable`, `ChatRepository`    |
+| 메서드      | lowerCamelCase, 동사     | `findByEmail`, `sendNotification` |
+| 변수       | lowerCamelCase         | `userId`, `chatMessage`           |
+| 상수       | UPPER_SNAKE_CASE       | `MAX_RETRY_COUNT`                 |
+| Enum 클래스 | UpperCamelCase         | `UserStatus`                      |
+| Enum 값   | UPPER_SNAKE_CASE       | `UserStatus.ACTIVE`               |
 
 ### 레이어별 클래스 접미사
 
-| 레이어 | 접미사 | 예시 |
-|---|---|---|
-| HTTP 어댑터 | `*Controller` | `UserController` |
-| 비즈니스 파사드 | `*Service` | `UserService` |
-| 데이터 접근 | `*Repository` | `UserRepository` |
-| 도메인 엔티티 | 없음 (명사) | `User`, `Chat`, `Notification` |
-| 요청 DTO | `*Request` | `LoginRequest`, `SendMessageRequest` |
-| 응답 DTO | `*Response` | `UserResponse`, `ChatResponse` |
-| 예외 | `*Exception` | `UserNotFoundException` |
+| 레이어      | 접미사           | 예시                                   |
+|----------|---------------|--------------------------------------|
+| HTTP 어댑터 | `*Controller` | `UserController`                     |
+| 비즈니스 파사드 | `*Service`    | `UserService`                        |
+| 데이터 접근   | `*Repository` | `UserRepository`                     |
+| 도메인 엔티티  | 없음 (명사)       | `User`, `Chat`, `Notification`       |
+| 요청 DTO   | `*Request`    | `LoginRequest`, `SendMessageRequest` |
+| 응답 DTO   | `*Response`   | `UserResponse`, `ChatResponse`       |
+| 예외       | `*Exception`  | `UserNotFoundException`              |
 
 > DTO에 엔티티를 직접 노출하지 않습니다. 항상 `*Request` / `*Response`로 변환합니다.
 
@@ -48,8 +48,8 @@
 
 - 각 도메인 패키지는 자급자족 — 해당 도메인의 Entity, Repository, Service, Controller를 모두 포함
 - 도메인 간 접근은 반드시 **Service 레이어**를 경유 (다른 도메인의 Repository 직접 주입 금지)
-- `common` 패키지는 진정으로 공유되는 인프라만 포함 (전역 예외 핸들러, 응답 래퍼, 공통 설정 빈)
-- 도메인에 귀속되는 클래스를 `common`에 두지 않음
+- `global` 패키지는 횡단 관심사 인프라만 포함 (예외 처리, 응답 래퍼, 공통 설정 빈)
+- 도메인에 귀속되는 클래스를 `global`에 두지 않음
 
 ---
 
@@ -58,23 +58,27 @@
 아키텍처 배경은 [`docs/ARCHITECTURE.md § Facade 패턴`](ARCHITECTURE.md#4-facade-패턴) 참고.
 
 **Controller**
+
 - Repository를 직접 주입하거나 호출하지 않음
 - 비즈니스 if/else 로직을 갖지 않음
 - HTTP 요청/응답 변환만 담당 (DTO 바인딩, `@Valid` 검증, 응답 래핑)
 - `@Transactional` 사용 금지
 
 **Service**
+
 - 트랜잭션 경계 관리 (`@Transactional`)
 - Repository 호출 및 도메인 로직 조율
 - 도메인 간 조율이 필요한 경우 다른 Service를 주입
 - Entity → Response DTO 변환 담당
 
 **Repository**
+
 - 데이터 접근 로직만 포함
 - 비즈니스 로직 없음
 - `JpaRepository<Entity, Long>` 상속
 
 **Domain Entity**
+
 - 자신의 불변 조건을 강제하는 메서드 보유 (Rich Domain Model)
 - Setter 메서드 노출 금지 — 의미 있는 도메인 메서드로 상태 변경
 
@@ -82,53 +86,131 @@
 
 ## 5. API 응답 컨벤션
 
-모든 API 응답은 `common.response.ApiResponse<T>` 래퍼를 사용합니다.
+API 응답은 성공·실패에 따라 `global.response` 패키지의 타입을 사용합니다.
+상세 규격은 [`docs/git_convention/API_RESPONSE_GUIDE.md`](git_convention/API_RESPONSE_GUIDE.md) 참고.
 
-```json
-{
-  "success": true,
-  "data": { },
-  "message": "ok"
-}
+### 성공 응답 — `DataResponse<T>`
+
+`DataResponse<T>`는 바디가 있는 성공 응답의 래퍼입니다. `timestamp`, `data` 필드를 가지며, HTTP 상태 코드는 `ResponseEntity`로 전달합니다. 데이터가 필요 없는 경우에는 `204 No Content`를 반환합니다.
+
+```java
+// 200 OK
+return ResponseEntity.ok(DataResponse.ok(response));
+
+// 201 Created
+return ResponseEntity.status(HttpStatus.CREATED).body(DataResponse.ok(response));
+
+// 유동적인 상태의 성공 응답
+return ResponseEntity.status(status).body(DataResponse.ok(response));
+
+// 바디 불필요 (삭제 등)
+return ResponseEntity.noContent().build();
 ```
 
 ```json
 {
-  "success": false,
-  "data": null,
-  "message": "사용자를 찾을 수 없습니다."
+  "timestamp": "2026-05-08T14:30:12.123+09:00",
+  "data": { "id": 1, "name": "blur" }
+}
+```
+
+### 오류 응답 — `ErrorResponse`
+
+`ErrorResponse`는 `GlobalExceptionHandler`가 자동으로 생성합니다. Controller·Service에서 직접 생성하지 않습니다.
+
+```java
+// Service에서 예외 발생
+throw BaseException.from(GlobalErrorCode.RESOURCE_NOT_FOUND);
+```
+
+```json
+{
+  "status": "Not Found",
+  "timestamp": "2026-05-08T14:30:12.123+09:00",
+  "message": "요청한 리소스를 찾을 수 없습니다.",
+  "code": "CLIENT_ERROR_404_RESOURCE_NOT_FOUND"
+}
+```
+
+`@Valid` 검증 실패 시 `reasons` 목록 포함:
+
+```json
+{
+  "status": "Bad Request",
+  "timestamp": "2026-05-08T14:30:12.123+09:00",
+  "message": "요청 값이 올바르지 않습니다.",
+  "code": "CLIENT_ERROR_400_METHOD_ARGUMENT_NOT_VALID",
+  "reasons": [
+    { "field": "name", "message": "이름은 필수입니다.", "rejectedValue": "" }
+  ]
 }
 ```
 
 **HTTP 상태 코드 사용 기준**
 
-| 코드 | 상황 |
-|---|---|
-| 200 OK | 조회, 수정 성공 |
-| 201 Created | 리소스 생성 성공 |
-| 400 Bad Request | 클라이언트 요청 오류 (유효성 검증 실패 등) |
-| 401 Unauthorized | 인증되지 않은 요청 |
-| 403 Forbidden | 인가되지 않은 접근 |
-| 404 Not Found | 리소스 없음 |
-| 500 Internal Server Error | 서버 내부 오류 |
+| 코드                        | 상황                        |
+|---------------------------|---------------------------|
+| 200 OK                    | 조회, 수정 성공                 |
+| 201 Created               | 리소스 생성 성공                 |
+| 204 No Content            | 삭제 등 바디 없는 성공             |
+| 400 Bad Request           | 클라이언트 요청 오류 (유효성 검증 실패 등) |
+| 401 Unauthorized          | 인증되지 않은 요청                |
+| 403 Forbidden             | 인가되지 않은 접근                |
+| 404 Not Found             | 리소스 없음                    |
+| 500 Internal Server Error | 서버 내부 오류                  |
 
 ---
 
 ## 6. 예외 처리
 
-- 전역 예외 핸들러: `common.exception.GlobalExceptionHandler` (`@RestControllerAdvice`)
-- 커스텀 예외 계층: `BlurSomeException` (베이스) → 도메인별 예외
+- 전역 예외 핸들러: `global.exception.GlobalExceptionHandler` (`@RestControllerAdvice`)
+- 베이스 예외: `global.exception.BaseException` — `BaseException.from(errorCode)` 정적 팩토리로 생성
+- 에러 코드 인터페이스: `global.exception.code.ErrorCode`
+- 전역 에러 코드: `global.exception.code.GlobalErrorCode` / `JwtErrorCode`
+- 도메인 에러 코드: 해당 도메인 패키지 내 `*ErrorCode` enum 정의 후 `ErrorCode` 인터페이스 구현
 
+**예외 발생 패턴**
+
+```java
+// 전역 에러 코드
+throw BaseException.from(GlobalErrorCode.RESOURCE_NOT_FOUND);
+
+// 도메인 에러 코드 (도메인 패키지에 *ErrorCode 정의 후)
+throw BaseException.from(UserErrorCode.USER_NOT_FOUND);
 ```
-BlurSomeException
-├── UserNotFoundException
-├── ChatNotFoundException
-├── NotificationNotFoundException
-└── UnauthorizedException
+
+**GlobalErrorCode 목록**
+
+| 상수                          | HTTP 상태 | 애플리케이션 코드                                | 메시지                   |
+|-----------------------------|---------|---------------------------------------------|------------------------|
+| `INVALID_REQUEST`           | 400     | `CLIENT_ERROR_400_INVALID_REQUEST`           | 유효하지 않은 요청입니다.        |
+| `PARAMETER_NOT_FOUND`       | 400     | `CLIENT_ERROR_400_PARAMETER_NOT_FOUND`       | 필수 요청 파라미터가 누락되었습니다.  |
+| `INVALID_REQUEST_BODY`      | 400     | `CLIENT_ERROR_400_INVALID_REQUEST_BODY`      | 요청 본문 형식이 올바르지 않습니다.  |
+| `METHOD_ARGUMENT_NOT_VALID` | 400     | `CLIENT_ERROR_400_METHOD_ARGUMENT_NOT_VALID` | 요청 값이 올바르지 않습니다.      |
+| `RESOURCE_NOT_FOUND`        | 404     | `CLIENT_ERROR_404_RESOURCE_NOT_FOUND`        | 요청한 리소스를 찾을 수 없습니다.   |
+| `INTERNAL_SERVER_ERROR`     | 500     | `SERVER_ERROR_500_INTERNAL_SERVER_ERROR`     | 서버 내부 오류가 발생했습니다.     |
+
+**GlobalExceptionHandler 처리 목록**
+
+| 예외 클래스                                    | 로그 레벨 | 응답                                    |
+|-------------------------------------------|-------|---------------------------------------|
+| `BaseException`                           | WARN  | `BaseException`의 상태·메시지·코드            |
+| `MissingServletRequestParameterException` | WARN  | 400, `PARAMETER_NOT_FOUND`            |
+| `HttpMessageNotReadableException`         | WARN  | 400, `INVALID_REQUEST_BODY`           |
+| `MethodArgumentNotValidException`         | WARN  | 400, `reasons`에 `List<ErrorDetail>`   |
+| `NoResourceFoundException`                | WARN  | 404, `RESOURCE_NOT_FOUND`             |
+| `Exception` (미처리)                         | ERROR | 500, `INTERNAL_SERVER_ERROR`          |
+
+**ErrorDetail** — `@Valid` 검증 실패 시 `reasons`에 포함되는 필드별 오류 정보 (`global.response.ErrorDetail`)
+
+```java
+ErrorDetail.of(field, message, rejectedValue)
 ```
 
 **규칙:**
-- 모든 커스텀 예외는 에러 코드 enum과 메시지를 포함
+
+- 모든 커스텀 예외는 `BaseException.from(errorCode)` 패턴으로 생성
+- 도메인 고유 에러 코드는 해당 도메인 패키지 내 `*ErrorCode` enum으로 정의하고 `ErrorCode` 인터페이스 구현
 - 예외를 조용히 삼키지 않음 (빈 catch 블록 금지)
 - 예외 로깅은 적절한 레벨로 — 클라이언트 오류는 WARN, 서버 오류는 ERROR
 
@@ -136,14 +218,15 @@ BlurSomeException
 
 ## 7. Lombok 사용 규칙
 
-| 상황 | 사용 방법 |
-|---|---|
-| 의존성 주입 | `@RequiredArgsConstructor` (생성자 주입) |
+| 상황      | 사용 방법                                                            |
+|---------|------------------------------------------------------------------|
+| 의존성 주입  | `@RequiredArgsConstructor` (생성자 주입)                              |
 | JPA 엔티티 | `@Getter` + `@NoArgsConstructor(access = AccessLevel.PROTECTED)` |
-| DTO | `@Getter` + `@Builder` |
-| 값 객체 | `@Getter` + `@EqualsAndHashCode` |
+| DTO     | `@Getter` + `@Builder`                                           |
+| 값 객체    | `@Getter` + `@EqualsAndHashCode`                                 |
 
 **금지 사항:**
+
 - JPA Entity에 `@Data` 사용 금지 (양방향 관계 `hashCode`/`equals` 무한 루프 위험)
 - JPA Entity에 `public` 기본 생성자 사용 금지 (외부에서 불완전한 엔티티 생성 방지)
 - `@Autowired` 필드 주입 사용 금지
@@ -152,20 +235,40 @@ BlurSomeException
 
 ## 8. 테스트 컨벤션
 
-| 테스트 종류 | 애노테이션 | 대상 |
-|---|---|---|
-| 단위 테스트 | `@ExtendWith(MockitoExtension.class)` | Service, Domain |
-| 통합 테스트 | `@SpringBootTest` | 전체 컨텍스트 |
-| API 테스트 | `@WebMvcTest` + MockMvc | Controller |
+| 테스트 종류             | 방식                                    | 대상                               |
+|--------------------|---------------------------------------|----------------------------------|
+| 단위 테스트             | `@ExtendWith(MockitoExtension.class)` | Service, Domain                  |
+| 통합 테스트             | `@SpringBootTest`                     | 전체 컨텍스트                          |
+| Controller API 테스트 | `@WebMvcTest` + MockMvc               | Controller 요청·응답 검증              |
+| 인프라 단위 테스트         | `MockMvcBuilders.standaloneSetup()`   | `@RestControllerAdvice` 등 공통 인프라 |
+
+**`@WebMvcTest` vs `standaloneSetup` 선택 기준**
+
+| 상황                                      | 방식                                                                      |
+|-----------------------------------------|-------------------------------------------------------------------------|
+| 특정 Controller의 요청·응답·보안 검증              | `@WebMvcTest(controllers = XxxController.class)`                        |
+| `GlobalExceptionHandler` 등 공통 인프라 단독 검증 | `MockMvcBuilders.standaloneSetup(...).setControllerAdvice(...).build()` |
+
+> `standaloneSetup`은 Spring 컨텍스트 없이 대상 컴포넌트만 올려 검증하므로 속도가 빠릅니다.
+> Controller 테스트에서 예외 응답 형식을 검증할 때는 `@WebMvcTest`를 사용합니다.
 
 **규칙:**
+
 - 테스트 클래스 네이밍: `<대상클래스>Test` (예: `UserServiceTest`)
 - 테스트 메서드에 `@DisplayName` 한국어 허용
-- 테스트 메서드는 "given-when-then" 구조로 작성
 - Service 레이어 단위 테스트를 우선 작성
 
-**예시**
+**테스트 종류별 작성 방식**
+
+| 종류                            | 메서드 네이밍                           | 구조                                           |
+|-------------------------------|-----------------------------------|----------------------------------------------|
+| 단위 테스트 (Service, Domain)      | `method_whenCondition_thenResult` | `// given` `// when` `// then` 주석 명시         |
+| MockMvc 테스트 (Controller, 인프라) | `handle<대상시나리오>`                  | `perform()` → `andExpect()` 체이닝으로 표현 (주석 생략) |
+
+**단위 테스트 예시**
+
 ```java
+
 @Test
 @DisplayName("존재하지 않는 사용자 조회 시 UserNotFoundException이 발생한다")
 void findUser_whenUserNotFound_throwsException() {
@@ -175,6 +278,27 @@ void findUser_whenUserNotFound_throwsException() {
   // when & then
   assertThatThrownBy(() -> userService.findById(1L))
       .isInstanceOf(UserNotFoundException.class);
+}
+```
+
+**MockMvc 테스트 예시** (`standaloneSetup` / `@WebMvcTest` 공통)
+
+```java
+
+@BeforeEach
+void setUp() {                                        // given: 픽스처 구성
+  mockMvc = MockMvcBuilders.standaloneSetup(new TestController())
+      .setControllerAdvice(new GlobalExceptionHandler())
+      .build();
+}
+
+@Test
+@DisplayName("Request Parameter 누락 시 400과 ErrorResponse를 반환한다")
+void handleMissingServletRequestParameterException() throws Exception {
+  mockMvc.perform(get("/test/required-param"))        // when
+      .andExpect(status().isBadRequest())             // then
+      .andExpect(jsonPath("$.code").value("CLIENT_ERROR_400_PARAMETER_NOT_FOUND"))
+      .andExpect(jsonPath("$.message").value("필수 요청 파라미터가 누락되었습니다."));
 }
 ```
 
@@ -188,7 +312,8 @@ void findUser_whenUserNotFound_throwsException() {
 
 ### 9.1 Code Style — Google Java Style 적용
 
-이 프로젝트의 코드 스타일 설정은 `.idea/` 폴더에 이미 포함되어 있습니다. 저장소를 클론하면 IntelliJ가 자동으로 읽어들입니다. 적용이 안 됐거나 재확인이 필요할 때 아래 절차를 따릅니다.
+이 프로젝트의 코드 스타일 설정은 `.idea/` 폴더에 이미 포함되어 있습니다. 저장소를 클론하면 IntelliJ가 자동으로 읽어들입니다. 적용이 안 됐거나 재확인이 필요할 때
+아래 절차를 따릅니다.
 
 **자동 적용 확인**
 
@@ -196,7 +321,8 @@ void findUser_whenUserNotFound_throwsException() {
 
 **수동으로 XML 가져오기 (재설정 필요 시)**
 
-1. [intellij-java-google-style.xml](https://github.com/google/styleguide/blob/gh-pages/intellij-java-google-style.xml) 다운로드
+1. [intellij-java-google-style.xml](https://github.com/google/styleguide/blob/gh-pages/intellij-java-google-style.xml)
+   다운로드
 2. `Settings` → `Editor` → `Code Style` → `Java`
 3. 오른쪽 상단 톱니바퀴 아이콘 → `Import Scheme` → `IntelliJ IDEA code style XML`
 4. 다운로드한 파일 선택
@@ -207,13 +333,13 @@ void findUser_whenUserNotFound_throwsException() {
 
 `Settings` → `Editor` → `Code Style` → `Java`
 
-| 탭 | 항목 | 값 |
-|---|---|---|
-| **Tabs and Indents** | Use tab character | **OFF (체크 해제)** |
-| **Tabs and Indents** | Tab size | `2` |
-| **Tabs and Indents** | Indent | `2` |
-| **Tabs and Indents** | Continuation indent | `4` |
-| **Wrapping and Braces** | Right margin (columns) | `100` |
+| 탭                       | 항목                     | 값               |
+|-------------------------|------------------------|-----------------|
+| **Tabs and Indents**    | Use tab character      | **OFF (체크 해제)** |
+| **Tabs and Indents**    | Tab size               | `2`             |
+| **Tabs and Indents**    | Indent                 | `2`             |
+| **Tabs and Indents**    | Continuation indent    | `4`             |
+| **Wrapping and Braces** | Right margin (columns) | `100`           |
 
 > `Hard wrap at`을 `100`으로 설정하면 에디터 오른쪽에 가이드 선이 표시됩니다.
 > `Settings` → `Editor` → `Code Style` → `Hard wrap at` 항목도 동일하게 `100`으로 맞춥니다.
@@ -243,12 +369,12 @@ void findUser_whenUserNotFound_throwsException() {
 
 `Settings` → `Editor` → `File Encodings`
 
-| 항목 | 값 |
-|---|---|
-| Global Encoding | `UTF-8` |
-| Project Encoding | `UTF-8` |
-| Default encoding for properties files | `UTF-8` |
-| Create UTF-8 files | `with NO BOM` |
+| 항목                                    | 값             |
+|---------------------------------------|---------------|
+| Global Encoding                       | `UTF-8`       |
+| Project Encoding                      | `UTF-8`       |
+| Default encoding for properties files | `UTF-8`       |
+| Create UTF-8 files                    | `with NO BOM` |
 
 ---
 
@@ -256,11 +382,11 @@ void findUser_whenUserNotFound_throwsException() {
 
 `Settings` → `Tools` → `Actions on Save`
 
-| 항목 | 설정 |
-|---|---|
-| Reformat code | **ON** |
-| Optimize imports | **ON** |
-| Rearrange code | OFF (선택 사항) |
+| 항목               | 설정          |
+|------------------|-------------|
+| Reformat code    | **ON**      |
+| Optimize imports | **ON**      |
+| Rearrange code   | OFF (선택 사항) |
 | Run code cleanup | OFF (선택 사항) |
 
 > 이 설정을 켜두면 파일 저장(Ctrl+S)마다 들여쓰기, 공백, import 순서가 자동 정렬됩니다.
@@ -271,21 +397,21 @@ void findUser_whenUserNotFound_throwsException() {
 
 `Settings` → `Editor` → `Code Style` → `Java` → `Imports` 탭
 
-| 항목 | 값 |
-|---|---|
-| Class count to use import with '*' | `999` (와일드카드 import 방지) |
-| Names count to use static import with '*' | `999` |
+| 항목                                        | 값                       |
+|-------------------------------------------|-------------------------|
+| Class count to use import with '*'        | `999` (와일드카드 import 방지) |
+| Names count to use static import with '*' | `999`                   |
 
 Import 블록 순서 (`Import Layout`):
 
 ```
-import static all other imports
-<blank line>
 import java.*
 import javax.*
 <blank line>
 import org.*
 import com.*
+<blank line>
+import static all other imports
 <blank line>
 import all other imports
 ```
@@ -331,13 +457,13 @@ indent_size = 4
 
 ### 9.8 자주 사용하는 포맷 단축키
 
-| 작업 | Windows / Linux | macOS |
-|---|---|---|
-| 코드 재포맷 | `Ctrl + Alt + L` | `Cmd + Option + L` |
-| Import 최적화 | `Ctrl + Alt + O` | `Cmd + Option + O` |
-| 파일 전체 정리 | `Ctrl + Alt + L` (전체 선택 후) | `Cmd + Option + L` |
-| Checkstyle 실행 | 하단 `Checkstyle` 탭 | 하단 `Checkstyle` 탭 |
-| 줄 길이 초과 확인 | `View` → `Active Editor` → `Show Right Margin` | 동일 |
+| 작업            | Windows / Linux                                | macOS              |
+|---------------|------------------------------------------------|--------------------|
+| 코드 재포맷        | `Ctrl + Alt + L`                               | `Cmd + Option + L` |
+| Import 최적화    | `Ctrl + Alt + O`                               | `Cmd + Option + O` |
+| 파일 전체 정리      | `Ctrl + Alt + L` (전체 선택 후)                     | `Cmd + Option + L` |
+| Checkstyle 실행 | 하단 `Checkstyle` 탭                              | 하단 `Checkstyle` 탭  |
+| 줄 길이 초과 확인    | `View` → `Active Editor` → `Show Right Margin` | 동일                 |
 
 ---
 
