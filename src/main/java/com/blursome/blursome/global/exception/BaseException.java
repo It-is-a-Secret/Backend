@@ -10,7 +10,7 @@ public class BaseException extends RuntimeException {
   private final HttpStatus httpStatus;
   private final String code;
 
-  protected BaseException(String message, HttpStatus httpStatus, String code) {
+  private BaseException(String message, HttpStatus httpStatus, String code) {
     super(message);
     this.httpStatus = httpStatus;
     this.code = code;
