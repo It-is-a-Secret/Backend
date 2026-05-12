@@ -91,14 +91,17 @@ API 응답은 성공·실패에 따라 `global.response` 패키지의 타입을 
 
 ### 성공 응답 — `DataResponse<T>`
 
-`DataResponse<T>`는 모든 성공 응답의 래퍼입니다. `status`, `timestamp`, `data` 필드를 가지며 `data`가 `null`이면 직렬화에서 제외됩니다.
+`DataResponse<T>`는 바디가 있는 성공 응답의 래퍼입니다. `timestamp`, `data` 필드를 가지며, HTTP 상태 코드는 `ResponseEntity`로 전달합니다. 데이터가 필요 없는 경우에는 `204 No Content`를 반환합니다.
 
 ```java
-// 데이터 포함
-return ResponseEntity.ok(DataResponse.from(response));
+// 200 OK
+return ResponseEntity.ok(DataResponse.ok(response));
 
-// 데이터 없는 성공 (클라이언트가 바디를 필요로 할 때)
-return ResponseEntity.ok(DataResponse.ok());
+// 201 Created
+return ResponseEntity.status(HttpStatus.CREATED).body(DataResponse.ok(response));
+
+// 유동적인 상태의 성공 응답
+return ResponseEntity.status(status).body(DataResponse.ok(response));
 
 // 바디 불필요 (삭제 등)
 return ResponseEntity.noContent().build();
@@ -106,7 +109,6 @@ return ResponseEntity.noContent().build();
 
 ```json
 {
-  "status": "OK",
   "timestamp": "2026-05-08T14:30:12.123+09:00",
   "data": { "id": 1, "name": "blur" }
 }

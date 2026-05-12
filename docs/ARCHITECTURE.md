@@ -84,7 +84,7 @@ com.blursome
     │       ├── GlobalErrorCode.java   # 전역 공통 에러 코드
     │       └── JwtErrorCode.java      # JWT 에러 코드
     └── response/
-        ├── BaseResponse.java          # 공통 메타데이터 (status, timestamp)
+        ├── BaseResponse.java          # 공통 메타데이터 (timestamp)
         ├── DataResponse.java          # 성공 응답 래퍼
         ├── ErrorResponse.java         # 오류 응답 래퍼
         └── ErrorDetail.java           # 검증 실패 필드 상세
@@ -151,7 +151,7 @@ user.setDeactivatedAt(LocalDateTime.now());
 // User 엔티티 내부에 비즈니스 규칙 캡슐화
 public void deactivate() {
   if (this.status == UserStatus.INACTIVE) {
-    throw new BlurSomeException("이미 비활성화된 회원입니다.");
+    throw BaseException.from(UserErrorCode.ALREADY_DEACTIVATED);
   }
   this.status = UserStatus.INACTIVE;
   this.deactivatedAt = LocalDateTime.now();
@@ -200,7 +200,7 @@ blursome:notification:1001:unread-count
 | 환경 분리 | `application-{profile}.yml` (`local`, `prod`) — git 추적, 시크릿 없음 |
 | 프로파일 활성화 | `application.yml`의 `spring.profiles.default: ${ACTIVE:local}` — `.env`의 `ACTIVE` 변수로 제어 |
 | 시크릿 관리 | `.env` 파일 (`spring-dotenv` 로드) — gitignored, `.env.example` 으로 템플릿 공유 |
-| API 성공 응답 | `global.response.DataResponse<T>` — `DataResponse.from(data)` / `DataResponse.ok()` |
+| API 성공 응답 | `global.response.DataResponse<T>` — `DataResponse.ok(data)`, HTTP 상태 코드는 `ResponseEntity`로 전달 |
 | API 오류 응답 | `global.response.ErrorResponse` — `GlobalExceptionHandler`가 자동 생성 |
 | 예외 처리 | `global.exception.GlobalExceptionHandler` (`@RestControllerAdvice`) |
 

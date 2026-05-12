@@ -6,7 +6,7 @@ API 응답은 결과 유형에 따라 타입을 분리합니다.
 
 | 유형 | 클래스 | 설명 |
 |---|---|---|
-| 성공 응답 | `DataResponse<T>` | 200·201·204 등 정상 처리 |
+| 성공 응답 | `DataResponse<T>` | 바디가 있는 정상 처리 |
 | 오류 응답 | `ErrorResponse` | 4xx·5xx 예외 처리 |
 | 공통 메타데이터 | `BaseResponse` | 두 타입의 상위 클래스 |
 
@@ -21,12 +21,10 @@ Controller는 성공 응답에 `DataResponse<T>`를 직접 생성합니다.
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
-| `status` | `String` | HTTP 상태 문구 (예: `OK`, `Bad Request`, `Not Found`) |
 | `timestamp` | `String` | 응답 생성 시각 (RFC3339 형식, KST 기준) |
 
 ```json
 {
-  "status": "OK",
   "timestamp": "2026-05-08T14:30:12.123+09:00"
 }
 ```
@@ -39,25 +37,23 @@ Controller는 성공 응답에 `DataResponse<T>`를 직접 생성합니다.
 
 | 필드 | 타입 | 필수 | 설명 |
 |---|---|---|---|
-| `status` | `String` | O | HTTP 상태 문구 |
 | `timestamp` | `String` | O | 응답 생성 시각 |
 | `data` | `T` | X | 실제 응답 데이터 (`null`이면 직렬화에서 제외) |
 
 ### 3.2 데이터 포함 성공 응답
 
-데이터를 포함할 때는 `DataResponse.from(data)`를 사용합니다.
+일반적인 `200 OK` 응답에서 데이터를 포함할 때는 `DataResponse.ok(data)`를 사용합니다.
 
 ```java
 @GetMapping("/users/{userId}")
 public ResponseEntity<DataResponse<UserResponse>> getUser(@PathVariable Long userId) {
   UserResponse response = userService.getUser(userId);
-  return ResponseEntity.ok(DataResponse.from(response));
+  return ResponseEntity.ok(DataResponse.ok(response));
 }
 ```
 
 ```json
 {
-  "status": "OK",
   "timestamp": "2026-05-08T14:30:12.123+09:00",
   "data": {
     "id": 1,
@@ -66,13 +62,45 @@ public ResponseEntity<DataResponse<UserResponse>> getUser(@PathVariable Long use
 }
 ```
 
-### 3.3 데이터 없는 성공 응답
+### 3.3 생성 성공 응답
+
+리소스 생성 성공처럼 `201 Created`를 반환할 때도 바디는 `DataResponse.ok(data)`로 생성하고,
+HTTP 상태 코드는 `ResponseEntity.status(HttpStatus.CREATED)`로 전달합니다.
+
+```java
+@PostMapping("/users")
+public ResponseEntity<DataResponse<UserResponse>> createUser(@RequestBody SignUpRequest request) {
+  UserResponse response = userService.createUser(request);
+  return ResponseEntity.status(HttpStatus.CREATED).body(DataResponse.ok(response));
+}
+```
+
+```json
+{
+  "timestamp": "2026-05-08T14:30:12.123+09:00",
+  "data": {
+    "id": 1,
+    "name": "blur"
+  }
+}
+```
+
+### 3.4 유동적인 상태의 성공 응답
+
+`200 OK`, `201 Created` 외의 바디가 있는 성공 응답이 필요해도 바디는 `DataResponse.ok(data)`로 생성합니다.
+상태 코드는 `ResponseEntity.status(status)`로만 전달합니다.
+
+```java
+return ResponseEntity.status(status).body(DataResponse.ok(response));
+```
+
+### 3.5 데이터 없는 성공 응답
 
 응답 바디가 필요 없는 명령형 API(삭제 등)는 아래 기준으로 선택합니다.
 
 | 상황 | 권장 응답 |
 |---|---|
-| 클라이언트가 바디를 필요로 할 때 | `200 OK` + `DataResponse.ok()` |
+| 클라이언트가 바디를 필요로 할 때 | `200 OK` + `DataResponse.ok(data)` |
 | 클라이언트가 바디를 필요로 하지 않을 때 | `204 No Content` + `ResponseEntity.noContent().build()` |
 
 `204 No Content`에 JSON 바디를 함께 반환하지 않습니다.
@@ -196,7 +224,7 @@ throw BaseException.from(UserErrorCode.USER_NOT_FOUND);
 
 ## 6. 구현 규칙
 
-- 성공 응답은 Controller에서 `DataResponse`로 직접 생성합니다.
+- 성공 응답은 Controller에서 `DataResponse.ok(data)`로 직접 생성하고, HTTP 상태 코드는 `ResponseEntity`로 전달합니다.
 - 오류 응답은 `GlobalExceptionHandler`에서만 생성합니다 — Controller·Service에서 `ErrorResponse`를 직접 만들지 않습니다.
 - Service는 예외를 `BaseException.from(errorCode)` 패턴으로 던집니다.
 - 도메인 고유 예외는 해당 도메인의 `*ErrorCode`를 사용합니다.
