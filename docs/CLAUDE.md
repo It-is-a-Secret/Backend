@@ -47,7 +47,7 @@ Claude Code가 이 프로젝트에서 작업할 때 반드시 이 문서를 참�
 3. **Controller에서 Repository 직접 주입/호출 금지** — 반드시 Service 경유
 4. **Controller에 비즈니스 로직 금지** — HTTP 변환만 허용
 5. **`@Transactional`은 Service 메서드에만** — Controller 사용 금지
-6. **API 성공 응답은 `DataResponse<T>` 사용** — `DataResponse.from(data)` 또는 `DataResponse.ok()` 팩토리 메서드로 생성 (`global.response.DataResponse`) / **API 예외 응답은 `ErrorResponse` 사용** — Service에서 `BaseException.from(errorCode)`를 던지면 `GlobalExceptionHandler`가 자동으로 `ErrorResponse`를 반환
+6. **API 성공 응답은 `DataResponse<T>` 사용** — 바디가 있으면 `DataResponse.ok(data)`로 생성하고 HTTP 상태 코드는 `ResponseEntity`로 전달, 바디가 없으면 `ResponseEntity.noContent().build()` 사용 (`global.response.DataResponse`) / **API 예외 응답은 `ErrorResponse` 사용** — Service에서 `BaseException.from(errorCode)`를 던지면 `GlobalExceptionHandler`가 자동으로 `ErrorResponse`를 반환
 7. **JPA Entity에 `@Data` 금지** — `@Getter` + `@NoArgsConstructor(access = AccessLevel.PROTECTED)` 사용
 8. **Entity에 public 기본 생성자 금지** — `PROTECTED` 접근 수준 강제
 9. **도메인에 귀속되는 클래스는 해당 도메인 패키지에** — `common`은 공유 인프라만
