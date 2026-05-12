@@ -10,6 +10,7 @@ import org.springframework.http.HttpStatus;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class ErrorResponse extends BaseResponse {
 
+  private final String status;
   private final String message;
   private final String code; // 도메인 별 세부 오류 코드를 위한 필드
   private final List<ErrorDetail> reasons;
@@ -20,7 +21,7 @@ public class ErrorResponse extends BaseResponse {
       String code,
       List<ErrorDetail> reasons
   ) {
-    super(status);
+    this.status = status.getReasonPhrase();
     this.message = message;
     this.code = code;
     this.reasons = reasons;
