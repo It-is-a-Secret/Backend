@@ -92,3 +92,6 @@ docker-compose.override.yml
 
 # VS Code
 .vscode/
+
+# 개인 작업 메모 (팀 공유 제외)
+docs/goodjunseon/
