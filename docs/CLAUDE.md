@@ -13,7 +13,7 @@ Claude Code가 이 프로젝트에서 작업할 때 반드시 이 문서를 참�
 | 언어 / JVM | Java 21, GraalVM |
 | 빌드 | Gradle (Kotlin DSL) |
 | 패키지 루트 | `com.blursome` |
-| 주요 도메인 | 회원(User), 알림(Notification), 채팅(Chat) |
+| 주요 도메인 | 인증(Auth), 회원(Member), 알림(Notification), 채팅(Chat) |
 
 ---
 
@@ -34,7 +34,8 @@ Claude Code가 이 프로젝트에서 작업할 때 반드시 이 문서를 참�
 | 예외 클래스 추가 | `docs/CODE_CONVENTION.md § 6. 예외 처리` |
 | API 엔드포인트 추가 | `docs/CODE_CONVENTION.md § 5. API 응답 컨벤션` |
 | 테스트 작성 | `docs/CODE_CONVENTION.md § 8. 테스트 컨벤션` |
-| 아키텍처 결정 기록 | `docs/ARCHITECTURE.md § 8. ADR` |
+| 인증/인가 흐름 (OAuth, JWT, 리프레시 토큰) | `docs/ARCHITECTURE.md § 8. 인증/인가 흐름` |
+| 아키텍처 결정 기록 | `docs/ARCHITECTURE.md § 9. ADR` |
 
 ---
 
@@ -50,7 +51,7 @@ Claude Code가 이 프로젝트에서 작업할 때 반드시 이 문서를 참�
 6. **API 성공 응답은 `DataResponse<T>` 사용** — 바디가 있으면 `DataResponse.ok(data)`로 생성하고 HTTP 상태 코드는 `ResponseEntity`로 전달, 바디가 없으면 `ResponseEntity.noContent().build()` 사용 (`global.response.DataResponse`) / **API 예외 응답은 `ErrorResponse` 사용** — Service에서 `BaseException.from(errorCode)`를 던지면 `GlobalExceptionHandler`가 자동으로 `ErrorResponse`를 반환
 7. **JPA Entity에 `@Data` 금지** — `@Getter` + `@NoArgsConstructor(access = AccessLevel.PROTECTED)` 사용
 8. **Entity에 public 기본 생성자 금지** — `PROTECTED` 접근 수준 강제
-9. **도메인에 귀속되는 클래스는 해당 도메인 패키지에** — `common`은 공유 인프라만
+9. **도메인에 귀속되는 클래스는 해당 도메인 패키지에** — `global`은 횡단 관심사 인프라만 포함
 10. **의존성 주입은 생성자 주입** (`@RequiredArgsConstructor`) — 필드 `@Autowired` 금지
 
 ---
@@ -59,10 +60,23 @@ Claude Code가 이 프로젝트에서 작업할 때 반드시 이 문서를 참�
 
 ```
 HTTP 요청
-    └── *Controller          (요청 DTO 수신, @Valid 검증, Service 호출, 응답 반환)
-          └── *Service        (Facade: 트랜잭션, 쿼리 조합, 도메인 간 조율, DTO 변환)
-                ├── *Repository      (데이터 접근만)
-                └── Domain Entity    (비즈니스 불변 조건은 엔티티 메서드에)
+    └── controller/*Controller     (요청 DTO 수신, @Valid 검증, Service 호출, 응답 반환)
+          └── service/*Service     (Facade: 트랜잭션, 쿼리 조합, 도메인 간 조율, DTO 변환)
+                ├── repository/*Repository   (데이터 접근만)
+                └── domain/*Entity           (비즈니스 불변 조건은 엔티티 메서드에)
+```
+
+패키지 구조 (레이어 서브패키지):
+```
+<domain>/
+├── controller/   → *Controller
+├── service/      → *Service
+├── repository/   → *Repository
+├── domain/       → Entity, Enum, 값객체
+├── dto/
+│   ├── request/  → *Request
+│   └── response/ → *Response
+└── exception/    → *ErrorCode
 ```
 
 도메인 간 조율: **Service → Service** 경로만 허용 (Repository → Repository 직접 접근 금지)
@@ -73,20 +87,23 @@ HTTP 요청
 
 새 기능 구현 요청 시 아래 순서로 진행합니다.
 
-1. **도메인 소유권 확인** — User / Notification / Chat / 신규 도메인 중 어디에 속하는지 결정
-2. **Entity 생성**: `com.blursome.<domain>/<DomainName>.java`
+1. **도메인 소유권 확인** — Member / Notification / Chat / 신규 도메인 중 어디에 속하는지 결정
+2. **Entity 생성**: `com.blursome.<domain>.domain/<DomainName>.java`
    - `@NoArgsConstructor(access = AccessLevel.PROTECTED)`
    - 상태 변경은 의미 있는 도메인 메서드로 캡슐화
-3. **Repository 생성**: `com.blursome.<domain>/<DomainName>Repository.java`
-4. **Service(Facade) 생성**: `com.blursome.<domain>/<DomainName>Service.java`
+   - 도메인 Enum·값객체도 `domain/` 서브패키지에 함께 배치
+3. **Repository 생성**: `com.blursome.<domain>.repository/<DomainName>Repository.java`
+4. **Service(Facade) 생성**: `com.blursome.<domain>.service/<DomainName>Service.java`
    - `@Transactional` 적용
    - Entity → Response DTO 변환 담당
-5. **Controller 생성**: `com.blursome.<domain>/<DomainName>Controller.java`
+5. **Controller 생성**: `com.blursome.<domain>.controller/<DomainName>Controller.java`
    - `@Valid` 검증
    - 성공 응답: `ResponseEntity<DataResponse<T>>` 반환
    - 예외: `BaseException.from(errorCode)` throw — 핸들러가 `ErrorResponse` 자동 변환
-6. **공유 관심사**는 `com.blursome.global.*`에 배치
-7. 작업 완료 후 **한국어 커밋 메시지 제안**
+6. **DTO 생성**: `com.blursome.<domain>.dto.request/` 및 `dto.response/`
+7. **에러 코드 생성**: `com.blursome.<domain>.exception/<DomainName>ErrorCode.java`
+8. **공유 관심사**는 `com.blursome.global.*`에 배치
+9. 작업 완료 후 **한국어 커밋 메시지 제안**
 
 ---
 
