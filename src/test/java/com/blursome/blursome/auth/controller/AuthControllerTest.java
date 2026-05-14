@@ -1,6 +1,5 @@
 package com.blursome.blursome.auth.controller;
 
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
@@ -16,13 +15,10 @@ import com.blursome.blursome.auth.dto.TokenPair;
 import com.blursome.blursome.auth.exception.AuthErrorCode;
 import com.blursome.blursome.auth.service.AuthService;
 import com.blursome.blursome.global.exception.BaseException;
-import com.blursome.blursome.global.security.JwtAuthentication;
 import com.blursome.blursome.global.security.JwtAuthenticationEntryPoint;
 import com.blursome.blursome.global.security.JwtAuthenticationFilter;
 import com.blursome.blursome.global.security.JwtTokenProvider;
-import com.blursome.blursome.member.domain.MemberRole;
 import jakarta.servlet.http.Cookie;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -33,7 +29,6 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -116,23 +111,27 @@ class AuthControllerTest {
         .andExpect(cookie().value("refreshToken", "refresh-new"));
   }
 
-  @AfterEach
-  void clearSecurityContext() {
-    SecurityContextHolder.clearContext();
+  @Test
+  @DisplayName("RefreshToken 쿠키와 함께 로그아웃 시 서비스에 토큰을 전달하고 쿠키를 만료시킨다")
+  void handleLogoutWithCookie() throws Exception {
+    mockMvc.perform(post("/api/auth/logout")
+            .cookie(new Cookie("refreshToken", "refresh-old")))
+        .andExpect(status().isNoContent())
+        .andExpect(header().exists("Set-Cookie"))
+        .andExpect(cookie().maxAge("refreshToken", 0));
+
+    verify(authService).logout("refresh-old");
   }
 
   @Test
-  @DisplayName("로그아웃 시 204와 쿠키 만료(max-age=0)가 반환된다")
-  void handleLogout() throws Exception {
-    JwtAuthentication auth = JwtAuthentication.of(1L, MemberRole.USER);
-    SecurityContextHolder.getContext().setAuthentication(auth);
-
+  @DisplayName("RefreshToken 쿠키가 없어도 204를 반환하고 쿠키 만료 헤더를 내려준다")
+  void handleLogoutWithoutCookie() throws Exception {
     mockMvc.perform(post("/api/auth/logout"))
         .andExpect(status().isNoContent())
         .andExpect(header().exists("Set-Cookie"))
         .andExpect(cookie().maxAge("refreshToken", 0));
 
-    verify(authService).logout(any());
+    verify(authService).logout(null);
   }
 
   @TestConfiguration

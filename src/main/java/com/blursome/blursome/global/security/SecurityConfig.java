@@ -32,7 +32,8 @@ public class SecurityConfig {
         .authorizeHttpRequests(auth -> auth
             .requestMatchers(HttpMethod.POST,
                 "/api/auth/oauth/kakao",
-                "/api/auth/token/refresh").permitAll()
+                "/api/auth/token/refresh",
+                "/api/auth/logout").permitAll()
             .requestMatchers("/error").permitAll()
             .anyRequest().authenticated())
         .addFilterBefore(jwtAuthenticationFilter,

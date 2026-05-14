@@ -11,7 +11,6 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.CookieValue;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -44,8 +43,11 @@ public class AuthController {
   }
 
   @PostMapping("/logout")
-  public ResponseEntity<Void> logout(@AuthenticationPrincipal Long memberId) {
-    authService.logout(memberId);
+  public ResponseEntity<Void> logout(
+      @CookieValue(name = RefreshTokenCookieFactory.COOKIE_NAME, required = false)
+      String refreshToken
+  ) {
+    authService.logout(refreshToken);
     return ResponseEntity.noContent()
         .header(HttpHeaders.SET_COOKIE, cookieFactory.delete().toString())
         .build();

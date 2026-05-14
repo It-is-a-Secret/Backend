@@ -6,6 +6,7 @@ import com.blursome.blursome.auth.oauth.OAuthClient;
 import com.blursome.blursome.auth.oauth.OAuthClientResolver;
 import com.blursome.blursome.auth.token.RefreshTokenStore;
 import com.blursome.blursome.global.exception.BaseException;
+import com.blursome.blursome.global.exception.JwtAuthenticationException;
 import com.blursome.blursome.global.security.JwtTokenProvider;
 import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.OAuthProvider;
@@ -50,8 +51,16 @@ public class AuthService {
   }
 
   @Transactional
-  public void logout(Long memberId) {
-    refreshTokenStore.delete(memberId);
+  public void logout(String refreshToken) {
+    if (refreshToken == null || refreshToken.isBlank()) {
+      return;
+    }
+    try {
+      Long memberId = jwtTokenProvider.parseRefresh(refreshToken);
+      refreshTokenStore.delete(memberId);
+    } catch (JwtAuthenticationException ignored) {
+      // 만료/위조된 RT여도 로그아웃은 멱등하게 성공 처리한다.
+    }
   }
 
   private TokenPair issueTokens(Member member) {

@@ -42,14 +42,22 @@ public class JwtTokenProvider {
 
   public JwtAuthentication parseAccess(String token) {
     Claims claims = parseClaims(token, TOKEN_TYPE_ACCESS);
-    Long memberId = Long.parseLong(claims.getSubject());
-    MemberRole role = MemberRole.valueOf(claims.get(CLAIM_ROLE, String.class));
-    return JwtAuthentication.of(memberId, role);
+    try {
+      Long memberId = Long.parseLong(claims.getSubject());
+      MemberRole role = MemberRole.valueOf(claims.get(CLAIM_ROLE, String.class));
+      return JwtAuthentication.of(memberId, role);
+    } catch (IllegalArgumentException | NullPointerException e) {
+      throw new JwtAuthenticationException(JwtErrorCode.INVALID_TOKEN);
+    }
   }
 
   public Long parseRefresh(String token) {
     Claims claims = parseClaims(token, TOKEN_TYPE_REFRESH);
-    return Long.parseLong(claims.getSubject());
+    try {
+      return Long.parseLong(claims.getSubject());
+    } catch (NumberFormatException | NullPointerException e) {
+      throw new JwtAuthenticationException(JwtErrorCode.INVALID_TOKEN);
+    }
   }
 
   public long getAccessTtlSeconds() {

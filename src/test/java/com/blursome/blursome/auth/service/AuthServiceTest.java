@@ -4,10 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 import com.blursome.blursome.auth.dto.TokenPair;
 import com.blursome.blursome.auth.exception.AuthErrorCode;
@@ -15,6 +15,8 @@ import com.blursome.blursome.auth.oauth.OAuthClient;
 import com.blursome.blursome.auth.oauth.OAuthClientResolver;
 import com.blursome.blursome.auth.token.RefreshTokenStore;
 import com.blursome.blursome.global.exception.BaseException;
+import com.blursome.blursome.global.exception.JwtAuthenticationException;
+import com.blursome.blursome.global.exception.code.JwtErrorCode;
 import com.blursome.blursome.global.security.JwtTokenProvider;
 import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.MemberRole;
@@ -139,12 +141,38 @@ class AuthServiceTest {
   }
 
   @Test
-  @DisplayName("로그아웃 시 RefreshTokenStore에서 토큰이 제거된다")
-  void logout_thenDeletesRefreshToken() {
+  @DisplayName("유효한 RefreshToken으로 로그아웃 시 저장소에서 해당 memberId의 토큰이 제거된다")
+  void logout_whenValidToken_thenDeletesRefreshToken() {
+    // given
+    given(jwtTokenProvider.parseRefresh("refresh")).willReturn(1L);
+
     // when
-    authService.logout(1L);
+    authService.logout("refresh");
 
     // then
-    verify(refreshTokenStore).delete(eq(1L));
+    verify(refreshTokenStore).delete(1L);
+  }
+
+  @Test
+  @DisplayName("RefreshToken 쿠키가 없으면 저장소를 조작하지 않고 정상 종료한다")
+  void logout_whenTokenAbsent_thenNoOp() {
+    // when
+    authService.logout(null);
+    authService.logout("  ");
+
+    // then
+    verifyNoInteractions(refreshTokenStore, jwtTokenProvider);
+  }
+
+  @Test
+  @DisplayName("만료/위조된 RefreshToken이어도 로그아웃은 멱등하게 성공한다")
+  void logout_whenTokenInvalid_thenSwallowsException() {
+    // given
+    given(jwtTokenProvider.parseRefresh("invalid"))
+        .willThrow(new JwtAuthenticationException(JwtErrorCode.EXPIRED_TOKEN));
+
+    // when & then (예외가 전파되지 않아야 한다)
+    authService.logout("invalid");
+    verify(refreshTokenStore, never()).delete(anyLong());
   }
 }

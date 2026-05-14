@@ -22,6 +22,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.util.ReflectionTestUtils;
 
 @ExtendWith(MockitoExtension.class)
@@ -41,7 +42,7 @@ class MemberServiceTest {
         OAuthProvider.KAKAO, "kakao-1", "test@example.com", "blur", "https://img");
     given(memberRepository.findByProviderAndProviderId(OAuthProvider.KAKAO, "kakao-1"))
         .willReturn(Optional.empty());
-    given(memberRepository.save(any(Member.class)))
+    given(memberRepository.saveAndFlush(any(Member.class)))
         .willAnswer(invocation -> invocation.getArgument(0));
 
     // when
@@ -53,7 +54,24 @@ class MemberServiceTest {
     assertThat(result.getNickname()).isEqualTo("blur");
     assertThat(result.getRole()).isEqualTo(MemberRole.USER);
     assertThat(result.getStatus()).isEqualTo(MemberStatus.ACTIVE);
-    verify(memberRepository).save(any(Member.class));
+    verify(memberRepository).saveAndFlush(any(Member.class));
+  }
+
+  @Test
+  @DisplayName("동시 가입으로 유니크 제약이 깨지면 MEMBER_OAUTH_CONFLICT 예외가 발생한다")
+  void findOrCreateByOAuth_whenUniqueConflict_thenThrowsConflict() {
+    // given
+    OAuthUserInfo userInfo = new OAuthUserInfo(
+        OAuthProvider.KAKAO, "kakao-1", "test@example.com", "blur", "https://img");
+    given(memberRepository.findByProviderAndProviderId(OAuthProvider.KAKAO, "kakao-1"))
+        .willReturn(Optional.empty());
+    given(memberRepository.saveAndFlush(any(Member.class)))
+        .willThrow(new DataIntegrityViolationException("uk_member_provider"));
+
+    // when & then
+    assertThatThrownBy(() -> memberService.findOrCreateByOAuth(userInfo))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", MemberErrorCode.MEMBER_OAUTH_CONFLICT.getCode());
   }
 
   @Test
@@ -73,7 +91,7 @@ class MemberServiceTest {
     // then
     assertThat(result.getNickname()).isEqualTo("new-nick");
     assertThat(result.getProfileImageUrl()).isEqualTo("new-img");
-    verify(memberRepository, never()).save(any(Member.class));
+    verify(memberRepository, never()).saveAndFlush(any(Member.class));
   }
 
   @Test
