@@ -25,6 +25,7 @@ public class AuthController {
   private final AuthService authService;
   private final RefreshTokenCookieFactory cookieFactory;
 
+  /** 카카오 OAuth 인가 코드로 로그인하고 토큰 쌍을 발급한다. */
   @PostMapping("/oauth/kakao")
   public ResponseEntity<DataResponse<AuthTokenResponse>> kakaoLogin(
       @Valid @RequestBody KakaoLoginRequest request
@@ -33,6 +34,7 @@ public class AuthController {
     return tokenResponse(tokens);
   }
 
+  /** 쿠키의 RefreshToken으로 새 토큰 쌍을 회전 발급한다. */
   @PostMapping("/token/refresh")
   public ResponseEntity<DataResponse<AuthTokenResponse>> refresh(
       @CookieValue(name = RefreshTokenCookieFactory.COOKIE_NAME, required = false)
@@ -42,6 +44,7 @@ public class AuthController {
     return tokenResponse(tokens);
   }
 
+  /** RT 쿠키 기반 로그아웃(멱등). 부재·만료·위조 RT여도 204를 반환하고 쿠키를 만료시킨다. */
   @PostMapping("/logout")
   public ResponseEntity<Void> logout(
       @CookieValue(name = RefreshTokenCookieFactory.COOKIE_NAME, required = false)

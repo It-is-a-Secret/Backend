@@ -26,6 +26,15 @@ public class AuthService {
   private final JwtTokenProvider jwtTokenProvider;
   private final RefreshTokenStore refreshTokenStore;
 
+  /**
+   * 카카오 OAuth 인가 코드로 로그인하고 새 토큰 쌍을 발급한다.
+   *
+   * <p>인가 코드 → 공급자 사용자 정보 조회 → 회원 조회/생성 → 토큰 발급 순으로
+   * 진행하며, 발급된 RefreshToken은 Redis에 저장된다.
+   *
+   * @param authorizationCode 카카오 인가 화면에서 발급된 1회용 코드
+   * @return 새로 발급된 AccessToken·RefreshToken 쌍
+   */
   @Transactional
   public TokenPair loginWithKakao(String authorizationCode) {
     OAuthClient client = oAuthClientResolver.resolve(OAuthProvider.KAKAO);
@@ -34,6 +43,17 @@ public class AuthService {
     return issueTokens(member);
   }
 
+  /**
+   * 쿠키의 RefreshToken으로 토큰 쌍을 회전(rotate) 발급한다.
+   *
+   * <p>저장된 RT와 일치 여부를 검사하며, 불일치 시 보안상 저장된 RT를 즉시 삭제하고
+   * 예외를 던진다(탈취 RT 무력화 정책).
+   *
+   * @param refreshToken HttpOnly 쿠키의 RT 값
+   * @return 새로 발급된 토큰 쌍
+   * @throws BaseException RT가 부재·미저장·불일치하거나 회원이 비활성 상태인 경우
+   * @throws com.blursome.blursome.global.exception.JwtAuthenticationException RT 파싱 실패 시
+   */
   @Transactional
   public TokenPair refresh(String refreshToken) {
     if (refreshToken == null || refreshToken.isBlank()) {
@@ -50,6 +70,14 @@ public class AuthService {
     return issueTokens(member);
   }
 
+  /**
+   * 사용자를 로그아웃 처리한다(멱등).
+   *
+   * <p>RT가 부재·만료·위조 어느 경우에도 예외 없이 정상 종료한다.
+   * 유효한 RT일 때만 Redis에서 해당 회원의 RT 키를 삭제한다.
+   *
+   * @param refreshToken HttpOnly 쿠키의 RT 값 (null/blank/만료/위조 모두 허용)
+   */
   @Transactional
   public void logout(String refreshToken) {
     if (refreshToken == null || refreshToken.isBlank()) {
