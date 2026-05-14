@@ -27,17 +27,20 @@ public class AuthService {
   private final RefreshTokenStore refreshTokenStore;
 
   /**
-   * 카카오 OAuth 인가 코드로 로그인하고 새 토큰 쌍을 발급한다.
+   * OAuth 인가 코드로 로그인하고 새 토큰 쌍을 발급한다.
    *
    * <p>인가 코드 → 공급자 사용자 정보 조회 → 회원 조회/생성 → 토큰 발급 순으로
-   * 진행하며, 발급된 RefreshToken은 Redis에 저장된다.
+   * 진행하며, 발급된 RefreshToken은 Redis에 저장된다. 신규 OAuth 공급자 추가 시
+   * {@link OAuthClient} 구현체와 {@link OAuthProvider} enum 값만 추가하면 본
+   * 메서드는 수정 불필요하다.
    *
-   * @param authorizationCode 카카오 인가 화면에서 발급된 1회용 코드
+   * @param provider OAuth 공급자
+   * @param authorizationCode 공급자 인가 화면에서 발급된 1회용 코드
    * @return 새로 발급된 AccessToken·RefreshToken 쌍
    */
   @Transactional
-  public TokenPair loginWithKakao(String authorizationCode) {
-    OAuthClient client = oAuthClientResolver.resolve(OAuthProvider.KAKAO);
+  public TokenPair login(OAuthProvider provider, String authorizationCode) {
+    OAuthClient client = oAuthClientResolver.resolve(provider);
     OAuthUserInfo userInfo = client.fetchUserInfo(authorizationCode);
     Member member = memberService.findOrCreateByOAuth(userInfo);
     return issueTokens(member);
@@ -56,6 +59,20 @@ public class AuthService {
    */
   @Transactional
   public TokenPair refresh(String refreshToken) {
+    Long memberId = verifyRefreshToken(refreshToken);
+    Member member = memberService.findActiveMember(memberId);
+    return issueTokens(member);
+  }
+
+  /**
+   * RefreshToken을 검증하고 회원 ID를 반환한다.
+   *
+   * <p>저장소의 RT와 일치하지 않으면 탈취 의심으로 보아 저장소를 즉시 비운다(이후
+   * 정상 RT 보유자조차 재발급이 막혀 강제 재로그인을 유도).
+   *
+   * @throws BaseException RT가 부재·미저장·불일치인 경우
+   */
+  private Long verifyRefreshToken(String refreshToken) {
     if (refreshToken == null || refreshToken.isBlank()) {
       throw BaseException.from(AuthErrorCode.REFRESH_TOKEN_NOT_FOUND);
     }
@@ -66,8 +83,7 @@ public class AuthService {
       refreshTokenStore.delete(memberId);
       throw BaseException.from(AuthErrorCode.REFRESH_TOKEN_MISMATCH);
     }
-    Member member = memberService.findActiveMember(memberId);
-    return issueTokens(member);
+    return memberId;
   }
 
   /**

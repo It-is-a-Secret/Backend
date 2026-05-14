@@ -6,6 +6,7 @@ import com.blursome.blursome.auth.dto.request.KakaoLoginRequest;
 import com.blursome.blursome.auth.dto.response.AuthTokenResponse;
 import com.blursome.blursome.auth.service.AuthService;
 import com.blursome.blursome.global.response.DataResponse;
+import com.blursome.blursome.member.domain.OAuthProvider;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
@@ -30,7 +31,7 @@ public class AuthController {
   public ResponseEntity<DataResponse<AuthTokenResponse>> kakaoLogin(
       @Valid @RequestBody KakaoLoginRequest request
   ) {
-    TokenPair tokens = authService.loginWithKakao(request.code());
+    TokenPair tokens = authService.login(OAuthProvider.KAKAO, request.code());
     return tokenResponse(tokens);
   }
 

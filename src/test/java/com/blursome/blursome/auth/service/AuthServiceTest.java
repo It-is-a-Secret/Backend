@@ -57,8 +57,8 @@ class AuthServiceTest {
   }
 
   @Test
-  @DisplayName("카카오 로그인 시 OAuth 사용자 정보로 회원을 조회/생성하고 토큰을 발급한다")
-  void loginWithKakao_whenValidCode_thenIssuesTokens() {
+  @DisplayName("OAuth 로그인 시 공급자별 클라이언트로 사용자 정보를 조회/생성하고 토큰을 발급한다")
+  void login_whenValidCode_thenIssuesTokens() {
     // given
     OAuthUserInfo info = new OAuthUserInfo(
         OAuthProvider.KAKAO, "kakao-1", "e@e.com", "blur", "img");
@@ -72,7 +72,7 @@ class AuthServiceTest {
     given(jwtTokenProvider.getRefreshTtlSeconds()).willReturn(1209600L);
 
     // when
-    TokenPair result = authService.loginWithKakao("code-abc");
+    TokenPair result = authService.login(OAuthProvider.KAKAO, "code-abc");
 
     // then
     assertThat(result.accessToken()).isEqualTo("access");

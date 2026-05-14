@@ -1,6 +1,7 @@
 package com.blursome.blursome.auth.controller;
 
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -18,6 +19,7 @@ import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.global.security.JwtAuthenticationEntryPoint;
 import com.blursome.blursome.global.security.JwtAuthenticationFilter;
 import com.blursome.blursome.global.security.JwtTokenProvider;
+import com.blursome.blursome.member.domain.OAuthProvider;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -61,7 +63,7 @@ class AuthControllerTest {
   @Test
   @DisplayName("카카오 로그인 성공 시 200과 RefreshToken 쿠키를 반환한다")
   void handleKakaoLoginSuccess() throws Exception {
-    given(authService.loginWithKakao(anyString()))
+    given(authService.login(eq(OAuthProvider.KAKAO), anyString()))
         .willReturn(new TokenPair("access", "refresh", 1800L, 1209600L));
 
     mockMvc.perform(post("/api/auth/oauth/kakao")
