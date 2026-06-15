@@ -51,7 +51,7 @@ class AuthServiceTest {
 
   private Member sampleMember() {
     Member member = Member.createOAuthMember(
-        OAuthProvider.KAKAO, "kakao-1", "e@e.com", "blur", null);
+        OAuthProvider.KAKAO, "kakao-1", "blur", "e@e.com", null);
     ReflectionTestUtils.setField(member, "id", 1L);
     return member;
   }

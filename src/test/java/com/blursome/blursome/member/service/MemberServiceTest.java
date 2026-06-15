@@ -8,10 +8,11 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 import com.blursome.blursome.global.exception.BaseException;
+import com.blursome.blursome.member.domain.ActivityStatus;
 import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.MemberRole;
-import com.blursome.blursome.member.domain.MemberStatus;
 import com.blursome.blursome.member.domain.OAuthProvider;
+import com.blursome.blursome.member.domain.RegistrationStatus;
 import com.blursome.blursome.member.dto.OAuthUserInfo;
 import com.blursome.blursome.member.exception.MemberErrorCode;
 import com.blursome.blursome.member.repository.MemberRepository;
@@ -51,9 +52,10 @@ class MemberServiceTest {
     // then
     assertThat(result.getProvider()).isEqualTo(OAuthProvider.KAKAO);
     assertThat(result.getProviderId()).isEqualTo("kakao-1");
-    assertThat(result.getNickname()).isEqualTo("blur");
+    assertThat(result.getName()).isEqualTo("blur");
     assertThat(result.getRole()).isEqualTo(MemberRole.USER);
-    assertThat(result.getStatus()).isEqualTo(MemberStatus.ACTIVE);
+    assertThat(result.getActivityStatus()).isEqualTo(ActivityStatus.ACTIVE);
+    assertThat(result.getRegistrationStatus()).isEqualTo(RegistrationStatus.UNVERIFIED);
     verify(memberRepository).saveAndFlush(any(Member.class));
   }
 
@@ -79,17 +81,17 @@ class MemberServiceTest {
   void findOrCreateByOAuth_whenMemberExists_thenUpdatesProfile() {
     // given
     Member existing = Member.createOAuthMember(
-        OAuthProvider.KAKAO, "kakao-1", "old@example.com", "old-nick", "old-img");
+        OAuthProvider.KAKAO, "kakao-1", "old-name", "old@example.com", "old-img");
     given(memberRepository.findByProviderAndProviderId(OAuthProvider.KAKAO, "kakao-1"))
         .willReturn(Optional.of(existing));
     OAuthUserInfo userInfo = new OAuthUserInfo(
-        OAuthProvider.KAKAO, "kakao-1", "old@example.com", "new-nick", "new-img");
+        OAuthProvider.KAKAO, "kakao-1", "old@example.com", "new-name", "new-img");
 
     // when
     Member result = memberService.findOrCreateByOAuth(userInfo);
 
     // then
-    assertThat(result.getNickname()).isEqualTo("new-nick");
+    assertThat(result.getName()).isEqualTo("new-name");
     assertThat(result.getProfileImageUrl()).isEqualTo("new-img");
     verify(memberRepository, never()).saveAndFlush(any(Member.class));
   }
@@ -111,8 +113,8 @@ class MemberServiceTest {
   void findActiveMember_whenMemberInactive_thenThrows() {
     // given
     Member inactive = Member.createOAuthMember(
-        OAuthProvider.KAKAO, "kakao-1", "e@e.com", "nick", null);
-    ReflectionTestUtils.setField(inactive, "status", MemberStatus.INACTIVE);
+        OAuthProvider.KAKAO, "kakao-1", "nick", "e@e.com", null);
+    ReflectionTestUtils.setField(inactive, "activityStatus", ActivityStatus.WITHDRAWN);
     given(memberRepository.findById(1L)).willReturn(Optional.of(inactive));
 
     // when & then
