@@ -40,7 +40,7 @@ public class KakaoOAuthClient implements OAuthClient {
         OAuthProvider.KAKAO,
         String.valueOf(userInfo.id()),
         userInfo.email(),
-        resolveNickname(userInfo),
+        resolveName(userInfo),
         userInfo.profileImageUrl()
     );
   }
@@ -89,7 +89,7 @@ public class KakaoOAuthClient implements OAuthClient {
     }
   }
 
-  private String resolveNickname(KakaoUserInfoResponse userInfo) {
+  private String resolveName(KakaoUserInfoResponse userInfo) {
     String nickname = userInfo.nickname();
     if (nickname != null && !nickname.isBlank()) {
       return nickname;

@@ -21,7 +21,10 @@ public class MemberService {
   public Member findOrCreateByOAuth(OAuthUserInfo userInfo) {
     return memberRepository.findByProviderAndProviderId(userInfo.provider(), userInfo.providerId())
         .map(existing -> {
-          existing.updateProfileFromOAuth(userInfo.nickname(), userInfo.profileImageUrl());
+          if (existing.isWithdrawn()) {
+            existing.reactivate();
+          }
+          existing.updateProfileFromOAuth(userInfo.name(), userInfo.profileImageUrl());
           return existing;
         })
         .orElseGet(() -> createMember(userInfo));
@@ -35,8 +38,8 @@ public class MemberService {
           Member.createOAuthMember(
               userInfo.provider(),
               userInfo.providerId(),
+              userInfo.name(),
               userInfo.email(),
-              userInfo.nickname(),
               userInfo.profileImageUrl()
           )
       );
