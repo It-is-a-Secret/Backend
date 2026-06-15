@@ -67,9 +67,17 @@ BlurSome의 채팅(Chat) 도메인 전체 로직을 정의합니다. WebSocket +
 | `roomStatus`            | `ChatRoomStatus`, `nullable=false`, len 20         | 방 활성/종료 상태                                              |
 | `progressStatus`        | `ChatRoomProgressStatus`, `nullable=false`, len 30 | 사진 공개 단계                                                |
 | `lastMessageId`         | `Long`, nullable                                   | **미리보기 비정규화** — 마지막 메시지 id. FK 아님(무결성 미보장), 메시지 저장 시 갱신 |
+| `activePairKey`         | `String`, nullable, **unique** `uk_chat_room_active_pair`, len 40 | 두 참여 회원 id를 정렬한 키(`min-max`). ACTIVE 동안만 값 보유, 종료 시 `null`. 유니크 제약으로 **회원 쌍당 ACTIVE 방 1개**를 DB 레벨에서 보장(동시 개설 방지). 유니크 인덱스는 다중 `null`을 허용하므로 같은 페어의 CLOSED 방은 여러 개 가능 |
 | `createdAt`/`updatedAt` | `BaseEntity`                                       | 감사 필드                                                   |
 
-- 팩토리: `ChatRoom.createOnMatched()` → `ACTIVE` / `MATCHED` / `lastMessageId=null`
+- 팩토리: `ChatRoom.createOnMatched(memberAId, memberBId)` → `ACTIVE` / `MATCHED` / `lastMessageId=null` / `activePairKey=min-max`
+- `close()`는 `roomStatus=CLOSED`로 바꾸며 `activePairKey=null`로 비워 같은 페어의 새 방 개설을 허용한다.
+
+> ⚠️ **스키마/마이그레이션 주의 — 유니크 제약 누락 금지**
+> `uk_chat_room_active_pair (active_pair_key)` 유니크 제약은 동시 개설 시 ACTIVE 방 중복 생성을 막는 **유일한 최종 방어선**이다(서비스 계층 선조회만으로는 경합을 막지 못함).
+> - 운영(`prod`)은 `spring.jpa.hibernate.ddl-auto: validate`라 **Hibernate가 제약을 생성하지 않는다**(컬럼/테이블 존재만 검증). 따라서 운영 스키마에는 이 유니크 제약을 **반드시 별도로 반영**해야 한다.
+> - 로컬(`local`)은 `ddl-auto: update`지만 기존 테이블에 유니크 제약을 사후 추가해주지 않을 수 있으므로, 검증 시 실제 인덱스 생성 여부를 확인한다.
+> - 제약이 누락되면 동시 매칭에서 같은 페어의 ACTIVE 방이 중복 생성될 수 있고, `CHAT_409_ROOM_CREATION_CONFLICT` 방어도 무력화된다.
 
 ### ChatRoomMember (`chat_room_member`)
 
@@ -297,16 +305,21 @@ com.blursome.chat
         │
         ▼
 ChatRoomService.openRoom(a, b)        @Transactional
-    ├─ ChatRoom.createOnMatched()                 → save (ACTIVE / MATCHED)
-    ├─ ChatRoomMember.join(room, a)               → save
-    └─ ChatRoomMember.join(room, b)               → save
+    ├─ 활성 방 선조회(findActiveRoomBetween) → 있으면 그 방 반환
+    └─ 없으면 createRoom:
+        ├─ ChatRoom.createOnMatched(a, b)         → saveAndFlush (ACTIVE / MATCHED / activePairKey)
+        ├─ ChatRoomMember.join(room, a)           → save
+        └─ ChatRoomMember.join(room, b)           → save
         │
         ▼
-   roomId 반환 (양쪽에 푸시/알림은 Notification 도메인과 조율)
+   room 반환 (양쪽에 푸시/알림은 Notification 도메인과 조율)
 ```
 
-- ✅ **중복 방 생성 방지 (서비스 계층)**: 두 회원 사이에 `ACTIVE` 방이 이미 있으면 새로 만들지 않고 그 방을 반환한다.
+- ✅ **중복 방 생성 방지 (서비스 + DB 이중 방어)**: 두 회원 사이에 `ACTIVE` 방이 이미 있으면 새로 만들지 않고 그 방을 반환한다.
   과거에 나가서 `CLOSED`된 방만 있는 경우에는 **새 방을 개설**한다. → `ChatRoomService.openRoom`에서 활성 방을 먼저 조회해 분기.
+- ✅ **동시 매칭 경합**: 선조회-후생성은 원자적이지 않아 동시 요청 시 중복이 생길 수 있으므로, `chat_room.active_pair_key` **유니크 제약**으로 최종 방어한다.
+  경합에서 진 쪽은 `saveAndFlush`에서 제약 위반(`DataIntegrityViolationException`) → `CHAT_409_ROOM_CREATION_CONFLICT`로 변환되며, 재시도 시 선조회가 이미 만들어진 방을 반환한다.
+- ✅ **조회 시 활성 방만 노출**: 1:1 방에서 한쪽이 나가면 방은 `CLOSED`가 되지만 상대의 `leftAt`은 `null`로 남는다. 따라서 목록/단건/이력 조회의 참여자 검증은 `leftAt IS NULL` + `roomStatus = ACTIVE`를 함께 확인한다.
 
 ### 7-2. 연결 & 구독
 
@@ -413,7 +426,10 @@ ChatRoomService.openRoom(a, b)        @Transactional
 | `CHAT_403_NOT_PARTICIPANT`         | 참여자 아님        | 403  |
 | `CHAT_409_ROOM_CLOSED`             | 종료된 방에 송신     | 409  |
 | `CHAT_400_INVALID_MESSAGE`         | 빈 본문/타입 오류    | 400  |
+| `CHAT_400_CANNOT_OPEN_SELF_ROOM`   | 동일 회원으로 방 개설 시도 | 400  |
+| `CHAT_400_INVALID_ROOM_PARTICIPANTS` | 참여자 정보 오류(null 등) | 400  |
 | `CHAT_409_PROGRESS_ALREADY_AGREED` | 이미 동의한 단계 재동의 | 409  |
+| `CHAT_409_ROOM_CREATION_CONFLICT`  | 동시 매칭으로 방 개설 경합 | 409  |
 
 ---
 
