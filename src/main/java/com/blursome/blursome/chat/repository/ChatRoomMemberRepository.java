@@ -33,6 +33,13 @@ public interface ChatRoomMemberRepository extends JpaRepository<ChatRoomMember, 
       @Param("memberId") Long memberId);
 
   /**
+   * 방의 모든 참여 행을 조회한다(1:1이므로 보통 2행). 단계 동의 시 양쪽 멤버의 동의 단계를 함께 비교해야 하므로,
+   * 본인 멤버십과 상대 멤버십을 한 번에 가져오는 데 쓴다(설계 §7-5).
+   */
+  @Query("select crm from ChatRoomMember crm where crm.chatRoom.id = :roomId")
+  List<ChatRoomMember> findAllByRoomId(@Param("roomId") Long roomId);
+
+  /**
    * 두 회원이 모두 참여 중인 {@code ACTIVE} 방을 조회한다(중복 방 생성 방지용, 설계 §7-1).
    * 같은 방에 두 회원이 모두 속해 있고 방이 활성일 때만 매칭된다.
    */
