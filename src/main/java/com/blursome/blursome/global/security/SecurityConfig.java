@@ -31,9 +31,12 @@ public class SecurityConfig {
             handler.authenticationEntryPoint(jwtAuthenticationEntryPoint))
         .authorizeHttpRequests(auth -> auth
             .requestMatchers(HttpMethod.POST,
-                "/api/auth/oauth/kakao",
                 "/api/auth/token/refresh",
                 "/api/auth/logout").permitAll()
+            // 카카오 로그인 진입·콜백(서버 주도 리다이렉트 플로우)
+            .requestMatchers(HttpMethod.GET,
+                "/api/auth/oauth/kakao/authorize",
+                "/api/auth/oauth/kakao/callback").permitAll()
             .requestMatchers("/error").permitAll()
             .requestMatchers(
                 "/swagger-ui/**",
