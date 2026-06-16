@@ -1,0 +1,8 @@
+package com.blursome.blursome.chat.repository;
+
+import com.blursome.blursome.chat.domain.ChatRoom;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface ChatRoomRepository extends JpaRepository<ChatRoom, Long> {
+
+}
