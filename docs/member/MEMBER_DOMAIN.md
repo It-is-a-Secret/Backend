@@ -52,7 +52,7 @@ BlurSome의 회원(Member) 도메인을 정의합니다. 소셜 로그인으로 
 | `provider` | `OAuthProvider`, `nullable=false`, len 20 | 소셜 로그인 제공자 |
 | `providerId` | `String`, `nullable=false`, len 100 | 제공자 고유 ID. `(provider, providerId)` 유니크 |
 | `name` | `String`, `nullable=false`, len 50 | **소셜 제공 이름** (표시용 닉네임과 별개) |
-| `email` | `String`, `nullable=false`, len 100 | 소셜 제공 이메일 |
+| `email` | `String`, nullable, len 100 | 소셜 제공 이메일. 이메일 동의 미수신 시 `null`(식별은 `(provider, providerId)`로 함) |
 | `profileImageUrl` | `String`, nullable, len 500 | 소셜 제공 프로필 사진 |
 | `nickName` | `String`, nullable, len 30 | **온보딩에서 입력**하는 닉네임. 가입 완료 전 `null` |
 | `schoolEmail` | `String`, nullable, len 100 | 학교 인증 이메일. 인증 완료 시 세팅. **유니크** |

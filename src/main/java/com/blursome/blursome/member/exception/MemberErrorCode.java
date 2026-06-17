@@ -27,7 +27,15 @@ public enum MemberErrorCode implements ErrorCode {
   MEMBER_ALREADY_WITHDRAWN(HttpStatus.CONFLICT,
       "이미 탈퇴한 회원입니다.", "MEMBER_409_ALREADY_WITHDRAWN"),
   MEMBER_ALREADY_ACTIVE(HttpStatus.CONFLICT,
-      "이미 활성 상태인 회원입니다.", "MEMBER_409_ALREADY_ACTIVE");
+      "이미 활성 상태인 회원입니다.", "MEMBER_409_ALREADY_ACTIVE"),
+  MEMBER_INVALID_SCHOOL_EMAIL_DOMAIN(HttpStatus.BAD_REQUEST,
+      "안양대학교 학교 이메일(@gs.anyang.ac.kr)만 인증할 수 있습니다.",
+      "MEMBER_400_INVALID_SCHOOL_EMAIL_DOMAIN"),
+  MEMBER_VERIFICATION_CODE_NOT_FOUND(HttpStatus.NOT_FOUND,
+      "발송된 인증 코드가 없거나 만료되었습니다. 코드를 다시 발송해주세요.",
+      "MEMBER_404_VERIFICATION_CODE_NOT_FOUND"),
+  MEMBER_VERIFICATION_CODE_MISMATCH(HttpStatus.BAD_REQUEST,
+      "인증 코드가 일치하지 않습니다.", "MEMBER_400_VERIFICATION_CODE_MISMATCH");
 
   private final HttpStatus httpStatus;
   private final String message;

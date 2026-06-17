@@ -4,16 +4,19 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.cookie;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.blursome.blursome.auth.cookie.CookieProperties;
 import com.blursome.blursome.auth.cookie.RefreshTokenCookieFactory;
 import com.blursome.blursome.auth.dto.TokenPair;
 import com.blursome.blursome.auth.exception.AuthErrorCode;
+import com.blursome.blursome.auth.oauth.kakao.KakaoOAuthProperties;
 import com.blursome.blursome.auth.service.AuthService;
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.global.security.JwtAuthenticationEntryPoint;
@@ -30,7 +33,6 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
-import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -61,14 +63,24 @@ class AuthControllerTest {
   private JwtTokenProvider jwtTokenProvider;
 
   @Test
-  @DisplayName("카카오 로그인 성공 시 200과 RefreshToken 쿠키를 반환한다")
-  void handleKakaoLoginSuccess() throws Exception {
+  @DisplayName("카카오 로그인 시작 시 카카오 인가 화면으로 302 리다이렉트한다")
+  void handleKakaoAuthorize() throws Exception {
+    mockMvc.perform(get("/api/auth/oauth/kakao/authorize"))
+        .andExpect(status().isFound())
+        .andExpect(redirectedUrl(
+            "https://kauth.kakao.com/oauth/authorize"
+                + "?response_type=code"
+                + "&client_id=test-client-id"
+                + "&redirect_uri=http://localhost:8080/api/auth/oauth/kakao/callback"));
+  }
+
+  @Test
+  @DisplayName("카카오 콜백 시 로그인 후 AccessToken은 바디로, RefreshToken은 쿠키로 반환한다")
+  void handleKakaoCallback() throws Exception {
     given(authService.login(eq(OAuthProvider.KAKAO), anyString()))
         .willReturn(new TokenPair("access", "refresh", 1800L, 1209600L));
 
-    mockMvc.perform(post("/api/auth/oauth/kakao")
-            .contentType(MediaType.APPLICATION_JSON)
-            .content("{\"code\":\"abc\"}"))
+    mockMvc.perform(get("/api/auth/oauth/kakao/callback").param("code", "abc"))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.data.accessToken").value("access"))
         .andExpect(jsonPath("$.data.tokenType").value("Bearer"))
@@ -77,16 +89,6 @@ class AuthControllerTest {
         .andExpect(cookie().httpOnly("refreshToken", true))
         .andExpect(cookie().path("refreshToken", "/api/auth"))
         .andExpect(cookie().maxAge("refreshToken", 1209600));
-  }
-
-  @Test
-  @DisplayName("code 누락 시 400과 METHOD_ARGUMENT_NOT_VALID를 반환한다")
-  void handleKakaoLoginInvalidRequest() throws Exception {
-    mockMvc.perform(post("/api/auth/oauth/kakao")
-            .contentType(MediaType.APPLICATION_JSON)
-            .content("{\"code\":\"\"}"))
-        .andExpect(status().isBadRequest())
-        .andExpect(jsonPath("$.code").value("CLIENT_ERROR_400_METHOD_ARGUMENT_NOT_VALID"));
   }
 
   @Test
@@ -146,6 +148,17 @@ class AuthControllerTest {
     @Bean
     RefreshTokenCookieFactory refreshTokenCookieFactory(CookieProperties props) {
       return new RefreshTokenCookieFactory(props);
+    }
+
+    @Bean
+    KakaoOAuthProperties kakaoOAuthProperties() {
+      return new KakaoOAuthProperties(
+          "test-client-id",
+          "test-client-secret",
+          "http://localhost:8080/api/auth/oauth/kakao/callback",
+          "https://kauth.kakao.com/oauth/authorize",
+          "https://kauth.kakao.com/oauth/token",
+          "https://kapi.kakao.com/v2/user/me");
     }
   }
 }

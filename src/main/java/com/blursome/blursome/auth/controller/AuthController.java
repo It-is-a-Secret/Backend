@@ -2,21 +2,26 @@ package com.blursome.blursome.auth.controller;
 
 import com.blursome.blursome.auth.cookie.RefreshTokenCookieFactory;
 import com.blursome.blursome.auth.dto.TokenPair;
-import com.blursome.blursome.auth.dto.request.KakaoLoginRequest;
 import com.blursome.blursome.auth.dto.response.AuthTokenResponse;
+import com.blursome.blursome.auth.oauth.kakao.KakaoOAuthProperties;
 import com.blursome.blursome.auth.service.AuthService;
 import com.blursome.blursome.global.response.DataResponse;
 import com.blursome.blursome.member.domain.OAuthProvider;
-import jakarta.validation.Valid;
+import io.swagger.v3.oas.annotations.Operation;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CookieValue;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.util.UriComponentsBuilder;
 
 @RestController
 @RequestMapping("/api/auth")
@@ -25,13 +30,36 @@ public class AuthController {
 
   private final AuthService authService;
   private final RefreshTokenCookieFactory cookieFactory;
+  private final KakaoOAuthProperties kakaoProperties;
 
-  /** 카카오 OAuth 인가 코드로 로그인하고 토큰 쌍을 발급한다. */
-  @PostMapping("/oauth/kakao")
-  public ResponseEntity<DataResponse<AuthTokenResponse>> kakaoLogin(
-      @Valid @RequestBody KakaoLoginRequest request
-  ) {
-    TokenPair tokens = authService.login(OAuthProvider.KAKAO, request.code());
+  /**
+   * 카카오 인가 화면으로 리다이렉트한다.
+   *
+   * <p>클라이언트는 이 엔드포인트로 진입만 하면 되고, 백엔드가 {@code client_id}·{@code redirect_uri}로
+   * 인가 URL을 구성해 302로 보낸다. 카카오 로그인·동의 후 {@code redirect_uri}(콜백)로 인가 코드가 전달된다.
+   */
+  @Operation(summary = "카카오 로그인 시작", description = "카카오 인가 화면으로 302 리다이렉트한다.")
+  @GetMapping("/oauth/kakao/authorize")
+  public ResponseEntity<Void> kakaoAuthorize() {
+    String authorizeUrl = UriComponentsBuilder.fromUriString(kakaoProperties.authorizeUri())
+        .queryParam("response_type", "code")
+        .queryParam("client_id", kakaoProperties.clientId())
+        .queryParam("redirect_uri", kakaoProperties.redirectUri())
+        .encode(StandardCharsets.UTF_8)
+        .toUriString();
+    return ResponseEntity.status(HttpStatus.FOUND).location(URI.create(authorizeUrl)).build();
+  }
+
+  /**
+   * 카카오 콜백을 처리해 로그인하고 토큰을 응답한다.
+   *
+   * <p>인가 코드로 토큰을 발급한 뒤, AccessToken은 응답 바디로, RefreshToken은 {@code HttpOnly} 쿠키로
+   * 전달한다(재발급 응답과 동일한 형태). 콜백 응답은 팝업 등으로 호출한 클라이언트가 직접 소비한다.
+   */
+  @Operation(summary = "카카오 콜백", description = "인가 코드로 로그인 후 AccessToken(바디)·RefreshToken(쿠키)을 반환한다.")
+  @GetMapping("/oauth/kakao/callback")
+  public ResponseEntity<DataResponse<AuthTokenResponse>> kakaoCallback(@RequestParam String code) {
+    TokenPair tokens = authService.login(OAuthProvider.KAKAO, code);
     return tokenResponse(tokens);
   }
 
