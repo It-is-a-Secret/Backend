@@ -13,6 +13,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -56,5 +57,25 @@ public class ChatRoomController {
   ) {
     return ResponseEntity.ok(
         DataResponse.ok(chatRoomService.getMessageHistory(roomId, memberId, cursor, size)));
+  }
+
+  @Operation(summary = "단계 동의", description = "다음 사진 공개 단계에 동의한다. 양쪽이 모두 동의하면 방 단계가 한 칸 오른다. "
+      + "이미 마지막 단계이거나 이미 동의한 단계면 409. 참여자가 아니면 403.")
+  @PostMapping("/{roomId}/progress/agree")
+  public ResponseEntity<DataResponse<ChatRoomSummaryResponse>> agreeProgress(
+      @AuthenticationPrincipal Long memberId,
+      @PathVariable Long roomId
+  ) {
+    return ResponseEntity.ok(DataResponse.ok(chatRoomService.agreeProgress(roomId, memberId)));
+  }
+
+  @Operation(summary = "채팅방 나가기", description = "채팅방을 영구히 나간다. 1:1이므로 방이 즉시 종료된다(재입장 불가).")
+  @PostMapping("/{roomId}/leave")
+  public ResponseEntity<Void> leaveRoom(
+      @AuthenticationPrincipal Long memberId,
+      @PathVariable Long roomId
+  ) {
+    chatRoomService.leaveRoom(roomId, memberId);
+    return ResponseEntity.noContent().build();
   }
 }
