@@ -64,7 +64,8 @@ public class Member extends BaseEntity {
   @Column(nullable = false, length = 50)
   private String name;
 
-  @Column(nullable = false, length = 100)
+  // 카카오 등 소셜에서 이메일 동의를 받지 못하면 null일 수 있다(비즈앱·동의 조건). 식별은 (provider, providerId)로 한다.
+  @Column(length = 100)
   private String email;
 
   @Column(name = "profile_image_url", length = 500)
