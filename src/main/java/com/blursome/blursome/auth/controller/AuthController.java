@@ -51,25 +51,16 @@ public class AuthController {
   }
 
   /**
-   * 카카오 콜백을 처리해 로그인하고 프론트엔드로 리다이렉트한다.
+   * 카카오 콜백을 처리해 로그인하고 토큰을 응답한다.
    *
-   * <p>인가 코드로 토큰을 발급한 뒤, RefreshToken은 {@code HttpOnly} 쿠키로 심고 프론트엔드 성공 URL로
-   * 302 리다이렉트하며 AccessToken은 URL 프래그먼트({@code #accessToken=...})로 전달한다.
+   * <p>인가 코드로 토큰을 발급한 뒤, AccessToken은 응답 바디로, RefreshToken은 {@code HttpOnly} 쿠키로
+   * 전달한다(재발급 응답과 동일한 형태). 콜백 응답은 팝업 등으로 호출한 클라이언트가 직접 소비한다.
    */
-  @Operation(summary = "카카오 콜백", description = "인가 코드로 로그인 후 프론트엔드로 리다이렉트한다(RT 쿠키 + AT 프래그먼트).")
+  @Operation(summary = "카카오 콜백", description = "인가 코드로 로그인 후 AccessToken(바디)·RefreshToken(쿠키)을 반환한다.")
   @GetMapping("/oauth/kakao/callback")
-  public ResponseEntity<Void> kakaoCallback(@RequestParam String code) {
+  public ResponseEntity<DataResponse<AuthTokenResponse>> kakaoCallback(@RequestParam String code) {
     TokenPair tokens = authService.login(OAuthProvider.KAKAO, code);
-    ResponseCookie cookie = cookieFactory.create(tokens.refreshToken(), tokens.refreshTtlSeconds());
-
-    String redirectUrl = UriComponentsBuilder.fromUriString(kakaoProperties.successRedirectUri())
-        .fragment("accessToken=" + tokens.accessToken())
-        .encode(StandardCharsets.UTF_8)
-        .toUriString();
-    return ResponseEntity.status(HttpStatus.FOUND)
-        .header(HttpHeaders.SET_COOKIE, cookie.toString())
-        .location(URI.create(redirectUrl))
-        .build();
+    return tokenResponse(tokens);
   }
 
   /** 쿠키의 RefreshToken으로 새 토큰 쌍을 회전 발급한다. */

@@ -75,14 +75,16 @@ class AuthControllerTest {
   }
 
   @Test
-  @DisplayName("카카오 콜백 시 로그인 후 프론트엔드로 RT 쿠키와 AT 프래그먼트를 담아 302 리다이렉트한다")
+  @DisplayName("카카오 콜백 시 로그인 후 AccessToken은 바디로, RefreshToken은 쿠키로 반환한다")
   void handleKakaoCallback() throws Exception {
     given(authService.login(eq(OAuthProvider.KAKAO), anyString()))
         .willReturn(new TokenPair("access", "refresh", 1800L, 1209600L));
 
     mockMvc.perform(get("/api/auth/oauth/kakao/callback").param("code", "abc"))
-        .andExpect(status().isFound())
-        .andExpect(redirectedUrl("http://localhost:3000/oauth/success#accessToken=access"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.accessToken").value("access"))
+        .andExpect(jsonPath("$.data.tokenType").value("Bearer"))
+        .andExpect(jsonPath("$.data.expiresIn").value(1800))
         .andExpect(cookie().value("refreshToken", "refresh"))
         .andExpect(cookie().httpOnly("refreshToken", true))
         .andExpect(cookie().path("refreshToken", "/api/auth"))
@@ -156,8 +158,7 @@ class AuthControllerTest {
           "http://localhost:8080/api/auth/oauth/kakao/callback",
           "https://kauth.kakao.com/oauth/authorize",
           "https://kauth.kakao.com/oauth/token",
-          "https://kapi.kakao.com/v2/user/me",
-          "http://localhost:3000/oauth/success");
+          "https://kapi.kakao.com/v2/user/me");
     }
   }
 }

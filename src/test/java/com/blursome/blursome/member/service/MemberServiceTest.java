@@ -16,7 +16,9 @@ import com.blursome.blursome.member.domain.RegistrationStatus;
 import com.blursome.blursome.member.dto.OAuthUserInfo;
 import com.blursome.blursome.member.exception.MemberErrorCode;
 import com.blursome.blursome.member.repository.MemberRepository;
+import java.sql.SQLException;
 import java.util.Optional;
+import org.hibernate.exception.ConstraintViolationException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -68,12 +70,31 @@ class MemberServiceTest {
     given(memberRepository.findByProviderAndProviderId(OAuthProvider.KAKAO, "kakao-1"))
         .willReturn(Optional.empty());
     given(memberRepository.saveAndFlush(any(Member.class)))
-        .willThrow(new DataIntegrityViolationException("uk_member_provider"));
+        .willThrow(new DataIntegrityViolationException(
+            "duplicate key",
+            new ConstraintViolationException(
+                "duplicate", new SQLException("dup"), "uk_member_provider")));
 
     // when & then
     assertThatThrownBy(() -> memberService.findOrCreateByOAuth(userInfo))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", MemberErrorCode.MEMBER_OAUTH_CONFLICT.getCode());
+  }
+
+  @Test
+  @DisplayName("provider 충돌이 아닌 무결성 위반은 충돌로 변환하지 않고 그대로 전파한다")
+  void findOrCreateByOAuth_whenOtherIntegrityViolation_thenRethrows() {
+    // given
+    OAuthUserInfo userInfo = new OAuthUserInfo(
+        OAuthProvider.KAKAO, "kakao-1", "test@example.com", "blur", "https://img");
+    given(memberRepository.findByProviderAndProviderId(OAuthProvider.KAKAO, "kakao-1"))
+        .willReturn(Optional.empty());
+    given(memberRepository.saveAndFlush(any(Member.class)))
+        .willThrow(new DataIntegrityViolationException("Column 'foo' cannot be null"));
+
+    // when & then
+    assertThatThrownBy(() -> memberService.findOrCreateByOAuth(userInfo))
+        .isInstanceOf(DataIntegrityViolationException.class);
   }
 
   @Test
