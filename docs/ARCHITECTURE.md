@@ -61,7 +61,7 @@ OAuth 제공자(현재 Kakao)와의 인증·인가, JWT 발급·검증, 리프�
 com.blursome
 ├── auth/
 │   ├── controller/
-│   │   └── AuthController.java        # /api/auth/oauth/kakao, /api/auth/token/refresh, /api/auth/logout
+│   │   └── AuthController.java        # /api/auth/oauth/kakao/authorize·/callback, /api/auth/token/refresh, /api/auth/logout
 │   ├── service/
 │   │   └── AuthService.java           # Facade — OAuth 로그인, 토큰 회전, 로그아웃 조율
 │   ├── oauth/
@@ -278,17 +278,23 @@ blursome:notification:1001:unread-count
 
 | 메서드 | 경로 | 인증 | 설명 |
 |---|---|---|---|
-| POST | `/api/auth/oauth/kakao` | 공개 | 카카오 인가 코드(`code`)로 로그인. 응답 바디에 액세스 토큰, `Set-Cookie`로 리프레시 토큰 |
+| GET | `/api/auth/oauth/kakao/authorize` | 공개 | 백엔드가 인가 URL을 구성해 카카오 인가 화면으로 302 리다이렉트 |
+| GET | `/api/auth/oauth/kakao/callback` | 공개 | 카카오 인가 코드(`code`)로 로그인. 응답 바디에 액세스 토큰, `Set-Cookie`로 리프레시 토큰(재발급 응답과 동일 형태) |
 | POST | `/api/auth/token/refresh` | 공개 (쿠키 기반) | 쿠키의 리프레시 토큰을 검증·회전, 새 토큰 쌍 반환 |
 | POST | `/api/auth/logout` | 필요 (`Bearer`) | Redis 리프레시 토큰 삭제 + 쿠키 만료(`max-age=0`) |
+
+> 서버 주도 리다이렉트 플로우: 클라이언트는 `authorize`로 진입만 하고, 카카오는 `redirect_uri`(= 백엔드 `callback`)로 코드를 돌려준다. 콜백이 토큰을 **JSON 바디(AT)** + **쿠키(RT)** 로 반환하므로, 클라이언트(팝업 등)는 콜백 응답을 직접 소비한다. 액세스 토큰은 URL에 싣지 않는다.
 
 ### 카카오 로그인 시퀀스
 
 ```
-[Client] ── POST /api/auth/oauth/kakao { code } ──▶ AuthController
+[Client] ── GET /api/auth/oauth/kakao/authorize ──▶ AuthController ── 302 ──▶ [카카오 인가 화면]
+                                                                                    │ 로그인·동의
+                                                                                    ▼
+[카카오] ── 302 redirect_uri?code=... ──▶ GET /api/auth/oauth/kakao/callback ──▶ AuthController
                                                        │
                                                        ▼
-                                                   AuthService.loginWithKakao
+                                                   AuthService.login(KAKAO, code)
                                                        │
                             ┌──────────────────────────┼──────────────────────────────┐
                             ▼                          ▼                              ▼
