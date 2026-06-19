@@ -1,6 +1,7 @@
-name: 배포 (main)
+name: CI / 배포
 
-# main 브랜치 병합 시 자동 배포(CD), PR 시 검증(CI)만 수행한다.
+# 검증(CI): develop·main 의 push·PR 공통 — 테스트 + 컨테이너 검증
+# 배포(CD): main 푸시(병합)에서만 — arm64 빌드 → GHCR → EC2
 # 셋업 가이드: docs/architecture/GITHUB_DEPLOYMENT.md
 # 설계:       docs/architecture/AWS_DEPLOYMENT.md §6.6
 #
@@ -15,9 +16,9 @@ name: 배포 (main)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop ]
 
 env:
   IMAGE: ghcr.io/it-is-a-secret/blursome

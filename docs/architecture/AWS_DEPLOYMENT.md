@@ -335,8 +335,9 @@ prod는 기본 `ddl-auto: validate`(`application-prod.yml`)라 앱이 스키마�
 `.github/workflows/dev.yml`로 자동화한다. **`main` 브랜치 병합 시 자동 배포**된다. 상세 셋업은 [`GITHUB_DEPLOYMENT.md`](GITHUB_DEPLOYMENT.md) 참고.
 
 ```
-PR → main        : test (Gradle 테스트)만 수행
-push → main       : test → arm64 이미지 빌드 → GHCR push → EC2 SSH 배포
+PR → develop/main : test(Gradle) + container-check(compose 검증·이미지 빌드·ping 스모크)
+push → develop     : test (통합 검증)
+push → main        : test → arm64 이미지 빌드 → GHCR push → EC2 SSH 배포
 ```
 
 배포 단계는 EC2에 SSH로 접속해 `git pull` → `docker compose pull` → `docker compose up -d`를 실행한다. **서버에서 Gradle 빌드를 하지 않으므로** t4g.small 메모리 부담이 없다.

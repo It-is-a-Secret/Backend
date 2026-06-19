@@ -11,19 +11,25 @@
 `main` 브랜치에 코드가 병합되면 GitHub Actions가 **이미지 빌드 → GHCR push → EC2 SSH 배포**를 자동 수행한다. EC2에서는 Gradle 빌드를 하지 않고 **이미지 pull**만 하므로 t4g.small(2GB) 메모리 부담이 없다.
 
 ```
-  PR → main        ┌─────────────────────────────────────────────────┐
-  ──────────────▶ │ test (Gradle)  +  container-check                 │  ← 검증만, 배포 안 함
-                   │   container-check: compose 검증 → 이미지 빌드        │
-                   │                    → mysql+redis+app 기동 → ping    │
-                   └─────────────────────────────────────────────────┘
+  PR → develop/main  ┌─────────────────────────────────────────────────┐
+  ────────────────▶ │ test (Gradle)  +  container-check                 │  ← 검증만, 배포 안 함
+                     │   container-check: compose 검증 → 이미지 빌드       │
+                     │                    → mysql+redis+app 기동 → ping   │
+                     └─────────────────────────────────────────────────┘
 
-  push → main      ┌──────────┐   ┌────────────────────┐   ┌──────────────────────────┐
-  ──────────────▶ │  test     │──▶│ arm64 빌드 → GHCR push │──▶│ EC2 SSH: pull → up -d (:sha) │
-   (병합 완료)      └──────────┘   └────────────────────┘   └──────────────────────────┘
-                                            │                            │
-                                  :latest(포인터) + :<sha>       IMAGE_TAG=<sha>로 고정 배포
-                                                                git pull + compose pull/up + prune
+  push → develop     ┌──────────┐
+  ────────────────▶ │  test     │                                          ← 통합 검증만, 배포 안 함
+                     └──────────┘
+
+  push → main        ┌──────────┐   ┌────────────────────┐   ┌──────────────────────────┐
+  ────────────────▶ │  test     │──▶│ arm64 빌드 → GHCR push │──▶│ EC2 SSH: pull → up -d (:sha) │
+   (병합 완료)        └──────────┘   └────────────────────┘   └──────────────────────────┘
+                                              │                            │
+                                    :latest(포인터) + :<sha>       IMAGE_TAG=<sha>로 고정 배포
+                                                                  git pull + compose pull/up + prune
 ```
+
+> **검증은 develop·main 공통, 배포는 main 한정**이다. develop 통합 단계에서 미리 테스트·컨테이너 검증을 돌려 main 병합 전에 문제를 거른다.
 
 > 배포는 **`:latest`가 아니라 해당 커밋의 `:<sha>` 이미지로 고정**해 내려가며, `concurrency`로 동시 배포를 직렬화한다(아래 §6). `:latest`는 수동/롤백용 포인터일 뿐이다.
 
@@ -157,12 +163,12 @@ cat blursome-key.pem
 
 `dev.yml`은 세 잡(job)으로 구성된다.
 
-### job 1: `test` (PR·push 공통)
+### job 1: `test` (develop·main 의 push·PR 공통)
 1. 저장소 체크아웃
 2. JDK 21(temurin) 설정 + Gradle 캐시
 3. `./gradlew test` 실행 — 실패 시 배포 잡이 실행되지 않는다
 
-### job 2: `container-check` (PR 에서만)
+### job 2: `container-check` (develop·main 대상 PR 에서만)
 Dockerfile/Compose 오류를 **main 병합 전에** 잡는다.
 1. `docker compose config -q` — compose 문법 검증
 2. `docker build`(amd64, 로컬 로드) — Dockerfile 빌드 검증 (buildx GHA 캐시)
