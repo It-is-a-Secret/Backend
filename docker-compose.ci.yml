@@ -1,0 +1,9 @@
+# CI 전용 오버라이드 — PR 컨테이너 스모크 테스트에서만 사용한다.
+#   docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d mysql redis app
+#
+# 운영/서버 배포에는 사용하지 않는다(앱 포트를 외부로 직접 노출하므로).
+services:
+  app:
+    # 스모크 테스트에서 host의 curl이 직접 접근하도록 8080 공개
+    ports:
+      - "8080:8080"

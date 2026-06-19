@@ -37,6 +37,8 @@ public class SecurityConfig {
             .requestMatchers(HttpMethod.GET,
                 "/api/auth/oauth/kakao/authorize",
                 "/api/auth/oauth/kakao/callback").permitAll()
+            // 배포 헬스체크(ping/pong)
+            .requestMatchers(HttpMethod.GET, "/api/ping").permitAll()
             .requestMatchers("/error").permitAll()
             .requestMatchers(
                 "/swagger-ui/**",
