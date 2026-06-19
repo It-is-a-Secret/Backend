@@ -17,7 +17,6 @@ import com.blursome.blursome.chat.dto.response.ChatRoomSummaryResponse;
 import com.blursome.blursome.chat.event.ChatProgressAdvancedEvent;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
-import com.blursome.blursome.chat.repository.ChatRoomRepository;
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.OAuthProvider;
@@ -45,9 +44,6 @@ class ChatRoomServiceTest {
   private static final Long OTHER_ROW_ID = 2L;
 
   @Mock
-  private ChatRoomRepository chatRoomRepository;
-
-  @Mock
   private ChatRoomMemberRepository chatRoomMemberRepository;
 
   @Mock
@@ -55,6 +51,9 @@ class ChatRoomServiceTest {
 
   @Mock
   private ChatRoomCreator chatRoomCreator;
+
+  @Mock
+  private ChatRoomMembershipReader membershipReader;
 
   @Mock
   private ApplicationEventPublisher eventPublisher;
@@ -179,9 +178,7 @@ class ChatRoomServiceTest {
     // given
     ChatRoom room = activeRoom(ROOM_ID);
     ChatRoomMember membership = membership(MY_ROW_ID, room, ChatRoomProgressStatus.MATCHED);
-    given(chatRoomRepository.findById(ROOM_ID)).willReturn(Optional.of(room));
-    given(chatRoomMemberRepository.findMembership(ROOM_ID, MEMBER_ID))
-        .willReturn(Optional.of(membership));
+    givenVisibleMembership(room, membership);
     given(chatMessageService.getUnreadCount(anyLong(), any(), anyLong())).willReturn(5L);
 
     // when
@@ -193,61 +190,16 @@ class ChatRoomServiceTest {
   }
 
   @Test
-  @DisplayName("방이 존재하지 않으면 ROOM_NOT_FOUND 예외가 발생한다")
-  void getRoom_whenRoomNotFound_thenThrows() {
-    // given
-    given(chatRoomRepository.findById(ROOM_ID)).willReturn(Optional.empty());
-
-    // when & then
-    assertThatThrownBy(() -> chatRoomService.getRoom(ROOM_ID, MEMBER_ID))
-        .isInstanceOf(BaseException.class)
-        .hasFieldOrPropertyWithValue("code", ChatErrorCode.ROOM_NOT_FOUND.getCode());
-  }
-
-  @Test
-  @DisplayName("참여자가 아니면 NOT_PARTICIPANT 예외가 발생한다")
-  void getRoom_whenNotParticipant_thenThrows() {
-    // given
-    given(chatRoomRepository.findById(ROOM_ID)).willReturn(Optional.of(activeRoom(ROOM_ID)));
-    given(chatRoomMemberRepository.findMembership(ROOM_ID, MEMBER_ID)).willReturn(Optional.empty());
+  @DisplayName("가시성 검증에서 거부되면(reader 예외) 그대로 전파한다")
+  void getRoom_whenNotVisible_thenPropagates() {
+    // given — 방 없음/비참여/종료/퇴장 등 구체적 판별은 ChatRoomMembershipReaderTest가 담당한다.
+    given(membershipReader.getVisibleMembership(ROOM_ID, MEMBER_ID))
+        .willThrow(BaseException.from(ChatErrorCode.NOT_PARTICIPANT));
 
     // when & then
     assertThatThrownBy(() -> chatRoomService.getRoom(ROOM_ID, MEMBER_ID))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", ChatErrorCode.NOT_PARTICIPANT.getCode());
-  }
-
-  @Test
-  @DisplayName("멤버지만 방이 종료(CLOSED)됐으면 ROOM_NOT_FOUND 예외가 발생한다")
-  void getRoom_whenRoomClosed_thenThrowsNotFound() {
-    // given
-    ChatRoom closed = activeRoom(ROOM_ID);
-    closed.close();
-    ChatRoomMember membership = membership(MY_ROW_ID, closed, ChatRoomProgressStatus.MATCHED);
-    given(chatRoomRepository.findById(ROOM_ID)).willReturn(Optional.of(closed));
-    given(chatRoomMemberRepository.findMembership(ROOM_ID, MEMBER_ID))
-        .willReturn(Optional.of(membership));
-
-    // when & then
-    assertThatThrownBy(() -> chatRoomService.getRoom(ROOM_ID, MEMBER_ID))
-        .isInstanceOf(BaseException.class)
-        .hasFieldOrPropertyWithValue("code", ChatErrorCode.ROOM_NOT_FOUND.getCode());
-  }
-
-  @Test
-  @DisplayName("이미 나간 참여자(leftAt 존재)는 방이 ACTIVE여도 ROOM_NOT_FOUND로 막힌다")
-  void getRoom_whenMemberHasLeftButRoomActive_thenThrowsNotFound() {
-    // given — 데이터 불일치 가정: 내 참여 행은 나갔지만 방은 아직 ACTIVE
-    ChatRoom room = activeRoom(ROOM_ID);
-    ChatRoomMember left = membership(MY_ROW_ID, room, ChatRoomProgressStatus.MATCHED);
-    left.leave();
-    given(chatRoomRepository.findById(ROOM_ID)).willReturn(Optional.of(room));
-    given(chatRoomMemberRepository.findMembership(ROOM_ID, MEMBER_ID)).willReturn(Optional.of(left));
-
-    // when & then
-    assertThatThrownBy(() -> chatRoomService.getRoom(ROOM_ID, MEMBER_ID))
-        .isInstanceOf(BaseException.class)
-        .hasFieldOrPropertyWithValue("code", ChatErrorCode.ROOM_NOT_FOUND.getCode());
   }
 
   // ---------- getMessageHistory ----------
@@ -258,9 +210,7 @@ class ChatRoomServiceTest {
     // given
     ChatRoom room = activeRoom(ROOM_ID);
     ChatRoomMember membership = membership(MY_ROW_ID, room, ChatRoomProgressStatus.MATCHED);
-    given(chatRoomRepository.findById(ROOM_ID)).willReturn(Optional.of(room));
-    given(chatRoomMemberRepository.findMembership(ROOM_ID, MEMBER_ID))
-        .willReturn(Optional.of(membership));
+    givenVisibleMembership(room, membership);
     List<ChatMessageResponse> history = List.of();
     given(chatMessageService.getHistory(anyLong(), any(), anyInt())).willReturn(history);
 
@@ -367,28 +317,11 @@ class ChatRoomServiceTest {
     assertThat(room.isActive()).isFalse();
   }
 
-  @Test
-  @DisplayName("이미 종료된 방을 나가려 하면 ROOM_NOT_FOUND 예외가 발생한다")
-  void leaveRoom_whenRoomClosed_thenThrowsNotFound() {
-    // given
-    ChatRoom closed = activeRoom(ROOM_ID);
-    closed.close();
-    ChatRoomMember me = membership(MY_ROW_ID, closed, ChatRoomProgressStatus.MATCHED);
-    given(chatRoomRepository.findById(ROOM_ID)).willReturn(Optional.of(closed));
-    given(chatRoomMemberRepository.findMembership(ROOM_ID, MEMBER_ID)).willReturn(Optional.of(me));
-
-    // when & then
-    assertThatThrownBy(() -> chatRoomService.leaveRoom(ROOM_ID, MEMBER_ID))
-        .isInstanceOf(BaseException.class)
-        .hasFieldOrPropertyWithValue("code", ChatErrorCode.ROOM_NOT_FOUND.getCode());
-  }
-
   // ---------- fixtures ----------
 
-  /** 가시성 검증(getVisibleMembership) 통과를 위한 공통 스텁: ACTIVE 방 + 내 멤버십. */
+  /** 가시성 검증을 통과해 내 멤버십을 돌려주도록 reader를 스텁한다(방은 멤버십에서 reachable). */
   private void givenVisibleMembership(ChatRoom room, ChatRoomMember me) {
-    given(chatRoomRepository.findById(ROOM_ID)).willReturn(Optional.of(room));
-    given(chatRoomMemberRepository.findMembership(ROOM_ID, MEMBER_ID)).willReturn(Optional.of(me));
+    given(membershipReader.getVisibleMembership(ROOM_ID, MEMBER_ID)).willReturn(me);
   }
 
   private ChatRoom activeRoom(Long id) {
