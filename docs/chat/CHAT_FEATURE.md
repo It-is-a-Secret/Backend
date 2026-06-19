@@ -184,43 +184,48 @@ join(room, member)   (leftAt = null)
 
 ---
 
-## 4. 패키지 구조 (🧩 예정)
+## 4. 패키지 구조 (✅ 구현)
 
 `docs/ARCHITECTURE.md § 3`의 레이어 서브패키지 규칙을 따른다.
 
 ```
 com.blursome.chat
 ├── controller/
-│   ├── ChatRoomController.java      # REST: 방 목록/단건/이력 조회, 단계 동의, 종료
-│   └── ChatStompController.java     # @MessageMapping: 실시간 메시지 수신
+│   ├── ChatRoomController.java          # ✅ REST: 방 목록/단건/이력 조회, 단계 동의, 종료
+│   └── ChatStompController.java         # ✅ @MessageMapping: 실시간 송신/읽음 + STOMP 예외 → 개인 오류 큐
 ├── service/
-│   ├── ChatRoomService.java         # 방 개설/조회/종료/단계 진행 (Facade)
-│   └── ChatMessageService.java      # 메시지 저장/조회/읽음 처리
+│   ├── ChatRoomService.java             # ✅ 방 개설/조회/종료/단계 진행 (Facade)
+│   ├── ChatMessageService.java          # ✅ 메시지 저장/조회/송신/읽음 처리
+│   └── ChatRoomMembershipReader.java    # ✅ 참여자 가시성 검증 공용(REST·STOMP 공유, 순환 의존 회피)
 ├── repository/
-│   ├── ChatRoomRepository.java
-│   ├── ChatRoomMemberRepository.java
-│   └── ChatMessageRepository.java
+│   ├── ChatRoomRepository.java          # ✅ (advanceLastMessage: 미리보기 원자적 전진)
+│   ├── ChatRoomMemberRepository.java    # ✅
+│   └── ChatMessageRepository.java       # ✅ (existsByIdAndChatRoom_Id: 읽음 커서 검증)
 ├── domain/
-│   ├── ChatRoom.java                # ✅
-│   ├── ChatRoomMember.java          # ✅
-│   ├── ChatMessage.java             # ✅
-│   ├── ChatRoomStatus.java          # ✅
-│   ├── ChatRoomProgressStatus.java  # ✅
-│   └── ChatMessageType.java         # ✅
+│   ├── ChatRoom.java                    # ✅
+│   ├── ChatRoomMember.java              # ✅
+│   ├── ChatMessage.java                 # ✅
+│   ├── ChatRoomStatus.java              # ✅
+│   ├── ChatRoomProgressStatus.java      # ✅
+│   └── ChatMessageType.java             # ✅
 ├── dto/
-│   ├── request/                     # ChatMessageSendRequest 등
-│   └── response/                    # ChatRoomSummaryResponse, ChatMessageResponse 등
+│   ├── request/                         # ✅ ChatMessageSendRequest, ChatReadRequest
+│   └── response/                        # ✅ ChatRoomSummaryResponse, ChatMessageResponse, ChatProgressChangedResponse
+├── event/
+│   ├── ChatProgressAdvancedEvent.java   # ✅ 단계 상승 도메인 이벤트
+│   └── ChatProgressEventListener.java   # ✅ AFTER_COMMIT 구독 → /topic 브로드캐스트
 ├── config/
-│   └── WebSocketConfig.java         # STOMP 엔드포인트/브로커 설정
+│   ├── WebSocketConfig.java             # ✅ STOMP 엔드포인트/브로커 설정
+│   └── StompAuthChannelInterceptor.java # ✅ CONNECT 인증 + SUBSCRIBE 참여자 검증
 └── exception/
-    └── ChatErrorCode.java
+    └── ChatErrorCode.java               # ✅
 ```
 
-> WebSocket 설정은 채팅 도메인 한정이면 `chat/config/`, 전역 인프라 성격이면 `global/`에 둘지 ⏳ 검토.
+> ✅ WebSocket 설정 위치 결정: 채팅 도메인 한정이므로 `chat/config/`에 둔다(전역 `global/` 아님).
 
 ---
 
-## 5. 통신 아키텍처 — REST vs WebSocket 역할 분담 (🧩 설계)
+## 5. 통신 아키텍처 — REST vs WebSocket 역할 분담 (✅ 구현)
 
 | 작업                | 채널                           | 이유                                   |
 |-------------------|------------------------------|--------------------------------------|
@@ -229,7 +234,7 @@ com.blursome.chat
 | **실시간 메시지 송신**    | WebSocket(STOMP `SEND`)      | 양방향 푸시                               |
 | **실시간 메시지 수신**    | WebSocket(STOMP `SUBSCRIBE`) | 브로드캐스트                               |
 | 읽음 처리             | **WebSocket 우선** (STOMP)     | ✅ 실시간성 우선. 읽음 위치 갱신은 STOMP, REST는 보조 |
-| 단계 동의             | REST `POST` (제안)             | 트랜잭션·검증이 중요, 빈도 낮음                   |
+| 단계 동의             | REST `POST`                  | 트랜잭션·검증이 중요, 빈도 낮음                   |
 | 방 종료/나가기          | REST `POST`                  | 명시적 행위                               |
 
 > 원칙: **영속·조회 트랜잭션은 Service(Facade)** 가 담당하고, WebSocket 컨트롤러도 동일하게 Service를 경유한다. STOMP 핸들러에 비즈니스
@@ -237,35 +242,35 @@ com.blursome.chat
 
 ---
 
-## 6. WebSocket + STOMP 설계 (🧩)
+## 6. WebSocket + STOMP 설계 (✅ 구현)
 
 ### 6-1. 엔드포인트 / 브로커
 
-| 항목                      | 값(제안)              | 비고                               |
+| 항목                      | 값                  | 비고                               |
 |-------------------------|--------------------|----------------------------------|
 | STOMP 핸드셰이크             | `GET /ws`          | ✅ SockJS 폴백 초기 미사용(순수 WebSocket) |
 | 앱 prefix (클라이언트 → 서버)   | `/app`             | `@MessageMapping`과 매칭            |
 | 브로커 prefix (서버 → 클라이언트) | `/topic`, `/queue` | 단순 in-memory 브로커로 시작             |
 | 유저 destination prefix   | `/user`            | 개인 대상 메시지                        |
 
-### 6-2. Destination 규칙 (제안)
+### 6-2. Destination 규칙 (✅ 구현)
 
 | 방향    | Destination                | 설명                                            |
 |-------|----------------------------|-----------------------------------------------|
-| 구독    | `/topic/rooms/{roomId}`    | 해당 방의 메시지 브로드캐스트 수신                           |
-| 송신    | `/app/rooms/{roomId}/send` | 메시지 전송 → 서버가 저장 후 `/topic/rooms/{roomId}`로 발행 |
+| 구독    | `/topic/rooms/{roomId}`    | ✅ 해당 방의 메시지·단계 변경 브로드캐스트 수신(구독 시 참여자 검증)        |
+| 송신    | `/app/rooms/{roomId}/send` | ✅ 메시지 전송 → 서버가 저장 후 `/topic/rooms/{roomId}`로 발행 |
 | 송신    | `/app/rooms/{roomId}/read` | ✅ 읽음 위치 갱신 (WebSocket 우선)                     |
-| 개인 알림 | `/user/queue/errors`       | 검증 실패 등 발신자 개인 응답                             |
+| 개인 알림 | `/user/queue/errors`       | ✅ 검증 실패 등 발신자 개인 응답(해당 세션 한정)                  |
 
-### 6-3. 핸드셰이크 인증 (JWT)
+### 6-3. 핸드셰이크 인증 (JWT, ✅ 구현)
 
-- STOMP `CONNECT` 프레임 헤더(`Authorization: Bearer <accessToken>`)에서 토큰 추출.
-- `ChannelInterceptor`(또는 `HandshakeInterceptor`)에서 `JwtTokenProvider`로 검증 → `memberId`를 STOMP 세션
-  principal로 저장.
-- 이후 `@MessageMapping` 핸들러에서 principal로 발신자를 식별(클라이언트가 보낸 senderId를 신뢰하지 않음).
+- ✅ STOMP `CONNECT` 프레임 헤더(`Authorization: Bearer <accessToken>`)에서 토큰 추출.
+- ✅ `StompAuthChannelInterceptor`(`configureClientInboundChannel`)에서 `JwtTokenProvider.parseAccess`로 검증 →
+  복원한 `JwtAuthentication`을 STOMP 세션 principal(`StompHeaderAccessor.setUser`)로 저장. 인증 실패 시 CONNECT 거절.
+- ✅ 이후 `@MessageMapping` 핸들러에서 principal(`memberId`)로 발신자를 식별(클라이언트가 보낸 senderId를 신뢰하지 않음).
 - ⏳ 토큰 만료가 연결 도중 발생할 때의 처리(재연결 유도) 정책 필요.
 
-### 6-4. 페이로드 DTO (제안)
+### 6-4. 페이로드 DTO (✅ 구현)
 
 ```jsonc
 // 클라 → 서버 : /app/rooms/{roomId}/send
@@ -328,7 +333,9 @@ ChatRoomService.openRoom(a, b)        @Transactional
 [Client] ─ SUBSCRIBE ─▶ /topic/rooms/{roomId}     (참여자 검증 후 허용)
 ```
 
-- 구독 시 해당 회원이 그 방의 참여자(`ChatRoomMember`, `leftAt IS NULL`)인지 검증 ⏳(구독 인터셉터).
+- ✅ 구독 시 해당 회원이 그 방의 참여자(`ChatRoomMember`, `leftAt IS NULL`)인지 검증한다(`StompAuthChannelInterceptor`의
+  `SUBSCRIBE` 처리). 비참여자 구독은 연결을 끊지 않고 해당 세션의 개인 오류 큐(`/user/queue/errors`)로 통지한 뒤 프레임을
+  드롭해 차단한다(`preSend`가 null 반환).
 
 ### 7-3. 메시지 송수신
 
@@ -350,9 +357,17 @@ ChatRoomService.openRoom(a, b)        @Transactional
                                                      [Client A]           [Client B]
 ```
 
-### 7-4. 읽음 처리 & 안읽음 카운트 (🧩)
+- ✅ **구현**: `ChatStompController.send` → `ChatMessageService.send`(쓰기 트랜잭션)에서 참여자·방 ACTIVE 검증 후 저장하고
+  `SimpMessagingTemplate`으로 `/topic/rooms/{roomId}`에 `ChatMessageResponse`를 발행한다. 발신자는 STOMP principal에서
+  결정한다(§9). 미리보기 갱신은 §8의 원자적 전진(역행 방지)으로 처리한다.
+- ⏳ 오프라인 상대 알림 생성(Notification 도메인 연동)은 후속 작업.
 
-- 상대 방의 메시지를 읽으면 `ChatRoomMember.lastReadMessageId`를 최신 메시지 id로 갱신.
+### 7-4. 읽음 처리 & 안읽음 카운트 (✅ 구현 / 🧩 캐싱 예정)
+
+- ✅ 읽음 위치 갱신은 WebSocket 경로(`/app/rooms/{roomId}/read` → `ChatMessageService.markAsRead`)로 처리하며,
+  `ChatRoomMember.lastReadMessageId`를 전진(`readUpTo`)시킨다.
+- ✅ **커서 검증**: 클라이언트가 보낸 `lastReadMessageId`가 그 방에 실제 존재하는 메시지인지(`existsByIdAndChatRoom_Id`)
+  확인한 뒤에만 전진시킨다. 방에 없는 큰 id(예: `Long.MAX_VALUE`)로 안읽음 카운트를 영구 무력화하는 것을 막는다(§9).
 - 안읽음 수 = `count(ChatMessage where chatRoom=room and id > lastReadMessageId and sender != me)`.
 - ✅ **초기에는 DB count**로 계산한다(단순·정확). 트래픽이 늘면 Redis 캐싱으로 전환:
   `blursome:chat:<roomId>:<memberId>:unread` (키 스킴은 `docs/ARCHITECTURE.md § 6 Redis` 준수). 전환은 ADR로
@@ -371,6 +386,10 @@ ChatRoomService.openRoom(a, b)        @Transactional
                                          └─ 변경 시 /topic/rooms/{roomId}로 단계 변경 이벤트 발행
 ```
 
+- ✅ **구현**: `ChatRoomService.agreeProgress`가 단계 상승 시 `ChatProgressAdvancedEvent`를 발행하고,
+  `ChatProgressEventListener`가 `@TransactionalEventListener(AFTER_COMMIT)`로 받아 `/topic/rooms/{roomId}`에
+  `ChatProgressChangedResponse`(`eventType=PROGRESS_CHANGED`)를 브로드캐스트한다. 커밋 이후에만 발행하므로 롤백 시
+  오발송이 없다. 같은 토픽의 메시지 응답과는 `eventType`으로 구분한다.
 - 한쪽만 동의 → 방 단계 변화 없음, 상대에게 "동의 대기" 표시(선택).
 - ✅ **역할 분리**: Chat 도메인은 **단계(`progressStatus`)만 관리**한다. 각 단계에 대응하는 사진(블러 해제 대상)의 저장·제공은 프로필/회원 도메인
   책임이다.
@@ -398,7 +417,7 @@ ChatRoomService.openRoom(a, b)        @Transactional
 | 관심사          | 방식                                                                                              |
 |--------------|-------------------------------------------------------------------------------------------------|
 | 방별 메시지 이력    | `idx_chat_message_room (chat_room_id, id)` 기반, **id 커서 페이지네이션**(`id < lastSeenId` desc limit N) |
-| 마지막 메시지 미리보기 | `ChatRoom.lastMessageId` 비정규화 — 방 목록 조회 시 N+1/정렬 비용 절감. 메시지 저장 시 갱신 책임은 Service                 |
+| 마지막 메시지 미리보기 | `ChatRoom.lastMessageId` 비정규화 — 방 목록 조회 시 N+1/정렬 비용 절감. ✅ 동시 송신 경합에서 과거 id로 되돌아가지 않도록 조건부 UPDATE(`ChatRoomRepository.advanceLastMessage`, `lastMessageId < :id`일 때만 전진)로 갱신 |
 | 안읽음 카운트      | `lastReadMessageId` 기준 카운트, 필요 시 Redis 캐싱                                                       |
 | 내 방 목록       | `ChatRoomMember`에서 `member=me and leftAt IS NULL`로 조회 후 방 정보 조인                                 |
 
@@ -408,17 +427,24 @@ ChatRoomService.openRoom(a, b)        @Transactional
 
 ## 9. 보안 / 권한 규칙
 
-1. **참여자만**: 메시지 송신·구독·이력 조회는 해당 방의 활성 참여자(`leftAt IS NULL`)만 가능.
-2. **발신자 위조 방지**: 발신자는 클라이언트 입력이 아닌 STOMP principal(JWT의 `memberId`)로 결정.
-3. **방 상태 검증**: `CLOSED`/`BLOCKED` 방에는 메시지 송신 불가.
-4. **인가 실패**: `BaseException.from(ChatErrorCode.*)` → `GlobalExceptionHandler`가 `ErrorResponse` 변환(
-   REST). STOMP 경로는 `/user/queue/errors`로 개인 통지.
+1. ✅ **참여자만**: 메시지 송신·구독·읽음·이력 조회는 해당 방의 활성 참여자(`leftAt IS NULL`)만 가능. 가시성 검증은
+   `ChatRoomMembershipReader`로 단일화하며, 조회용(`getVisibleMembership`)과 쓰기용(`getWritableMembership`)을 분리한다.
+2. ✅ **발신자 위조 방지**: 발신자는 클라이언트 입력이 아닌 STOMP principal(JWT의 `memberId`)로 결정.
+3. ✅ **방 상태 검증**: `CLOSED` 방에는 송신·읽음 불가. 쓰기 경로는 종료를 `ROOM_CLOSED`(409)로 명시한다(§10).
+4. ✅ **읽음 커서 위조 방지**: `lastReadMessageId`가 그 방의 실제 메시지인지 검증해(§7-4) 조작으로 안읽음 카운트를 무력화하지 못하게 한다.
+5. ✅ **인가/처리 실패 통지**: REST는 `BaseException.from(ChatErrorCode.*)` → `GlobalExceptionHandler`가 `ErrorResponse` 변환.
+   STOMP 경로는 `/user/queue/errors`로 개인 통지하며, 같은 계정의 다른 세션에 새지 않도록 해당 세션(`simpSessionId`)에만 보낸다.
+   STOMP 핸들러는 도메인 예외(`BaseException`)·입력 오류(`@Valid`·변환 → `INVALID_MESSAGE`)·그 밖의 예외(기록 후 500)를 분리 처리한다.
 
 ---
 
-## 10. 에러 코드 (🧩 예정)
+## 10. 에러 코드 (✅ 구현)
 
-`com.blursome.chat.exception.ChatErrorCode` (`ErrorCode` 구현 Enum) 후보:
+`com.blursome.chat.exception.ChatErrorCode` (`ErrorCode` 구현 Enum):
+
+> ✅ **경로별 매핑 차이**: 조회(REST)는 종료된 방을 노출하지 않도록 `ROOM_NOT_FOUND`(404)로 숨기고, 쓰기(STOMP 송신·읽음)는
+> 종료를 `ROOM_CLOSED`(409)로 명시한다. 방 없음(`ROOM_NOT_FOUND`)·비참여(`NOT_PARTICIPANT`) 판별은 두 경로가 동일하다.
+> 잘못된 본문/타입(빈 본문·`SYSTEM` 송신·조작된 읽음 커서)은 `INVALID_MESSAGE`(400)로 통일한다.
 
 | 코드(안)                              | 상황            | HTTP |
 |------------------------------------|---------------|------|
@@ -451,8 +477,10 @@ ChatRoomService.openRoom(a, b)        @Transactional
 
 ### 구현 시 남은 검토 항목
 
-- **연결 도중 토큰 만료** 시 재연결 유도 정책(§6-3).
-- **구독 시 참여자 검증** 인터셉터 구현(§7-2).
+- ✅ **구독 시 참여자 검증** 인터셉터 구현(§7-2) — `StompAuthChannelInterceptor`의 `SUBSCRIBE` 처리로 완료.
+- ⏳ **연결 도중 토큰 만료** 시 재연결 유도 정책(§6-3) — CONNECT 거절까지만 구현, 세부 정책은 후속.
+- ⏳ **오프라인 상대 알림** 생성(Notification 도메인 연동, §7-3) — 후속.
+- ⏳ **수평 확장 시 브로커 전환** — 현재 단일 인스턴스 in-memory Simple 브로커(§6-5 1단계), 2대 이상 확장 직전 Redis Pub/Sub로 전환.
 
 ---
 
