@@ -7,6 +7,7 @@ import static com.blursome.blursome.global.exception.code.GlobalErrorCode.PARAME
 import static com.blursome.blursome.global.exception.code.GlobalErrorCode.RESOURCE_NOT_FOUND;
 
 import com.blursome.blursome.global.exception.code.ErrorCode;
+import com.blursome.blursome.global.exception.code.JwtErrorCode;
 import com.blursome.blursome.global.response.ErrorDetail;
 import com.blursome.blursome.global.response.ErrorResponse;
 import java.util.List;
@@ -30,6 +31,18 @@ public class GlobalExceptionHandler {
     return ResponseEntity
         .status(e.getHttpStatus())
         .body(ErrorResponse.of(e.getHttpStatus(), e.getMessage(), e.getCode()));
+  }
+
+  // SecurityFilterChain 통과 후 컨트롤러 단계에서 던져진 JWT 인증 예외를 처리합니다.
+  // (필터 내부에서 발생한 경우는 JwtAuthenticationEntryPoint가 처리합니다)
+  @ExceptionHandler(JwtAuthenticationException.class)
+  public ResponseEntity<ErrorResponse> handleJwtAuthenticationException(
+      JwtAuthenticationException e) {
+    JwtErrorCode errorCode = e.getErrorCode();
+    logWarning(e, errorCode.getHttpStatus().value());
+    return ResponseEntity
+        .status(errorCode.getHttpStatus())
+        .body(ErrorResponse.from(errorCode));
   }
 
   // 필수 요청 파라미터가 누락된 경우를 처리합니다.

@@ -21,12 +21,21 @@ BlurSome은 Spring Boot 3.x 기반의 도메인 주도 REST API 서버입니다.
 
 ## 2. 도메인 모델
 
-### 회원 (User)
+### 인증 (Auth)
 
-회원 가입, 로그인, 프로필 관리, 계정 생명주기를 담당합니다.
+OAuth 제공자(현재 Kakao)와의 인증·인가, JWT 발급·검증, 리프레시 토큰 회전, 로그아웃을 담당합니다.
 
-- 핵심 불변 조건: 활성화 상태인 회원만 채팅과 알림을 받을 수 있음
-- 주요 도메인 메서드: `deactivate()`, `updateProfile(...)`, `activate()`
+- 핵심 불변 조건: 액세스 토큰은 `typ=access`, 리프레시 토큰은 `typ=refresh` 클레임으로 분리되며, 서로 교차 사용할 수 없음
+- 핵심 불변 조건: 회원 1인당 활성 리프레시 토큰은 Redis에 1개만 보관(`blursome:member:<id>:refresh-token`) — 재발급 시 회전
+- 주요 컴포넌트: `AuthService`(Facade), `OAuthClientResolver`(공급자 전략 디스패처), `KakaoOAuthClient`(authorization_code → access_token → user info), `JwtTokenProvider`, `RefreshTokenStore`(Redis), `RefreshTokenCookieFactory`(HttpOnly 쿠키)
+
+### 회원 (Member)
+
+회원 가입(OAuth 자동 생성), 프로필 동기화, 계정 상태 조회를 담당합니다.
+
+- 핵심 불변 조건: `(provider, provider_id)` 조합으로 회원을 유일하게 식별 (DB 유니크 제약)
+- 핵심 불변 조건: OAuth 신규 회원은 기본 역할 `USER`, 기본 상태 `ACTIVE`로 생성
+- 주요 도메인 메서드: `Member.createOAuthMember(...)`(정적 팩토리), `updateProfileFromOAuth(nickname, profileImageUrl)`(변경된 값만 갱신), `isActive()`
 
 ### 알림 (Notification)
 
@@ -46,49 +55,95 @@ BlurSome은 Spring Boot 3.x 기반의 도메인 주도 REST API 서버입니다.
 
 ## 3. 패키지 구조
 
+각 도메인 패키지는 레이어 서브패키지로 책임을 분리합니다. `domain/`은 JPA 엔티티와 해당 도메인의 Enum·값객체를 함께 담습니다.
+
 ```
 com.blursome
-├── user/
-│   ├── User.java                      # JPA 엔티티, 풍부한 도메인 모델
-│   ├── UserRepository.java            # Spring Data JPA
-│   ├── UserService.java               # Facade — 모든 회원 로직 조율
-│   ├── UserController.java            # HTTP 어댑터 — UserService에 위임
+├── auth/
+│   ├── controller/
+│   │   └── AuthController.java        # /api/auth/oauth/kakao/authorize·/callback, /api/auth/token/refresh, /api/auth/logout
+│   ├── service/
+│   │   └── AuthService.java           # Facade — OAuth 로그인, 토큰 회전, 로그아웃 조율
+│   ├── oauth/
+│   │   ├── OAuthClient.java           # OAuth 공급자 추상화 (provider, fetchUserInfo)
+│   │   ├── OAuthClientResolver.java   # 공급자 → OAuthClient 디스패처
+│   │   └── kakao/
+│   │       ├── KakaoOAuthClient.java        # Kakao 토큰 교환 + 사용자 조회
+│   │       ├── KakaoOAuthProperties.java    # app.oauth.kakao.* 설정 바인딩
+│   │       ├── KakaoTokenResponse.java      # Kakao 토큰 응답 DTO
+│   │       └── KakaoUserInfoResponse.java   # Kakao 사용자 정보 응답 DTO
+│   ├── token/
+│   │   └── RefreshTokenStore.java     # Redis 기반 리프레시 토큰 저장소
+│   ├── cookie/
+│   │   ├── CookieProperties.java      # app.cookie.* 설정 바인딩
+│   │   └── RefreshTokenCookieFactory.java   # HttpOnly Set-Cookie 생성/삭제
 │   ├── dto/
-│   │   ├── LoginRequest.java
-│   │   ├── SignUpRequest.java
-│   │   └── UserResponse.java
-│   └── UserStatus.java                # 회원 상태 Enum
+│   │   ├── TokenPair.java             # 액세스+리프레시+TTL 묶음 (서비스 내부 전송)
+│   │   ├── request/
+│   │   │   └── KakaoLoginRequest.java
+│   │   └── response/
+│   │       └── AuthTokenResponse.java # 클라이언트에 노출되는 액세스 토큰 응답
+│   └── exception/
+│       └── AuthErrorCode.java         # OAuth/Refresh 토큰 관련 에러 코드
 │
-├── notification/
-│   ├── Notification.java
-│   ├── NotificationRepository.java
-│   ├── NotificationService.java
-│   ├── NotificationController.java
-│   └── dto/
+├── member/
+│   ├── service/
+│   │   └── MemberService.java         # Facade — 회원 조회/생성/프로필 동기화
+│   ├── repository/
+│   │   └── MemberRepository.java      # Spring Data JPA
+│   ├── domain/
+│   │   ├── Member.java                # JPA 엔티티, 풍부한 도메인 모델
+│   │   ├── MemberRole.java            # 회원 권한 Enum (USER, ADMIN)
+│   │   ├── MemberStatus.java          # 회원 상태 Enum (ACTIVE, INACTIVE)
+│   │   └── OAuthProvider.java         # OAuth 공급자 Enum (KAKAO)
+│   ├── dto/
+│   │   └── OAuthUserInfo.java         # OAuth 공급자 응답을 도메인으로 변환한 DTO
+│   └── exception/
+│       └── MemberErrorCode.java       # ErrorCode 구현 Enum
 │
-├── chat/
-│   ├── Chat.java
-│   ├── ChatRepository.java
-│   ├── ChatService.java
-│   ├── ChatController.java
-│   └── dto/
+├── notification/                      # (예정)
+│   └── ...
+│
+├── chat/                              # (예정)
+│   └── ...
 │
 └── global/
-    ├── config/                        # Spring 빈, Security, Redis 설정
+    ├── security/
+    │   ├── SecurityConfig.java               # Spring Security 필터 체인 (Stateless)
+    │   ├── JwtProperties.java                # app.jwt.* 설정 바인딩
+    │   ├── JwtTokenProvider.java             # JWT 발급/파싱 (access/refresh typ 구분)
+    │   ├── JwtAuthentication.java            # Authentication 구현 (principal = memberId)
+    │   ├── JwtAuthenticationFilter.java      # Authorization Bearer 추출 → SecurityContext 등록
+    │   └── JwtAuthenticationEntryPoint.java  # 인증 실패 시 ErrorResponse JSON 직렬화
+    ├── persistence/
+    │   ├── BaseEntity.java                   # @MappedSuperclass — createdAt/updatedAt 감사 필드
+    │   └── JpaAuditingConfig.java            # @EnableJpaAuditing
     ├── exception/
-    │   ├── BaseException.java         # 커스텀 예외 베이스 (BaseException.from(errorCode))
+    │   ├── BaseException.java                # 커스텀 예외 베이스 (BaseException.from(errorCode))
     │   ├── GlobalExceptionHandler.java
-    │   ├── JwtAuthenticationException.java
+    │   ├── JwtAuthenticationException.java   # Spring Security AuthenticationException 확장
     │   └── code/
-    │       ├── ErrorCode.java         # 에러 코드 인터페이스
-    │       ├── GlobalErrorCode.java   # 전역 공통 에러 코드
-    │       └── JwtErrorCode.java      # JWT 에러 코드
+    │       ├── ErrorCode.java                # 에러 코드 인터페이스
+    │       ├── GlobalErrorCode.java          # 전역 공통 에러 코드
+    │       └── JwtErrorCode.java             # JWT 에러 코드
     └── response/
-        ├── BaseResponse.java          # 공통 메타데이터 (timestamp)
-        ├── DataResponse.java          # 성공 응답 래퍼
-        ├── ErrorResponse.java         # 오류 응답 래퍼
-        └── ErrorDetail.java           # 검증 실패 필드 상세
+        ├── BaseResponse.java                 # 공통 메타데이터 (timestamp)
+        ├── DataResponse.java                 # 성공 응답 래퍼
+        ├── ErrorResponse.java                # 오류 응답 래퍼
+        └── ErrorDetail.java                  # 검증 실패 필드 상세
 ```
+
+### 레이어 서브패키지 역할 요약
+
+| 서브패키지 | 포함 대상 | 규칙 |
+|---|---|---|
+| `controller/` | `*Controller` | HTTP 변환만, Repository 직접 주입 금지 |
+| `service/` | `*Service` | 트랜잭션 경계, 도메인 로직 조율, DTO 변환 |
+| `repository/` | `*Repository` | 데이터 접근만, 비즈니스 로직 없음 |
+| `domain/` | Entity, Enum, 값객체 | JPA 엔티티 + 해당 도메인의 타입 정의 |
+| `dto/request/` | `*Request` | Controller 입력 DTO, `@Valid` 검증 어노테이션 |
+| `dto/response/` | `*Response` | Service → Controller 출력 DTO |
+| `exception/` | `*ErrorCode` | `ErrorCode` 인터페이스 구현 Enum |
 
 > 새 파일의 귀속 도메인이 불명확하다면 먼저 도메인 소유권을 검토하세요. `global`은 횡단 관심사 인프라만 포함합니다.
 
@@ -142,18 +197,18 @@ HTTP 요청
 **Anemic Model (지양)**
 ```java
 // Service에서 직접 setter 호출 — 비즈니스 의미 없음
-user.setStatus(UserStatus.INACTIVE);
-user.setDeactivatedAt(LocalDateTime.now());
+member.setStatus(MemberStatus.INACTIVE);
+member.setDeactivatedAt(LocalDateTime.now());
 ```
 
 **Rich Domain Model (지향)**
 ```java
-// User 엔티티 내부에 비즈니스 규칙 캡슐화
+// Member 엔티티 내부에 비즈니스 규칙 캡슐화
 public void deactivate() {
-  if (this.status == UserStatus.INACTIVE) {
-    throw BaseException.from(UserErrorCode.ALREADY_DEACTIVATED);
+  if (this.status == MemberStatus.INACTIVE) {
+    throw BaseException.from(MemberErrorCode.ALREADY_DEACTIVATED);
   }
-  this.status = UserStatus.INACTIVE;
+  this.status = MemberStatus.INACTIVE;
   this.deactivatedAt = LocalDateTime.now();
 }
 ```
@@ -184,7 +239,7 @@ public void deactivate() {
 blursome:<domain>:<id>:<field>
 
 예시:
-blursome:user:1001:refresh-token
+blursome:member:1001:refresh-token
 blursome:notification:1001:unread-count
 ```
 
@@ -194,7 +249,7 @@ blursome:notification:1001:unread-count
 
 | 관심사 | 구현 |
 |---|---|
-| 인증/인가 | Spring Security + JWT |
+| 인증/인가 | Spring Security (Stateless) + JWT(HS256, `typ` 클레임으로 access/refresh 구분), OAuth 2.0 인가 코드 그랜트 (현재 Kakao), 리프레시 토큰은 Redis 저장(`blursome:member:<id>:refresh-token`) + HttpOnly 쿠키 (`refreshToken`, path `/api/auth`) — 자세한 흐름은 § 9 참고 |
 | 로깅 | SLF4J + Logback (구조화 로그) |
 | 입력 검증 | Jakarta Bean Validation (`@Valid`) — Controller 경계에서 수행 |
 | 환경 분리 | `application-{profile}.yml` (`local`, `prod`) — git 추적, 시크릿 없음 |
@@ -206,7 +261,93 @@ blursome:notification:1001:unread-count
 
 ---
 
-## 8. 아키텍처 결정 기록 (ADR)
+## 8. 인증/인가 흐름
+
+### 토큰 모델
+
+| 항목 | Access Token | Refresh Token |
+|---|---|---|
+| 전달 채널 | `Authorization: Bearer <token>` 헤더 | `refreshToken` HttpOnly 쿠키 (path `/api/auth`) |
+| 발급 클레임 | `sub=memberId`, `role`, `typ=access` | `sub=memberId`, `typ=refresh` |
+| 서명 알고리즘 | HMAC-SHA256 (`app.jwt.secret`, 최소 32바이트) |
+| 기본 만료 | `app.jwt.access-token-expires-in` (기본 1800초) | `app.jwt.refresh-token-expires-in` (기본 1209600초) |
+| 서버 측 저장 | 없음 (Stateless) | Redis `blursome:member:<id>:refresh-token` (값 = JWT) |
+| 회전 정책 | — | 갱신 시마다 새 토큰 발급 후 동일 키에 덮어쓰기, 불일치 시 저장소 삭제 후 401 |
+
+### 엔드포인트
+
+| 메서드 | 경로 | 인증 | 설명 |
+|---|---|---|---|
+| GET | `/api/auth/oauth/kakao/authorize` | 공개 | 백엔드가 인가 URL을 구성해 카카오 인가 화면으로 302 리다이렉트 |
+| GET | `/api/auth/oauth/kakao/callback` | 공개 | 카카오 인가 코드(`code`)로 로그인. 응답 바디에 액세스 토큰, `Set-Cookie`로 리프레시 토큰(재발급 응답과 동일 형태) |
+| POST | `/api/auth/token/refresh` | 공개 (쿠키 기반) | 쿠키의 리프레시 토큰을 검증·회전, 새 토큰 쌍 반환 |
+| POST | `/api/auth/logout` | 필요 (`Bearer`) | Redis 리프레시 토큰 삭제 + 쿠키 만료(`max-age=0`) |
+
+> 서버 주도 리다이렉트 플로우: 클라이언트는 `authorize`로 진입만 하고, 카카오는 `redirect_uri`(= 백엔드 `callback`)로 코드를 돌려준다. 콜백이 토큰을 **JSON 바디(AT)** + **쿠키(RT)** 로 반환하므로, 클라이언트(팝업 등)는 콜백 응답을 직접 소비한다. 액세스 토큰은 URL에 싣지 않는다.
+
+### 카카오 로그인 시퀀스
+
+```
+[Client] ── GET /api/auth/oauth/kakao/authorize ──▶ AuthController ── 302 ──▶ [카카오 인가 화면]
+                                                                                    │ 로그인·동의
+                                                                                    ▼
+[카카오] ── 302 redirect_uri?code=... ──▶ GET /api/auth/oauth/kakao/callback ──▶ AuthController
+                                                       │
+                                                       ▼
+                                                   AuthService.login(KAKAO, code)
+                                                       │
+                            ┌──────────────────────────┼──────────────────────────────┐
+                            ▼                          ▼                              ▼
+                   OAuthClientResolver         KakaoOAuthClient                MemberService
+                   .resolve(KAKAO)             .fetchUserInfo(code)            .findOrCreateByOAuth
+                                                  ├─ POST kauth/oauth/token      ├─ findByProviderAndProviderId
+                                                  └─ GET  kapi/v2/user/me        └─ save(...) 또는 updateProfileFromOAuth(...)
+                                                       │
+                                                       ▼
+                                                JwtTokenProvider.issueAccessToken/Refresh
+                                                       │
+                                                       ▼
+                                                RefreshTokenStore.save(memberId, refresh, ttl)
+                                                       │
+                                                       ▼
+[Client] ◀── 200 OK + DataResponse<AuthTokenResponse> + Set-Cookie: refreshToken=... ──
+```
+
+### 리프레시 토큰 회전
+
+1. 클라이언트가 `/api/auth/token/refresh`를 POST → 쿠키의 `refreshToken`이 자동 첨부
+2. `JwtTokenProvider.parseRefresh`로 `typ=refresh` 검증 및 `memberId` 추출
+3. Redis에 저장된 토큰과 비교
+   - 키가 없음 → `AUTH_401_REFRESH_TOKEN_NOT_FOUND`
+   - 값이 다름 → 저장소를 비우고 `AUTH_401_REFRESH_TOKEN_MISMATCH` (재사용 공격 대응)
+4. `MemberService.findActiveMember`로 활성 회원인지 확인
+5. 새 액세스/리프레시 토큰 발급, Redis 동일 키에 덮어쓰기 → 응답에 새 쿠키 동봉
+
+### 로그아웃
+
+- 인증 필터를 통과한 `memberId`(`@AuthenticationPrincipal Long`)로 Redis 리프레시 토큰 삭제
+- 만료 처리된 동일 속성의 `Set-Cookie`(value 공백, `max-age=0`)로 클라이언트 쿠키 제거
+- 액세스 토큰 자체는 별도 블랙리스트 없이 만료될 때까지 유효 (만료 주기가 짧다는 전제)
+
+### 인증 실패 응답
+
+`JwtAuthenticationFilter`가 토큰을 검증하다 `JwtAuthenticationException`을 던지면 `JwtAuthenticationEntryPoint`가 `ErrorResponse`를 JSON으로 직접 직렬화한다(`@RestControllerAdvice` 대신 `AuthenticationEntryPoint` 경로). 코드 매핑은 `JwtErrorCode` 참고.
+
+| 상황 | JwtErrorCode | HTTP |
+|---|---|---|
+| 서명/형식 오류, `typ` 불일치 | `INVALID_TOKEN` | 401 |
+| 만료된 토큰 | `EXPIRED_TOKEN` | 401 |
+| 인증이 필요한 자원에 토큰 없이 접근 | `UNAUTHORIZED` | 401 |
+
+### 운영 시 유의 사항
+
+- **쿠키 SameSite/Secure**: 로컬은 `SameSite=Lax`, `Secure=false`. 프로덕션은 `Secure=true`이지만 SPA가 다른 오리진에서 동작한다면 `SameSite`를 `None`으로 조정해야 POST 시 쿠키가 동봉된다. 설정값: `app.cookie.secure`, `app.cookie.same-site`.
+- **단일 활성 세션**: 리프레시 토큰 키가 `memberId` 단일이므로, 새 기기 로그인은 이전 기기의 리프레시 토큰을 무효화한다. 멀티 디바이스 동시 세션이 필요할 경우 키에 디바이스 ID/JTI 차원을 추가해야 한다.
+- **JWT 시크릿**: HS256은 최소 256bit 키를 요구한다. `.env.example`에 명시된 32바이트 이상 임의 문자열을 사용한다.
+
+---
+
+## 9. 아키텍처 결정 기록 (ADR)
 
 중요한 아키텍처 결정이 내려질 때 이 섹션에 기록합니다.
 
