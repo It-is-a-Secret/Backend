@@ -38,6 +38,8 @@ public class SecurityConfig {
                 "/api/auth/oauth/kakao/authorize",
                 "/api/auth/oauth/kakao/callback").permitAll()
             .requestMatchers("/error").permitAll()
+            // STOMP 핸드셰이크. 실제 인증은 STOMP CONNECT 단계의 ChannelInterceptor가 담당한다(설계 §6-1, §6-3).
+            .requestMatchers("/ws/**").permitAll()
             .requestMatchers(
                 "/swagger-ui/**",
                 "/swagger-ui.html",
