@@ -18,6 +18,7 @@ import com.blursome.blursome.chat.dto.response.ChatRoomSummaryResponse;
 import com.blursome.blursome.chat.event.ChatProgressAdvancedEvent;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
+import com.blursome.blursome.chat.repository.ChatRoomRepository;
 import com.blursome.blursome.chat.repository.RoomPartnerInfo;
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.member.domain.Member;
@@ -51,6 +52,9 @@ class ChatRoomServiceTest {
 
   @Mock
   private ChatRoomMemberRepository chatRoomMemberRepository;
+
+  @Mock
+  private ChatRoomRepository chatRoomRepository;
 
   @Mock
   private ChatMessageService chatMessageService;
@@ -254,7 +258,7 @@ class ChatRoomServiceTest {
     ChatRoom room = activeRoom(ROOM_ID);
     ChatRoomMember me = membership(MY_ROW_ID, room, ChatRoomProgressStatus.MATCHED);
     ChatRoomMember other = membership(OTHER_ROW_ID, room, ChatRoomProgressStatus.MATCHED);
-    givenVisibleMembership(room, me);
+    givenWritableMembership(room, me);
     given(chatRoomMemberRepository.findAllByRoomId(ROOM_ID)).willReturn(List.of(me, other));
     given(chatMessageService.getUnreadCount(anyLong(), any(), anyLong())).willReturn(0L);
 
@@ -275,7 +279,7 @@ class ChatRoomServiceTest {
     ChatRoomMember me = membership(MY_ROW_ID, room, ChatRoomProgressStatus.MATCHED);
     ChatRoomMember other =
         membership(OTHER_ROW_ID, room, ChatRoomProgressStatus.PHOTO_REVEAL_STEP_1);
-    givenVisibleMembership(room, me);
+    givenWritableMembership(room, me);
     given(chatRoomMemberRepository.findAllByRoomId(ROOM_ID)).willReturn(List.of(me, other));
     given(chatMessageService.getUnreadCount(anyLong(), any(), anyLong())).willReturn(0L);
 
@@ -298,7 +302,7 @@ class ChatRoomServiceTest {
     // given — 방은 MATCHED인데 나는 이미 STEP_1에 동의(상대 대기 중)
     ChatRoom room = activeRoom(ROOM_ID);
     ChatRoomMember me = membership(MY_ROW_ID, room, ChatRoomProgressStatus.PHOTO_REVEAL_STEP_1);
-    givenVisibleMembership(room, me);
+    givenWritableMembership(room, me);
 
     // when & then
     assertThatThrownBy(() -> chatRoomService.agreeProgress(ROOM_ID, MEMBER_ID))
@@ -313,7 +317,7 @@ class ChatRoomServiceTest {
     ChatRoom room = activeRoom(ROOM_ID);
     ReflectionTestUtils.setField(room, "progressStatus", ChatRoomProgressStatus.COMPLETED);
     ChatRoomMember me = membership(MY_ROW_ID, room, ChatRoomProgressStatus.COMPLETED);
-    givenVisibleMembership(room, me);
+    givenWritableMembership(room, me);
 
     // when & then
     assertThatThrownBy(() -> chatRoomService.agreeProgress(ROOM_ID, MEMBER_ID))
@@ -324,12 +328,13 @@ class ChatRoomServiceTest {
   // ---------- leaveRoom ----------
 
   @Test
-  @DisplayName("나가면 내 참여가 종료되고 1:1 방이 닫힌다")
+  @DisplayName("나가면 내 참여가 종료되고 1:1 방이 닫힌다(방 행을 비관적 락으로 잡고 닫음)")
   void leaveRoom_whenParticipant_thenLeavesAndClosesRoom() {
     // given
     ChatRoom room = activeRoom(ROOM_ID);
     ChatRoomMember me = membership(MY_ROW_ID, room, ChatRoomProgressStatus.MATCHED);
     givenVisibleMembership(room, me);
+    given(chatRoomRepository.findByIdForUpdate(ROOM_ID)).willReturn(Optional.of(room));
 
     // when
     chatRoomService.leaveRoom(ROOM_ID, MEMBER_ID);
@@ -337,6 +342,25 @@ class ChatRoomServiceTest {
     // then
     assertThat(me.hasLeft()).isTrue();
     assertThat(room.isActive()).isFalse();
+    verify(chatRoomRepository).findByIdForUpdate(ROOM_ID);
+  }
+
+  @Test
+  @DisplayName("상대가 먼저 나가 종료(CLOSED)된 방에서도 남은 사람이 나갈 수 있다(close()는 멱등)")
+  void leaveRoom_whenRoomAlreadyClosed_thenRemainingMemberCanLeave() {
+    // given — 상대가 먼저 나가 방은 CLOSED지만 내 leftAt은 null이라 조회 가시성은 통과
+    ChatRoom closed = activeRoom(ROOM_ID);
+    closed.close();
+    ChatRoomMember me = membership(MY_ROW_ID, closed, ChatRoomProgressStatus.MATCHED);
+    givenVisibleMembership(closed, me);
+    given(chatRoomRepository.findByIdForUpdate(ROOM_ID)).willReturn(Optional.of(closed));
+
+    // when
+    chatRoomService.leaveRoom(ROOM_ID, MEMBER_ID);
+
+    // then — 내 참여만 종료되고 방은 이미 CLOSED 그대로(멱등 no-op)
+    assertThat(me.hasLeft()).isTrue();
+    assertThat(closed.isActive()).isFalse();
   }
 
   // ---------- fixtures ----------
@@ -344,6 +368,11 @@ class ChatRoomServiceTest {
   /** 가시성 검증을 통과해 내 멤버십을 돌려주도록 reader를 스텁한다(방은 멤버십에서 reachable). */
   private void givenVisibleMembership(ChatRoom room, ChatRoomMember me) {
     given(membershipReader.getVisibleMembership(ROOM_ID, MEMBER_ID)).willReturn(me);
+  }
+
+  /** 쓰기 검증(종료된 방 차단)을 통과해 내 멤버십을 돌려주도록 reader를 스텁한다(단계 동의용). */
+  private void givenWritableMembership(ChatRoom room, ChatRoomMember me) {
+    given(membershipReader.getWritableMembership(ROOM_ID, MEMBER_ID)).willReturn(me);
   }
 
   private ChatMessageResponse lastMessageResponse() {

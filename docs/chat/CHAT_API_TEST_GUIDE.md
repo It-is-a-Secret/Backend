@@ -251,13 +251,17 @@ pm.environment.set('accessTokenB', issueAccessToken(pm.environment.get('memberBI
 { "timestamp": "...", "data": { "roomId": 1, "roomStatus": "ACTIVE", "progressStatus": "PHOTO_REVEAL_STEP_1", "lastMessageId": 2, "unreadCount": 1 } }
 ```
 
-### 시나리오 R-5. 채팅방 나가기 (종료)
+### 시나리오 R-5. 채팅방 나가기 (비대칭 종료)
 
-1:1이라 한쪽이 나가면 방이 즉시 `CLOSED`되고 재입장이 불가합니다.
+1:1이라 한쪽(A)이 나가면 방은 즉시 `CLOSED`되고 재입장이 불가합니다. 단, **나간 A만** 즉시 막히고, **남은 B는** 직접 나갈
+때까지 목록·이력을 그대로 볼 수 있습니다(송신만 차단).
 
 1. **나가기**: `POST {{baseUrl}}/api/chat/rooms/{{roomId}}/leave` — A 토큰 → `204 No Content`.
-2. **나간 뒤 조회**: `GET /api/chat/rooms/{{roomId}}` — A 토큰 → `404 ROOM_NOT_FOUND`(종료된 방은 숨김).
-3. **상대도 차단**: B 토큰으로 조회 → `404 ROOM_NOT_FOUND`.
+2. **나간 A 조회 차단**: `GET /api/chat/rooms/{{roomId}}` — A 토큰 → `404 ROOM_NOT_FOUND`(나간 본인에게는 숨김).
+3. **남은 B는 조회 가능**: B 토큰으로 목록(`GET /api/chat/rooms`)·단건·이력 조회 → `200 OK`로 방이 그대로 보임
+   (`roomStatus = CLOSED`, 상대(A) 닉네임·진행됐던 단계 포함).
+4. **B 송신은 차단**: B가 STOMP `send`를 시도하면 `/user/queue/errors`로 `CHAT_409_ROOM_CLOSED`.
+5. **B도 나가기**: B가 같은 `/leave`를 호출하면 → `204 No Content`, 이후 B 목록에서도 사라짐.
 
 > ⚠️ 이 시나리오는 방을 종료시킵니다. STOMP 테스트(아래)를 먼저 끝내거나, 끝나면 ②의 시드를 재실행하세요.
 
@@ -266,7 +270,7 @@ pm.environment.set('accessTokenB', issueAccessToken(pm.environment.get('memberBI
 | 상황 | HTTP | code |
 |----|----|----|
 | 비참여자 접근 | 403 | `CHAT_403_NOT_PARTICIPANT` |
-| 방 없음 / 종료된 방 조회 | 404 | `CHAT_404_ROOM_NOT_FOUND` |
+| 방 없음 / 내가 나간 방 조회 | 404 | `CHAT_404_ROOM_NOT_FOUND` (상대가 나가 종료된 방은 남은 사람에게 계속 노출) |
 | 이미 동의한 단계 재동의 / 마지막 단계 | 409 | `CHAT_409_PROGRESS_ALREADY_AGREED` |
 | 토큰 없음/만료/위조 | 401 | `JWT_401_UNAUTHORIZED` / `JWT_401_EXPIRED` / `JWT_401_INVALID` |
 
@@ -416,7 +420,7 @@ A·B가 `/topic/rooms/1`을 구독한 상태에서 시나리오 **R-4**(양쪽 �
 | REST `401 JWT_401_INVALID` | `jwtSecret` 불일치 또는 32바이트 미만. 서버 `JWT_SECRET`과 동일하게 설정 |
 | REST `401 JWT_401_EXPIRED` | 토큰 만료(기본 30분). Pre-request 재실행으로 갱신 |
 | REST `403 NOT_PARTICIPANT` | 토큰의 `memberId`가 그 방 참여자가 아님. 시드의 `member_id`와 토큰 `sub` 일치 확인 |
-| REST `404 ROOM_NOT_FOUND` | 방이 없거나 CLOSED. 시드 재확인(특히 나가기 후) |
+| REST `404 ROOM_NOT_FOUND` | 방이 없거나 **내가 나간** 방. 시드 재확인(특히 나가기 후). 상대가 나가 종료된 방은 남은 사람에겐 404가 아님 |
 | STOMP가 `CONNECTED`를 안 줌 | NULL 종료자 누락/토큰 무효/`/ws` 경로 오타. 부록 A 스니펫으로 재시도 |
 | 구독했는데 메시지 미수신 | 구독 `destination`이 `/topic/rooms/{roomId}`인지, 송신은 `/app/rooms/{roomId}/send`인지 확인 |
 | `/topic` 구독이 조용히 안 됨 | 비참여자 차단됨 — `/user/queue/errors` 구독 후 통지 확인 |

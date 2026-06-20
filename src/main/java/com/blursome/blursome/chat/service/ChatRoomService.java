@@ -8,6 +8,7 @@ import com.blursome.blursome.chat.dto.response.ChatRoomSummaryResponse;
 import com.blursome.blursome.chat.event.ChatProgressAdvancedEvent;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
+import com.blursome.blursome.chat.repository.ChatRoomRepository;
 import com.blursome.blursome.chat.repository.RoomPartnerInfo;
 import com.blursome.blursome.global.exception.BaseException;
 import java.util.HashMap;
@@ -29,6 +30,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class ChatRoomService {
 
   private final ChatRoomMemberRepository chatRoomMemberRepository;
+  private final ChatRoomRepository chatRoomRepository;
   private final ChatMessageService chatMessageService;
   private final ChatRoomCreator chatRoomCreator;
   private final ChatRoomMembershipReader membershipReader;
@@ -147,7 +149,9 @@ public class ChatRoomService {
    */
   @Transactional
   public ChatRoomSummaryResponse agreeProgress(Long roomId, Long memberId) {
-    ChatRoomMember membership = membershipReader.getVisibleMembership(roomId, memberId);
+    // 단계 동의는 방 상태를 바꾸는 쓰기다. 종료(CLOSED)된 방에서는 더 진행할 수 없으므로 쓰기 규칙으로 검증해
+    // 종료된 방 동의를 ROOM_CLOSED(409)로 막는다(조회 가시성은 종료된 방도 허용하므로 여기선 쓰기 규칙을 쓴다).
+    ChatRoomMember membership = membershipReader.getWritableMembership(roomId, memberId);
     ChatRoom room = membership.getChatRoom();
     if (room.getProgressStatus().isLast()) {
       throw BaseException.from(ChatErrorCode.PROGRESS_ALREADY_AGREED);
@@ -173,14 +177,23 @@ public class ChatRoomService {
   }
 
   /**
-   * 채팅방을 나간다(영구, 설계 §7-6). 1:1이므로 한쪽 나가기는 방 종료({@code CLOSED})로 이어진다. 종료 후에는 양쪽 모두 가시성 검증에서
-   * 막혀({@code ROOM_NOT_FOUND}) 재요청이 자연히 차단된다. 클래스 기본값({@code readOnly = true})을 덮어 쓰기 트랜잭션으로 연다.
+   * 채팅방을 나간다(영구, 설계 §7-6). 1:1이므로 한쪽 나가기는 방 종료({@code CLOSED})로 이어진다. 나가는 본인은 즉시 목록에서
+   * 사라지고(자신의 {@code leftAt} 세팅) 이후 이력·송신이 모두 막힌다. 반면 남은 상대는 방이 종료돼도 직접 나갈 때까지는
+   * 목록·이력을 계속 볼 수 있고(조회 가시성은 방 상태가 아니라 본인 {@code leftAt}으로만 판별), 송신만 {@code ROOM_CLOSED}로
+   * 막힌다. 상대가 나간 종료된 방에서 남은 사람도 이 메서드로 직접 나갈 수 있다({@code close()}는 멱등이라 재호출은 no-op).
+   * 클래스 기본값({@code readOnly = true})을 덮어 쓰기 트랜잭션으로 연다.
    */
   @Transactional
   public void leaveRoom(Long roomId, Long memberId) {
+    // 방 행을 "가장 먼저" 비관적 쓰기 락으로 잡는다 — 쓰기 경로(getWritableMembership)와 동일한 잠금 순서로 동시 송신·중복
+    // 퇴장과 직렬화한다(§7-6 동시성). 락을 먼저 잡은 뒤 멤버십을 읽으므로, 동시 중복 퇴장에서도 항상 최신 참여 상태를 본다
+    // (락 전에 읽으면 stale leftAt을 들고 leave()가 두 번 적용될 수 있다). 퇴장이 먼저 커밋되면 락 해제 후 송신은 CLOSED를
+    // 보고 ROOM_CLOSED로 막혀 메시지가 종료된 방에 새지 않는다.
+    ChatRoom room = chatRoomRepository.findByIdForUpdate(roomId)
+        .orElseThrow(() -> BaseException.from(ChatErrorCode.ROOM_NOT_FOUND));
     ChatRoomMember membership = membershipReader.getVisibleMembership(roomId, memberId);
     membership.leave();
-    membership.getChatRoom().close();
+    room.close();
   }
 
   /**

@@ -31,8 +31,9 @@ import org.springframework.stereotype.Component;
  *   <li>{@code CONNECT}: {@code Authorization: Bearer <AT>} 헤더의 토큰을 {@link JwtTokenProvider}로 검증하고,
  *       복원한 {@link JwtAuthentication}을 STOMP 세션 principal로 저장한다. 이후 모든 프레임의 발신자는 이 principal로
  *       식별한다(클라이언트가 보낸 senderId 미신뢰).</li>
- *   <li>{@code SUBSCRIBE}: {@code /topic/rooms/{roomId}} 구독 시 해당 회원이 그 방의 활성 참여자인지 검증해 비참여자
- *       구독을 차단한다.</li>
+ *   <li>{@code SUBSCRIBE}: {@code /topic/rooms/{roomId}} 구독 시 해당 회원이 그 방에서 나가지 않은 참여자
+ *       ({@code leftAt IS NULL})인지 조회 가시성 규칙으로 검증해 비참여자·나간 회원의 구독을 차단한다. 방이 종료(CLOSED)된 뒤에도
+ *       남은 참여자는 읽음 표시 등 실시간 이벤트를 받을 수 있어야 하므로 구독은 허용한다(송신은 쓰기 경로에서 별도로 막힌다).</li>
  * </ul>
  *
  * <p>{@code CONNECT} 인증 실패는 예외로 연결을 거절한다. 반면 {@code SUBSCRIBE} 권한 실패는 연결 전체를 끊지 않고
@@ -84,7 +85,7 @@ public class StompAuthChannelInterceptor implements ChannelInterceptor {
   }
 
   /**
-   * {@code /topic/rooms/{roomId}} 구독자가 그 방의 활성 참여자인지 검증한다(비참여자 차단).
+   * {@code /topic/rooms/{roomId}} 구독자가 그 방에서 나가지 않은 참여자인지 조회 가시성 규칙으로 검증한다(비참여자·나간 회원 차단).
    * 통과하면 원본 메시지를 그대로 흘려보내고, 막히면 개인 오류 큐로 통지한 뒤 {@code null}을 반환해 구독을 차단한다.
    */
   private Message<?> validateSubscription(StompHeaderAccessor accessor, Message<?> message) {
