@@ -2,9 +2,11 @@ package com.blursome.blursome.chat.repository;
 
 import com.blursome.blursome.chat.domain.ChatRoom;
 import com.blursome.blursome.chat.domain.ChatRoomMember;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -38,6 +40,43 @@ public interface ChatRoomMemberRepository extends JpaRepository<ChatRoomMember, 
    */
   @Query("select crm from ChatRoomMember crm where crm.chatRoom.id = :roomId")
   List<ChatRoomMember> findAllByRoomId(@Param("roomId") Long roomId);
+
+  /**
+   * 내 읽음 커서({@code lastReadMessageId})를 더 큰 값일 때만 원자적으로 전진시킨다(설계 §7-4, 커서 역행 방지).
+   * 엔티티 읽기-수정-쓰기로 갱신하면 동시 읽음 요청이 같은 커서를 읽고 각각 덮어써 더 작은 id가 큰 id를 되돌릴 수 있다
+   * (안읽음 수 재증가·잘못된 READ 이벤트). 메시지 id는 단조 증가(IDENTITY)하므로
+   * {@code WHERE last_read_message_id IS NULL OR last_read_message_id < :messageId} 조건부 UPDATE 한 방으로
+   * DB가 행을 직렬화해 항상 최신 커서만 남도록 한다({@code ChatRoomRepository#advanceLastMessage}와 동일 전략).
+   *
+   * @return 갱신된 행 수(이미 같거나 더 큰 커서면 0)
+   */
+  @Modifying
+  @Query("update ChatRoomMember crm set crm.lastReadMessageId = :messageId "
+      + "where crm.chatRoom.id = :roomId and crm.member.id = :memberId "
+      + "and (crm.lastReadMessageId is null or crm.lastReadMessageId < :messageId)")
+  int advanceLastReadMessage(@Param("roomId") Long roomId, @Param("memberId") Long memberId,
+      @Param("messageId") Long messageId);
+
+  /**
+   * 내 현재 읽음 커서를 조회한다(조건부 전진 후 실제 커서 확인용 — 이미 더 큰 커서가 있었으면 그 값을 브로드캐스트해야 한다).
+   * 참여 행이 없으면 비어 있음, 행은 있으나 아직 아무것도 안 읽었으면 값이 null이다.
+   */
+  @Query("select crm.lastReadMessageId from ChatRoomMember crm "
+      + "where crm.chatRoom.id = :roomId and crm.member.id = :memberId")
+  Optional<Long> findLastReadMessageId(@Param("roomId") Long roomId,
+      @Param("memberId") Long memberId);
+
+  /**
+   * 주어진 방들에서 나를 제외한 상대 참여자 정보(닉네임 + 읽음 커서)를 한 번에 조회한다(목록 조회 N+1 회피).
+   * 1:1 방이므로 방당 한 행이며, 읽음 커서로 "내가 보낸 메시지를 상대가 어디까지 읽었는지"(읽음 표시)를 계산한다.
+   * 상대가 아직 아무것도 읽지 않았으면 {@code lastReadMessageId}가, 온보딩 전이면 {@code partnerNickname}이 null일 수 있다.
+   */
+  @Query("select crm.chatRoom.id as roomId, crm.member.nickName as partnerNickname, "
+      + "crm.lastReadMessageId as lastReadMessageId "
+      + "from ChatRoomMember crm "
+      + "where crm.chatRoom.id in :roomIds and crm.member.id <> :memberId")
+  List<RoomPartnerInfo> findPartnerInfos(@Param("roomIds") Collection<Long> roomIds,
+      @Param("memberId") Long memberId);
 
   /**
    * 두 회원이 모두 참여 중인 {@code ACTIVE} 방을 조회한다(중복 방 생성 방지용, 설계 §7-1).

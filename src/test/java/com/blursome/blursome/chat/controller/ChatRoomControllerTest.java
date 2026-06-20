@@ -10,8 +10,10 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.blursome.blursome.chat.domain.ChatMessageType;
 import com.blursome.blursome.chat.domain.ChatRoomProgressStatus;
 import com.blursome.blursome.chat.domain.ChatRoomStatus;
+import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
 import com.blursome.blursome.chat.dto.response.ChatRoomSummaryResponse;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.service.ChatRoomService;
@@ -21,6 +23,7 @@ import com.blursome.blursome.global.security.JwtAuthenticationEntryPoint;
 import com.blursome.blursome.global.security.JwtAuthenticationFilter;
 import com.blursome.blursome.global.security.JwtTokenProvider;
 import com.blursome.blursome.member.domain.MemberRole;
+import java.time.LocalDateTime;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -88,6 +91,11 @@ class ChatRoomControllerTest {
     mockMvc.perform(get("/api/chat/rooms"))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.data[0].roomId").value(ROOM_ID))
+        .andExpect(jsonPath("$.data[0].progressStatus").value("MATCHED"))
+        .andExpect(jsonPath("$.data[0].partnerNickname").value("상대닉"))
+        .andExpect(jsonPath("$.data[0].lastMessage.content").value("마지막 메시지"))
+        .andExpect(jsonPath("$.data[0].lastMessage.type").value("TEXT"))
+        .andExpect(jsonPath("$.data[0].partnerLastReadMessageId").value(90))
         .andExpect(jsonPath("$.data[0].unreadCount").value(2));
   }
 
@@ -161,7 +169,10 @@ class ChatRoomControllerTest {
   }
 
   private ChatRoomSummaryResponse summary(ChatRoomProgressStatus progressStatus) {
-    return new ChatRoomSummaryResponse(ROOM_ID, ChatRoomStatus.ACTIVE, progressStatus, 99L, 2L);
+    ChatMessageResponse lastMessage = new ChatMessageResponse(
+        99L, ROOM_ID, 200L, ChatMessageType.TEXT, "마지막 메시지", LocalDateTime.now());
+    return new ChatRoomSummaryResponse(
+        ROOM_ID, ChatRoomStatus.ACTIVE, progressStatus, "상대닉", 99L, lastMessage, 90L, 2L);
   }
 
   /**

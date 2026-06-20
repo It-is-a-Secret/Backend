@@ -1,6 +1,7 @@
 package com.blursome.blursome.chat.repository;
 
 import com.blursome.blursome.chat.domain.ChatMessage;
+import java.util.Collection;
 import java.util.List;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -49,6 +50,15 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessage, Long> 
   long countUnreadInRoom(@Param("roomId") Long roomId,
       @Param("lastReadMessageId") Long lastReadMessageId,
       @Param("memberId") Long memberId);
+
+  /**
+   * 여러 메시지 id로 메시지를 한 번에 조회한다(방 목록의 마지막 메시지 미리보기용, N+1 회피).
+   * 발신자는 {@code left join fetch}로 함께 로딩해 미리보기 변환 시 추가 조회를 막는다(SYSTEM은 sender=null).
+   */
+  @Query("select m from ChatMessage m "
+      + "left join fetch m.sender "
+      + "where m.id in :ids")
+  List<ChatMessage> findAllByIdInWithSender(@Param("ids") Collection<Long> ids);
 
   /**
    * 해당 메시지가 그 방에 실제로 존재하는지 확인한다(읽음 커서 조작 방지, 설계 §7-4).
