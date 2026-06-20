@@ -8,12 +8,15 @@ import com.blursome.blursome.chat.dto.request.ChatMessageSendRequest;
 import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.repository.ChatMessageRepository;
+import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
 import com.blursome.blursome.chat.repository.ChatRoomRepository;
 import com.blursome.blursome.chat.repository.RoomUnreadCount;
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.member.domain.Member;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
@@ -31,6 +34,7 @@ public class ChatMessageService {
 
   private final ChatMessageRepository chatMessageRepository;
   private final ChatRoomRepository chatRoomRepository;
+  private final ChatRoomMemberRepository chatRoomMemberRepository;
   private final ChatRoomMembershipReader membershipReader;
 
   /**
@@ -69,19 +73,25 @@ public class ChatMessageService {
   }
 
   /**
-   * 읽음 위치를 전진시킨다(설계 §7-4, WebSocket 우선). 참여자 검증 후 {@link ChatRoomMember#readUpTo}로 갱신하므로
-   * 더 과거의 id로는 되돌아가지 않는다. 클래스 기본값({@code readOnly = true})을 덮어 쓰기 트랜잭션으로 연다.
+   * 읽음 위치를 전진시킨다(설계 §7-4, WebSocket 우선). 참여자 검증 후 조건부 UPDATE
+   * ({@link ChatRoomMemberRepository#advanceLastReadMessage})로 더 큰 커서일 때만 원자적으로 전진시키므로
+   * 동시 읽음 요청에서도 더 과거의 id로 되돌아가지 않는다. 클래스 기본값({@code readOnly = true})을 덮어 쓰기 트랜잭션으로 연다.
    *
    * <p>커서({@code lastReadMessageId})는 클라이언트가 보낸 값이므로 그 방에 실제로 존재하는 메시지인지 먼저 검증한다.
    * 방에 없는 id(예: {@code Long.MAX_VALUE})를 허용하면 이후 메시지까지 읽음 처리돼 안읽음 카운트가 영구 무력화되기 때문이다.
+   *
+   * @return 갱신 후 내 실제 읽음 커서(이미 더 큰 커서가 있었으면 그 값). 호출 측(STOMP 컨트롤러)이 이 값으로 읽음 표시를 브로드캐스트한다.
    */
   @Transactional
-  public void markAsRead(Long roomId, Long memberId, Long lastReadMessageId) {
-    ChatRoomMember membership = membershipReader.getWritableMembership(roomId, memberId);
+  public Long markAsRead(Long roomId, Long memberId, Long lastReadMessageId) {
+    membershipReader.getWritableMembership(roomId, memberId);
     if (!chatMessageRepository.existsByIdAndChatRoom_Id(lastReadMessageId, roomId)) {
       throw BaseException.from(ChatErrorCode.INVALID_MESSAGE);
     }
-    membership.readUpTo(lastReadMessageId);
+    // 동시 읽음 경합에서 커서가 역행하지 않도록 조건부 UPDATE로 원자적 단조 증가시킨다(엔티티 read-modify-write 회피).
+    chatRoomMemberRepository.advanceLastReadMessage(roomId, memberId, lastReadMessageId);
+    // 브로드캐스트에는 실제 전진된 커서를 실어야 한다 — 이미 더 큰 커서가 있었으면(조건부 UPDATE no-op) 그 값을 읽어 반환한다.
+    return chatRoomMemberRepository.findLastReadMessageId(roomId, memberId).orElse(lastReadMessageId);
   }
 
   /**
@@ -106,5 +116,31 @@ public class ChatMessageService {
     return chatMessageRepository.countUnreadByRoom(memberId)
         .stream()
         .collect(Collectors.toMap(RoomUnreadCount::getRoomId, RoomUnreadCount::getUnreadCount));
+  }
+
+  /**
+   * 여러 방의 마지막 메시지 미리보기를 {@code messageId → 응답} 맵으로 한 번에 조회한다(방 목록 N+1 회피).
+   * null·중복 id는 걸러 한 번의 쿼리로만 조회하며, 조회할 id가 없으면 빈 맵을 반환한다.
+   */
+  public Map<Long, ChatMessageResponse> getLastMessages(Collection<Long> messageIds) {
+    List<Long> ids = messageIds.stream().filter(Objects::nonNull).distinct().toList();
+    if (ids.isEmpty()) {
+      return Map.of();
+    }
+    return chatMessageRepository.findAllByIdInWithSender(ids)
+        .stream()
+        .collect(Collectors.toMap(ChatMessage::getId, ChatMessageResponse::from));
+  }
+
+  /** 단건 방의 마지막 메시지 미리보기를 조회한다. 메시지가 없으면({@code messageId == null}) null을 반환한다. */
+  public ChatMessageResponse getLastMessage(Long messageId) {
+    if (messageId == null) {
+      return null;
+    }
+    return chatMessageRepository.findAllByIdInWithSender(List.of(messageId))
+        .stream()
+        .findFirst()
+        .map(ChatMessageResponse::from)
+        .orElse(null);
   }
 }

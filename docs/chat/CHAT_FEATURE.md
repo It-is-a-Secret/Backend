@@ -178,7 +178,7 @@ join(room, member)   (leftAt = null)
 
 - ✅ 한 번 나가면(`leftAt` 세팅) 그 방으로는 다시 들어올 수 없다. 1:1이므로 한쪽 나가기는 방 종료(`CLOSED`)로 이어진다.
 - `(chat_room_id, member_id)` 유니크 제약은 유지된다(회원이 한 방에 한 번만 참여하므로 행도 1개).
-- ✅ `leave()` 도메인 메서드(구현됨): `leftAt = now` 설정(이미 나갔으면 예외). 읽음 위치는 `readUpTo(messageId)`로 전진만. `rejoin()`은 정책상 제공하지 않는다.
+- ✅ `leave()` 도메인 메서드(구현됨): `leftAt = now` 설정(이미 나갔으면 예외). 읽음 위치는 조건부 UPDATE(`advanceLastReadMessage`)로 전진만(동시 경합에서도 역행 없음). `rejoin()`은 정책상 제공하지 않는다.
 - ✅ **앱 종료 / 일시적 연결 끊김은 여기에 해당하지 않는다** — `leftAt`을 건드리지 않으며, 활동 시각(`lastActiveAt`)도 두지 않는다(상대 접속 상태
   미제공).
 
@@ -365,13 +365,25 @@ ChatRoomService.openRoom(a, b)        @Transactional
 ### 7-4. 읽음 처리 & 안읽음 카운트 (✅ 구현 / 🧩 캐싱 예정)
 
 - ✅ 읽음 위치 갱신은 WebSocket 경로(`/app/rooms/{roomId}/read` → `ChatMessageService.markAsRead`)로 처리하며,
-  `ChatRoomMember.lastReadMessageId`를 전진(`readUpTo`)시킨다.
+  `ChatRoomMember.lastReadMessageId`를 **조건부 UPDATE**(`advanceLastReadMessage`: `WHERE last_read_message_id IS NULL OR < :id`)로
+  더 큰 값일 때만 원자적으로 전진시킨다. 엔티티 read-modify-write로 갱신하면 동시 읽음 요청이 같은 커서를 읽고 더 작은 id로 덮어써
+  커서가 역행(안읽음 재증가·잘못된 READ 이벤트)할 수 있어, DB가 행을 직렬화하는 조건부 UPDATE로 단조 증가를 보장한다.
 - ✅ **커서 검증**: 클라이언트가 보낸 `lastReadMessageId`가 그 방에 실제 존재하는 메시지인지(`existsByIdAndChatRoom_Id`)
   확인한 뒤에만 전진시킨다. 방에 없는 큰 id(예: `Long.MAX_VALUE`)로 안읽음 카운트를 영구 무력화하는 것을 막는다(§9).
 - 안읽음 수 = `count(ChatMessage where chatRoom=room and id > lastReadMessageId and sender != me)`.
+  내 읽음 커서 기준이므로 **항상 "내가 안 읽은 수"**다(내가 보낸 메시지는 `sender != me`로 제외 → 상대 미열람은 카운트에 영향 없음).
 - ✅ **초기에는 DB count**로 계산한다(단순·정확). 트래픽이 늘면 Redis 캐싱으로 전환:
   `blursome:chat:<roomId>:<memberId>:unread` (키 스킴은 `docs/ARCHITECTURE.md § 6 Redis` 준수). 전환은 ADR로
   기록.
+- ✅ **읽음 표시(상대가 내 메시지를 읽었는지)**: 1:1이므로 "상대의 읽음 커서" 하나로 표현한다. 조회 응답
+  `ChatRoomSummaryResponse.partnerLastReadMessageId`(상대 `lastReadMessageId`)를 함께 내려주며, 클라이언트는
+  `내가 보낸 메시지 id <= partnerLastReadMessageId`인 메시지를 "읽음"으로 표시한다. 상대가 아직 아무것도 읽지 않았으면 null.
+  목록 조회는 상대 정보(닉네임·읽음 커서)를 단일 배치 쿼리(`findPartnerInfos`)로 모아 N+1을 피한다.
+- ✅ **상대 닉네임**: 단건·목록 조회 응답에 1:1 상대의 닉네임(`ChatRoomSummaryResponse.partnerNickname`)을 함께 내려준다.
+  목록은 위 배치 쿼리(`findPartnerInfos`)로, 단건은 상대 참여 행에서 가져온다(온보딩 전이면 null).
+- ✅ **실시간 읽음 확인**: `markAsRead` 성공 시 STOMP 컨트롤러가 `/topic/rooms/{roomId}`로 `READ` 이벤트
+  (`ChatReadReceiptResponse{eventType:"READ", roomId, readerId, lastReadMessageId}`)를 브로드캐스트한다.
+  상대(발신자) 클라이언트는 `readerId`가 자신이 아닐 때 자신이 보낸 메시지의 읽음 표시를 실시간 갱신한다.
 
 ### 7-5. 단계 진행 (상호 동의)
 

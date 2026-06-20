@@ -3,6 +3,7 @@ package com.blursome.blursome.chat.controller;
 import com.blursome.blursome.chat.dto.request.ChatMessageSendRequest;
 import com.blursome.blursome.chat.dto.request.ChatReadRequest;
 import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
+import com.blursome.blursome.chat.dto.response.ChatReadReceiptResponse;
 import com.blursome.blursome.chat.service.ChatMessageService;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.global.exception.BaseException;
@@ -49,14 +50,22 @@ public class ChatStompController {
     messagingTemplate.convertAndSend("/topic/rooms/" + roomId, response);
   }
 
-  /** {@code /app/rooms/{roomId}/read} — 읽음 위치를 전진시킨다(WebSocket 우선). */
+  /**
+   * {@code /app/rooms/{roomId}/read} — 읽음 위치를 전진시키고 {@code /topic/rooms/{roomId}}로 읽음 확인을 브로드캐스트한다.
+   * 상대(메시지 발신자) 클라이언트는 이 {@code READ} 이벤트의 {@code lastReadMessageId}로 자신이 보낸 메시지의 읽음 표시를 갱신한다(설계 §7-4).
+   */
   @MessageMapping("/rooms/{roomId}/read")
   public void read(
       @DestinationVariable Long roomId,
       @Valid @Payload ChatReadRequest request,
       Principal principal
   ) {
-    chatMessageService.markAsRead(roomId, memberId(principal), request.lastReadMessageId());
+    Long readerId = memberId(principal);
+    Long lastReadMessageId =
+        chatMessageService.markAsRead(roomId, readerId, request.lastReadMessageId());
+    messagingTemplate.convertAndSend(
+        "/topic/rooms/" + roomId,
+        ChatReadReceiptResponse.of(roomId, readerId, lastReadMessageId));
   }
 
   /**

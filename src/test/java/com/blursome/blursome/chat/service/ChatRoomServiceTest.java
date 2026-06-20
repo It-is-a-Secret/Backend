@@ -9,6 +9,7 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
+import com.blursome.blursome.chat.domain.ChatMessageType;
 import com.blursome.blursome.chat.domain.ChatRoom;
 import com.blursome.blursome.chat.domain.ChatRoomMember;
 import com.blursome.blursome.chat.domain.ChatRoomProgressStatus;
@@ -17,9 +18,11 @@ import com.blursome.blursome.chat.dto.response.ChatRoomSummaryResponse;
 import com.blursome.blursome.chat.event.ChatProgressAdvancedEvent;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
+import com.blursome.blursome.chat.repository.RoomPartnerInfo;
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.OAuthProvider;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -42,6 +45,9 @@ class ChatRoomServiceTest {
   private static final Long OTHER_ID = 200L;
   private static final Long MY_ROW_ID = 1L;
   private static final Long OTHER_ROW_ID = 2L;
+  private static final Long LAST_MESSAGE_ID = 99L;
+  private static final Long PARTNER_READ_ID = 90L;
+  private static final String PARTNER_NICKNAME = "상대닉";
 
   @Mock
   private ChatRoomMemberRepository chatRoomMemberRepository;
@@ -152,14 +158,20 @@ class ChatRoomServiceTest {
   // ---------- getMyRooms ----------
 
   @Test
-  @DisplayName("내 방 목록을 안읽음 수와 함께 반환한다")
+  @DisplayName("내 방 목록을 안읽음 수·단계·마지막 메시지·상대 닉네임·상대 읽음 커서와 함께 반환한다")
   void getMyRooms_thenReturnsSummariesWithUnread() {
     // given
     ChatRoom room = activeRoom(ROOM_ID);
+    ReflectionTestUtils.setField(room, "lastMessageId", LAST_MESSAGE_ID);
     ChatRoomMember membership = membership(MY_ROW_ID, room, ChatRoomProgressStatus.MATCHED);
     given(chatRoomMemberRepository.findActiveMembershipsWithRoom(MEMBER_ID))
         .willReturn(List.of(membership));
     given(chatMessageService.getUnreadCounts(MEMBER_ID)).willReturn(Map.of(ROOM_ID, 3L));
+    ChatMessageResponse lastMessage = lastMessageResponse();
+    given(chatMessageService.getLastMessages(List.of(LAST_MESSAGE_ID)))
+        .willReturn(Map.of(LAST_MESSAGE_ID, lastMessage));
+    given(chatRoomMemberRepository.findPartnerInfos(List.of(ROOM_ID), MEMBER_ID))
+        .willReturn(List.of(partnerInfo(ROOM_ID, PARTNER_NICKNAME, PARTNER_READ_ID)));
 
     // when
     List<ChatRoomSummaryResponse> result = chatRoomService.getMyRooms(MEMBER_ID);
@@ -167,18 +179,26 @@ class ChatRoomServiceTest {
     // then
     assertThat(result).hasSize(1);
     assertThat(result.get(0).roomId()).isEqualTo(ROOM_ID);
+    assertThat(result.get(0).progressStatus()).isEqualTo(ChatRoomProgressStatus.MATCHED);
     assertThat(result.get(0).unreadCount()).isEqualTo(3L);
+    assertThat(result.get(0).lastMessage()).isSameAs(lastMessage);
+    assertThat(result.get(0).partnerNickname()).isEqualTo(PARTNER_NICKNAME);
+    assertThat(result.get(0).partnerLastReadMessageId()).isEqualTo(PARTNER_READ_ID);
   }
 
   // ---------- getRoom ----------
 
   @Test
-  @DisplayName("참여 중인 방 단건을 안읽음 수와 함께 반환한다")
+  @DisplayName("참여 중인 방 단건을 안읽음 수·상대 닉네임·상대 읽음 커서와 함께 반환한다")
   void getRoom_whenParticipant_thenReturnsSummary() {
     // given
     ChatRoom room = activeRoom(ROOM_ID);
     ChatRoomMember membership = membership(MY_ROW_ID, room, ChatRoomProgressStatus.MATCHED);
+    ChatRoomMember other = membership(OTHER_ROW_ID, room, ChatRoomProgressStatus.MATCHED);
+    ReflectionTestUtils.setField(other, "lastReadMessageId", PARTNER_READ_ID);
+    ReflectionTestUtils.setField(other.getMember(), "nickName", PARTNER_NICKNAME);
     givenVisibleMembership(room, membership);
+    given(chatRoomMemberRepository.findAllByRoomId(ROOM_ID)).willReturn(List.of(membership, other));
     given(chatMessageService.getUnreadCount(anyLong(), any(), anyLong())).willReturn(5L);
 
     // when
@@ -187,6 +207,8 @@ class ChatRoomServiceTest {
     // then
     assertThat(result.roomId()).isEqualTo(ROOM_ID);
     assertThat(result.unreadCount()).isEqualTo(5L);
+    assertThat(result.partnerNickname()).isEqualTo(PARTNER_NICKNAME);
+    assertThat(result.partnerLastReadMessageId()).isEqualTo(PARTNER_READ_ID);
   }
 
   @Test
@@ -322,6 +344,32 @@ class ChatRoomServiceTest {
   /** 가시성 검증을 통과해 내 멤버십을 돌려주도록 reader를 스텁한다(방은 멤버십에서 reachable). */
   private void givenVisibleMembership(ChatRoom room, ChatRoomMember me) {
     given(membershipReader.getVisibleMembership(ROOM_ID, MEMBER_ID)).willReturn(me);
+  }
+
+  private ChatMessageResponse lastMessageResponse() {
+    return new ChatMessageResponse(
+        LAST_MESSAGE_ID, ROOM_ID, OTHER_ID, ChatMessageType.TEXT, "마지막 메시지",
+        LocalDateTime.now());
+  }
+
+  /** 상대 정보(닉네임·읽음 커서) 배치 조회 프로젝션 스텁. */
+  private RoomPartnerInfo partnerInfo(Long roomId, String nickname, Long lastReadMessageId) {
+    return new RoomPartnerInfo() {
+      @Override
+      public Long getRoomId() {
+        return roomId;
+      }
+
+      @Override
+      public String getPartnerNickname() {
+        return nickname;
+      }
+
+      @Override
+      public Long getLastReadMessageId() {
+        return lastReadMessageId;
+      }
+    };
   }
 
   private ChatRoom activeRoom(Long id) {

@@ -104,14 +104,4 @@ public class ChatRoomMember extends BaseEntity {
     }
     this.agreedProgressStatus = target;
   }
-
-  /** 읽은 위치를 갱신한다. 뒤로 가지 않도록 더 큰 메시지 id일 때만 전진시킨다. */
-  public void readUpTo(Long messageId) {
-    if (messageId == null) {
-      return;
-    }
-    if (this.lastReadMessageId == null || messageId > this.lastReadMessageId) {
-      this.lastReadMessageId = messageId;
-    }
-  }
 }

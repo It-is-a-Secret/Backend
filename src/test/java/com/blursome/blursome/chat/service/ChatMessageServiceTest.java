@@ -3,6 +3,7 @@ package com.blursome.blursome.chat.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -16,10 +17,12 @@ import com.blursome.blursome.chat.dto.request.ChatMessageSendRequest;
 import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.repository.ChatMessageRepository;
+import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
 import com.blursome.blursome.chat.repository.ChatRoomRepository;
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.OAuthProvider;
+import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -40,6 +43,9 @@ class ChatMessageServiceTest {
 
   @Mock
   private ChatRoomRepository chatRoomRepository;
+
+  @Mock
+  private ChatRoomMemberRepository chatRoomMemberRepository;
 
   @Mock
   private ChatRoomMembershipReader membershipReader;
@@ -103,33 +109,54 @@ class ChatMessageServiceTest {
   }
 
   @Test
-  @DisplayName("그 방에 실제로 존재하는 메시지 id면 읽음 위치를 전진시킨다")
+  @DisplayName("그 방에 실제로 존재하는 메시지 id면 조건부 UPDATE로 읽음 커서를 전진시키고 그 값을 반환한다")
   void markAsRead_whenMessageInRoom_thenAdvancesLastRead() {
     // given
-    ChatRoomMember membership = membership(activeRoom());
-    given(membershipReader.getWritableMembership(ROOM_ID, SENDER_ID)).willReturn(membership);
+    given(membershipReader.getWritableMembership(ROOM_ID, SENDER_ID))
+        .willReturn(membership(activeRoom()));
     given(chatMessageRepository.existsByIdAndChatRoom_Id(7L, ROOM_ID)).willReturn(true);
+    given(chatRoomMemberRepository.findLastReadMessageId(ROOM_ID, SENDER_ID))
+        .willReturn(Optional.of(7L));
 
     // when
-    chatMessageService.markAsRead(ROOM_ID, SENDER_ID, 7L);
+    Long effectiveCursor = chatMessageService.markAsRead(ROOM_ID, SENDER_ID, 7L);
 
     // then
-    assertThat(membership.getLastReadMessageId()).isEqualTo(7L);
+    verify(chatRoomMemberRepository).advanceLastReadMessage(ROOM_ID, SENDER_ID, 7L);
+    assertThat(effectiveCursor).isEqualTo(7L);
   }
 
   @Test
-  @DisplayName("방에 없는 커서(예: 조작된 큰 id)는 INVALID_MESSAGE로 거부되고 읽음 위치가 바뀌지 않는다")
+  @DisplayName("이미 더 큰 커서가 있으면(조건부 UPDATE no-op) 역행하지 않고 기존 커서를 반환한다")
+  void markAsRead_whenBehindCurrent_thenKeepsLargerCursor() {
+    // given — 요청은 5지만 이미 9까지 읽은 상태(동시/순서 역전 요청 시뮬레이션)
+    given(membershipReader.getWritableMembership(ROOM_ID, SENDER_ID))
+        .willReturn(membership(activeRoom()));
+    given(chatMessageRepository.existsByIdAndChatRoom_Id(5L, ROOM_ID)).willReturn(true);
+    given(chatRoomMemberRepository.advanceLastReadMessage(ROOM_ID, SENDER_ID, 5L)).willReturn(0);
+    given(chatRoomMemberRepository.findLastReadMessageId(ROOM_ID, SENDER_ID))
+        .willReturn(Optional.of(9L));
+
+    // when
+    Long effectiveCursor = chatMessageService.markAsRead(ROOM_ID, SENDER_ID, 5L);
+
+    // then
+    assertThat(effectiveCursor).isEqualTo(9L);
+  }
+
+  @Test
+  @DisplayName("방에 없는 커서(예: 조작된 큰 id)는 INVALID_MESSAGE로 거부되고 커서를 전진시키지 않는다")
   void markAsRead_whenMessageNotInRoom_thenRejects() {
     // given
-    ChatRoomMember membership = membership(activeRoom());
-    given(membershipReader.getWritableMembership(ROOM_ID, SENDER_ID)).willReturn(membership);
+    given(membershipReader.getWritableMembership(ROOM_ID, SENDER_ID))
+        .willReturn(membership(activeRoom()));
     given(chatMessageRepository.existsByIdAndChatRoom_Id(Long.MAX_VALUE, ROOM_ID)).willReturn(false);
 
     // when & then
     assertThatThrownBy(() -> chatMessageService.markAsRead(ROOM_ID, SENDER_ID, Long.MAX_VALUE))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", ChatErrorCode.INVALID_MESSAGE.getCode());
-    assertThat(membership.getLastReadMessageId()).isNull();
+    verify(chatRoomMemberRepository, never()).advanceLastReadMessage(anyLong(), anyLong(), anyLong());
   }
 
   // ---------- fixtures ----------
