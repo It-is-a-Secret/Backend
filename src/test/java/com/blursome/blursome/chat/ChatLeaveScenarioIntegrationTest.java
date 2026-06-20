@@ -21,6 +21,7 @@ import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.OAuthProvider;
 import com.blursome.blursome.member.repository.MemberRepository;
 import com.blursome.blursome.support.TestcontainersConfiguration;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -41,6 +42,9 @@ import org.springframework.test.util.ReflectionTestUtils;
 @Import(TestcontainersConfiguration.class)
 class ChatLeaveScenarioIntegrationTest {
 
+  // 닉네임/식별자 유일성 보장(통합 테스트는 롤백되지 않고 nick_name·provider_id에 유니크 제약이 있다).
+  private static final AtomicLong SEQ = new AtomicLong();
+
   @Autowired
   private ChatRoomService chatRoomService;
 
@@ -59,7 +63,7 @@ class ChatLeaveScenarioIntegrationTest {
   @Test
   @DisplayName("A가 나가면 A 목록에서 제외되고 단건·이력 조회는 ROOM_NOT_FOUND, 송신은 ROOM_CLOSED로 차단된다")
   void afterALeaves_aIsExcludedAndBlocked() {
-    Fixture f = persistRoom("닉네임A", "닉네임B");
+    Fixture f = persistRoom();
     chatMessageService.send(f.roomId(), f.aId(), text("안녕"));
 
     chatRoomService.leaveRoom(f.roomId(), f.aId());
@@ -80,7 +84,7 @@ class ChatLeaveScenarioIntegrationTest {
   @Test
   @DisplayName("A가 나가도 B 목록에는 방이 남고 상대(A) 닉네임·진행됐던 단계가 보이며 단건·이력 조회가 가능하다")
   void afterALeaves_bKeepsRoomWithPartnerInfoAndProgress() {
-    Fixture f = persistRoom("닉네임A", "닉네임B");
+    Fixture f = persistRoom();
     // 양쪽 동의로 단계를 STEP_1까지 올려 둔다(진행됐던 단계 확인용)
     chatRoomService.agreeProgress(f.roomId(), f.aId());
     chatRoomService.agreeProgress(f.roomId(), f.bId());
@@ -90,7 +94,7 @@ class ChatLeaveScenarioIntegrationTest {
 
     ChatRoomSummaryResponse summary = onlyRoomOf(f.bId(), f.roomId());
     assertThat(summary.roomStatus()).isEqualTo(ChatRoomStatus.CLOSED);
-    assertThat(summary.partnerNickname()).isEqualTo("닉네임A");
+    assertThat(summary.partnerNickname()).isEqualTo(f.aNick());
     assertThat(summary.progressStatus()).isEqualTo(ChatRoomProgressStatus.PHOTO_REVEAL_STEP_1);
 
     // 단건·이력 조회 가능
@@ -101,7 +105,7 @@ class ChatLeaveScenarioIntegrationTest {
   @Test
   @DisplayName("A가 나간 뒤 B는 송신·읽음·단계 동의가 모두 ROOM_CLOSED로 차단된다")
   void afterALeaves_bCannotSendReadOrAgree() {
-    Fixture f = persistRoom("닉네임A", "닉네임B");
+    Fixture f = persistRoom();
     ChatMessageResponse sent = chatMessageService.send(f.roomId(), f.aId(), text("안녕"));
 
     chatRoomService.leaveRoom(f.roomId(), f.aId());
@@ -120,7 +124,7 @@ class ChatLeaveScenarioIntegrationTest {
   @Test
   @DisplayName("상대가 먼저 나가 종료된 방에서도 B가 직접 나가면 B 목록에서도 사라진다")
   void afterBothLeave_bIsAlsoExcluded() {
-    Fixture f = persistRoom("닉네임A", "닉네임B");
+    Fixture f = persistRoom();
     chatRoomService.leaveRoom(f.roomId(), f.aId());
     assertThat(chatRoomService.getMyRooms(f.bId())).hasSize(1);
 
@@ -132,7 +136,7 @@ class ChatLeaveScenarioIntegrationTest {
   @Test
   @DisplayName("종료된 방의 안읽음 수는 목록과 단건 조회가 일치한다")
   void closedRoomUnreadCount_listMatchesSingle() {
-    Fixture f = persistRoom("닉네임A", "닉네임B");
+    Fixture f = persistRoom();
     chatMessageService.send(f.roomId(), f.aId(), text("1"));
     chatMessageService.send(f.roomId(), f.aId(), text("2"));
     chatMessageService.send(f.roomId(), f.aId(), text("3"));
@@ -159,25 +163,29 @@ class ChatLeaveScenarioIntegrationTest {
     return new ChatMessageSendRequest(ChatMessageType.TEXT, content);
   }
 
-  /** 두 회원과 그 사이의 ACTIVE 방·참여 행을 영속화한다. */
-  private Fixture persistRoom(String nickA, String nickB) {
-    Member a = saveMember("a", nickA);
-    Member b = saveMember("b", nickB);
+  /**
+   * 두 회원과 그 사이의 ACTIVE 방·참여 행을 영속화한다. 통합 테스트는 롤백되지 않고 회원 닉네임에
+   * {@code uk_member_nickname} 유니크 제약이 있으므로, 닉네임·식별자를 매번 고유하게 만들고 실제 값을
+   * {@link Fixture}로 돌려준다(상대 닉네임 노출 검증은 이 값과 비교).
+   */
+  private Fixture persistRoom() {
+    Member a = saveMember("a");
+    Member b = saveMember("b");
     ChatRoom room = chatRoomRepository.save(ChatRoom.createOnMatched(a.getId(), b.getId()));
     chatRoomMemberRepository.save(ChatRoomMember.join(room, a));
     chatRoomMemberRepository.save(ChatRoomMember.join(room, b));
-    return new Fixture(room.getId(), a.getId(), b.getId());
+    return new Fixture(room.getId(), a.getId(), b.getId(), a.getNickName(), b.getNickName());
   }
 
-  private Member saveMember(String tag, String nickName) {
-    String unique = tag + "-" + System.nanoTime();
+  private Member saveMember(String tag) {
+    String unique = tag + "-" + SEQ.incrementAndGet() + "-" + System.nanoTime();
     Member member = Member.createOAuthMember(
         OAuthProvider.KAKAO, unique, tag, unique + "@example.com", null);
-    // 닉네임은 온보딩 단계에서 채워지지만, 테스트에선 상대 닉네임 노출 검증을 위해 직접 세팅한다.
-    ReflectionTestUtils.setField(member, "nickName", nickName);
+    // 닉네임은 온보딩 단계에서 채워지지만, 테스트에선 상대 닉네임 노출 검증을 위해 직접(고유하게) 세팅한다.
+    ReflectionTestUtils.setField(member, "nickName", "닉네임-" + unique);
     return memberRepository.save(member);
   }
 
-  private record Fixture(Long roomId, Long aId, Long bId) {
+  private record Fixture(Long roomId, Long aId, Long bId, String aNick, String bNick) {
   }
 }
