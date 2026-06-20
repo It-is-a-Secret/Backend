@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BlurSome STOMP 테스터</title>
+<!-- @stomp/stompjs UMD 빌드: 프레임 종료(null byte)·CONNECT 헤더 등을 라이브러리가 처리 -->
+<script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.0.0/bundles/stomp.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1c1f26;
+    --panel-2: #232730;
+    --line: #2e333d;
+    --txt: #e6e8ec;
+    --muted: #8b919c;
+    --a: #5b9dff;      /* A 세션 색 */
+    --b: #ff8f5b;      /* B 세션 색 */
+    --ok: #46c98b;
+    --err: #ff5f6e;
+    --warn: #e0b341;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--txt);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 14px; line-height: 1.5;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; letter-spacing: .3px; }
+  header .sub { color: var(--muted); font-size: 12.5px; }
+  .global {
+    padding: 12px 20px; border-bottom: 1px solid var(--line);
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px 16px; align-items: end; background: var(--panel);
+  }
+  .global label { display: block; font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
+  .global input {
+    width: 100%; background: var(--bg); border: 1px solid var(--line);
+    color: var(--txt); padding: 7px 9px; border-radius: 6px; font-family: var(--mono); font-size: 12.5px;
+  }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .session { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  .session:last-child { border-right: none; }
+  .s-head {
+    padding: 11px 16px; display: flex; align-items: center; gap: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  .s-head .tag {
+    width: 26px; height: 26px; border-radius: 6px; display: grid; place-items: center;
+    font-weight: 700; color: #0c0d10;
+  }
+  .session.A .tag { background: var(--a); }
+  .session.B .tag { background: var(--b); }
+  .s-head .who { font-weight: 600; }
+  .s-head .state {
+    margin-left: auto; font-size: 12px; font-family: var(--mono);
+    padding: 3px 9px; border-radius: 20px; border: 1px solid var(--line); color: var(--muted);
+  }
+  .s-head .state.on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 50%, transparent); }
+  .s-head .state.off { color: var(--err); border-color: color-mix(in srgb, var(--err) 50%, transparent); }
+  .s-body { padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row label { font-size: 11.5px; color: var(--muted); }
+  textarea, .s-body input[type=text] {
+    width: 100%; background: var(--bg); border: 1px solid var(--line); color: var(--txt);
+    padding: 7px 9px; border-radius: 6px; font-family: var(--mono); font-size: 12.5px; resize: vertical;
+  }
+  button {
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--txt);
+    padding: 7px 12px; border-radius: 6px; cursor: pointer; font-size: 12.5px; font-weight: 500;
+  }
+  button:hover:not(:disabled) { border-color: #444b57; background: #2a2f39; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.primary { background: var(--a); color: #0c0d10; border-color: transparent; font-weight: 600; }
+  .session.B button.primary { background: var(--b); }
+  button.danger { color: var(--err); }
+  .log {
+    flex: 1; margin: 0 16px 16px; background: #0e1013; border: 1px solid var(--line);
+    border-radius: 8px; padding: 10px 12px; overflow-y: auto; height: 320px;
+    font-family: var(--mono); font-size: 12px; line-height: 1.6;
+  }
+  .log .e { display: flex; gap: 8px; padding: 2px 0; border-bottom: 1px solid #16181d; }
+  .log .e:last-child { border-bottom: none; }
+  .log .t { color: #4b515c; flex-shrink: 0; }
+  .log .m { white-space: pre-wrap; word-break: break-all; }
+  .e.send .m { color: var(--a); }
+  .session.B .e.send .m { color: var(--b); }
+  .e.recv .m { color: var(--ok); }
+  .e.sys  .m { color: var(--muted); }
+  .e.err  .m { color: var(--err); }
+  .e.warn .m { color: var(--warn); }
+  .hint { font-size: 11.5px; color: var(--muted); padding: 0 16px 12px; }
+  code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-family: var(--mono); font-size: 11.5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>BlurSome STOMP 테스터</h1>
+  <span class="sub">A·B 두 세션으로 CONNECT → SUBSCRIBE → SEND 실시간 검증</span>
+</header>
+
+<div class="global">
+  <div>
+    <label>WebSocket URL</label>
+    <input id="wsUrl" value="ws://localhost:8080/ws" />
+  </div>
+  <div>
+    <label>Room ID (구독/전송 대상)</label>
+    <input id="roomId" value="1" />
+  </div>
+  <div>
+    <label>accessTokenA &nbsp;<span style="color:var(--a)">● A 세션</span></label>
+    <input id="tokenA" placeholder="Postman 변수 accessTokenA 값 붙여넣기 (eyJ...)" />
+  </div>
+  <div>
+    <label>accessTokenB &nbsp;<span style="color:var(--b)">● B 세션</span></label>
+    <input id="tokenB" placeholder="Postman 변수 accessTokenB 값 붙여넣기 (eyJ...)" />
+  </div>
+</div>
+
+<div class="grid" id="grid"></div>
+
+<p class="hint">
+  순서: 두 토큰 입력 → 각 패널에서 <code>연결</code> → <code>방 구독</code> →
+  A에서 <code>메시지 전송</code> 후 B 로그에 같은 메시지가 도착하면 성공.
+  전송 본문의 <code>senderId</code>는 서버가 무시하고 CONNECT 신분으로 결정합니다.
+</p>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const grid = $("grid");
+
+  // 두 세션 패널을 동적으로 생성
+  const sessions = {};
+  ["A", "B"].forEach((key) => {
+    const wrap = document.createElement("div");
+    wrap.className = "session " + key;
+    wrap.innerHTML = `
+      <div class="s-head">
+        <div class="tag">${key}</div>
+        <div class="who">세션 ${key}</div>
+        <div class="state off" data-state>DISCONNECTED</div>
+      </div>
+      <div class="s-body">
+        <div class="row">
+          <button data-act="connect" class="primary">연결</button>
+          <button data-act="disconnect" class="danger" disabled>연결 해제</button>
+          <button data-act="subscribe" disabled>방 구독</button>
+        </div>
+        <div>
+          <label>전송 본문 (JSON)</label>
+          <textarea data-msg rows="3">{"type":"TEXT","content":"안녕하세요 STOMP from ${key}"}</textarea>
+        </div>
+        <div class="row">
+          <button data-act="send" disabled>메시지 전송 → /app/rooms/{id}/send</button>
+          <button data-act="read" disabled>읽음 처리 → /read</button>
+          <button data-act="clear">로그 지우기</button>
+        </div>
+      </div>
+      <div class="log" data-log></div>
+    `;
+    grid.appendChild(wrap);
+    sessions[key] = {
+      key,
+      el: wrap,
+      client: null,
+      stateEl: wrap.querySelector("[data-state]"),
+      logEl: wrap.querySelector("[data-log]"),
+      btn: (a) => wrap.querySelector(`[data-act="${a}"]`),
+      msgEl: wrap.querySelector("[data-msg]"),
+    };
+  });
+
+  function now() {
+    const d = new Date();
+    return d.toTimeString().slice(0, 8) + "." + String(d.getMilliseconds()).padStart(3, "0");
+  }
+
+  function log(s, type, msg) {
+    const e = document.createElement("div");
+    e.className = "e " + type;
+    e.innerHTML = `<span class="t">${now()}</span><span class="m"></span>`;
+    e.querySelector(".m").textContent = msg;
+    s.logEl.appendChild(e);
+    s.logEl.scrollTop = s.logEl.scrollHeight;
+  }
+
+  function setState(s, on, label) {
+    s.stateEl.textContent = label;
+    s.stateEl.className = "state " + (on ? "on" : "off");
+    s.btn("connect").disabled = on;
+    s.btn("disconnect").disabled = !on;
+    s.btn("subscribe").disabled = !on;
+    s.btn("send").disabled = !on;
+    s.btn("read").disabled = !on;
+  }
+
+  function connect(s) {
+    if (typeof StompJs === "undefined") {
+      log(s, "err", "STOMP 라이브러리가 로드되지 않았습니다. 인터넷 연결을 확인하거나 페이지를 새로고침하세요.");
+      return;
+    }
+    const url = $("wsUrl").value.trim();
+    const token = $(s.key === "A" ? "tokenA" : "tokenB").value.trim();
+    if (!token) { log(s, "err", "토큰이 비어 있습니다. 상단에 accessToken" + s.key + " 값을 붙여넣으세요."); return; }
+
+    log(s, "sys", "WebSocket 연결 시도: " + url);
+    const client = new StompJs.Client({
+      brokerURL: url,
+      // CONNECT 프레임에 JWT 첨부 — 서버 ChannelInterceptor가 이 헤더를 검증
+      connectHeaders: { Authorization: "Bearer " + token },
+      reconnectDelay: 0, // 자동 재연결 끔 (테스트 중 혼란 방지)
+      debug: (str) => {
+        // STOMP 원시 프레임 로그 — 필요 이상으로 시끄러우면 주석 처리
+        if (str.startsWith(">>>") || str.startsWith("<<<")) log(s, "sys", str);
+      },
+    });
+
+    client.onConnect = (frame) => {
+      setState(s, true, "CONNECTED");
+      log(s, "recv", "✓ CONNECTED 수신 — STOMP 인증 성공");
+    };
+    client.onStompError = (frame) => {
+      // 서버가 ERROR 프레임을 보낸 경우 (인증 실패 등)
+      log(s, "err", "✗ ERROR 프레임: " + (frame.headers["message"] || "") + "\n" + (frame.body || ""));
+    };
+    client.onWebSocketClose = (evt) => {
+      setState(s, false, "DISCONNECTED");
+      log(s, "warn", "WebSocket 종료 (code=" + evt.code + ")");
+    };
+    client.onWebSocketError = () => {
+      log(s, "err", "WebSocket 오류 — 서버가 떠 있는지, URL이 맞는지 확인하세요.");
+    };
+
+    s.client = client;
+    client.activate();
+  }
+
+  function subscribe(s) {
+    if (!s.client || !s.client.connected) { log(s, "err", "먼저 연결하세요."); return; }
+    const roomId = $("roomId").value.trim();
+
+    // 개인 오류 큐
+    s.client.subscribe("/user/queue/errors", (m) => {
+      log(s, "err", "[/user/queue/errors] " + m.body);
+    }, { id: "sub-errors-" + s.key });
+
+    // 방 토픽
+    s.client.subscribe("/topic/rooms/" + roomId, (m) => {
+      log(s, "recv", "[/topic/rooms/" + roomId + "] " + m.body);
+    }, { id: "sub-room-" + s.key });
+
+    log(s, "sys", "구독 완료: /topic/rooms/" + roomId + " , /user/queue/errors");
+  }
+
+  function send(s) {
+    if (!s.client || !s.client.connected) { log(s, "err", "먼저 연결하세요."); return; }
+    const roomId = $("roomId").value.trim();
+    const body = s.msgEl.value;
+    try { JSON.parse(body); } catch (e) { log(s, "err", "본문이 올바른 JSON이 아닙니다: " + e.message); return; }
+    s.client.publish({
+      destination: "/app/rooms/" + roomId + "/send",
+      headers: { "content-type": "application/json" },
+      body: body,
+    });
+    log(s, "send", "SEND → /app/rooms/" + roomId + "/send\n" + body);
+  }
+
+  function read(s) {
+    if (!s.client || !s.client.connected) { log(s, "err", "먼저 연결하세요."); return; }
+    const roomId = $("roomId").value.trim();
+    const id = prompt("읽음 처리할 lastReadMessageId 를 입력하세요", "3");
+    if (id === null) return;
+    const body = JSON.stringify({ lastReadMessageId: Number(id) });
+    s.client.publish({
+      destination: "/app/rooms/" + roomId + "/read",
+      headers: { "content-type": "application/json" },
+      body: body,
+    });
+    log(s, "send", "SEND → /app/rooms/" + roomId + "/read\n" + body);
+  }
+
+  function disconnect(s) {
+    if (s.client) { s.client.deactivate(); log(s, "sys", "연결 해제 요청"); }
+  }
+
+  // 버튼 바인딩
+  Object.values(sessions).forEach((s) => {
+    s.btn("connect").onclick = () => connect(s);
+    s.btn("disconnect").onclick = () => disconnect(s);
+    s.btn("subscribe").onclick = () => subscribe(s);
+    s.btn("send").onclick = () => send(s);
+    s.btn("read").onclick = () => read(s);
+    s.btn("clear").onclick = () => { s.logEl.innerHTML = ""; };
+  });
+})();
+</script>
+</body>
+</html>

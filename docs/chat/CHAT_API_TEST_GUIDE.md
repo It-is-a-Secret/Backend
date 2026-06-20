@@ -97,7 +97,21 @@ VALUES
 UPDATE chat_room SET last_message_id = 2 WHERE id = 1;
 ```
 
-> 테스트를 처음부터 다시 하려면 역순으로 비우세요: `chat_message` → `chat_room_member` → `chat_room` → `member`.
+> **시드 재실행(reset)** — 위 `INSERT`는 PK를 고정값(방 id=1, 회원 id=1001/1002 등)으로 넣으므로, 그대로 다시
+> 실행하면 PK 중복 오류가 납니다. 처음부터 다시 하려면 **테스트 데이터만** 역순(FK 의존 순서)으로 지운 뒤 다시
+> INSERT 하세요.
+>
+> ```sql
+> -- 테스트 데이터 한정 reset (FK 역순: message → member 행 → room → member)
+> DELETE FROM chat_message     WHERE chat_room_id = 1;
+> DELETE FROM chat_room_member WHERE chat_room_id = 1;
+> DELETE FROM chat_room        WHERE id = 1;
+> DELETE FROM member           WHERE id IN (1001, 1002);
+> ```
+>
+> ⚠️ 실행 전 충돌 확인: 기존 개발 데이터에 이미 id `1`(방)·`1001`/`1002`(회원)가 있으면 위 DELETE가 그 데이터를
+> 지우거나 INSERT가 충돌합니다. `SELECT * FROM member WHERE id IN (1001,1002)` / `SELECT * FROM chat_room WHERE id=1`
+> 으로 비어 있는지 먼저 확인하고, 충돌하면 시드 id를 다른 값으로 바꾸세요(Postman `memberAId`/`memberBId`/`roomId`도 함께 변경).
 
 ### 1-3. Postman 환경(Environment) 변수
 
@@ -121,10 +135,13 @@ UPDATE chat_room SET last_message_id = 2 WHERE id = 1;
 인증 필터는 **무상태**라 토큰만 유효하면 통과하고, 실제 회원·참여 검증은 DB(②에서 시드)로 합니다. 따라서 로컬에서는
 서버와 동일한 `jwtSecret`으로 토큰을 만들어 쓰는 게 가장 빠릅니다.
 
-**Collection → Pre-request Script**에 아래를 붙여 넣으면 모든 요청 전에 A/B 토큰이 자동 갱신됩니다.
-(Postman 내장 `CryptoJS` 사용, HS256)
+**Collection → Pre-request Script**에 아래를 붙여 넣으면 모든 **HTTP 요청 전에** A/B 토큰이 자동 갱신됩니다(HS256).
+최근 Postman은 전역 `CryptoJS` 객체를 항상 보장하지 않으므로 스크립트 상단에서 명시적으로 로드합니다.
 
 ```javascript
+// 전역 CryptoJS에 의존하지 않고 명시적으로 로드(최근 Postman 권장)
+const CryptoJS = pm.require('npm:crypto-js@4.2.0');
+
 function b64url(wordArray) {
   return CryptoJS.enc.Base64.stringify(wordArray)
     .replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -145,6 +162,11 @@ pm.environment.set('accessTokenB', issueAccessToken(pm.environment.get('memberBI
 ```
 
 > 주의: `jwtSecret`은 서버 값과 **정확히 동일**해야 하며 32바이트 이상이어야 합니다(HS256 최소 키 길이). 다르면 `JWT_401_INVALID`.
+>
+> ⚠️ **WebSocket 테스트 전 토큰 먼저 생성**: Collection Pre-request Script는 **HTTP 요청 전에만** 실행되고
+> WebSocket 메시지 전송 시에는 실행되지 않습니다. 따라서 STOMP를 테스트하기 전에 아무 REST 요청(예: R-1)을
+> **한 번 실행**해 `accessTokenA`/`accessTokenB` 환경 변수를 채워 두고, 그 값을 WebSocket CONNECT 프레임에
+> 복사해 넣으세요(부록 A의 StompJS 스니펫은 이 과정을 자동 처리합니다).
 
 #### 방법 B — 카카오 콜백으로 발급 (실제 흐름)
 
@@ -209,18 +231,24 @@ pm.environment.set('accessTokenB', issueAccessToken(pm.environment.get('memberBI
 
 ### 시나리오 R-4. 단계 동의 (상호 동의 → 단계 상승)
 
-상호 동의 모델이므로 **양쪽이 모두 동의**해야 방 단계가 오릅니다.
+상호 동의 모델이므로 **양쪽이 모두 동의**해야 방 단계가 오릅니다. 동의는 "현재 단계의 **다음 단계**"에 대한
+것이고 단조 증가만 허용하므로(되돌리기 없음), 같은 단계에 두 번 동의하는 재요청만 `409`로 막힙니다.
 
 1. **A 동의**: `POST {{baseUrl}}/api/chat/rooms/{{roomId}}/progress/agree` — A 토큰
    - 기대 `200`, 방은 아직 `MATCHED`(A만 동의, 대기). 응답 `progressStatus: "MATCHED"`.
-2. **B 동의**: 같은 요청 — B 토큰
-   - 기대 `200`, 방 단계 상승 → `progressStatus: "PHOTO_REVEAL_STEP_1"`.
-   - 이때 STOMP 구독자에게 단계 변경이 브로드캐스트됩니다(시나리오 W-5에서 확인).
-3. **재동의(이미 동의)**: A가 같은 단계에 다시 동의 → `409 PROGRESS_ALREADY_AGREED`.
+2. **재동의(이미 동의)**: B 동의 전에 A가 다시 동의 → `409 PROGRESS_ALREADY_AGREED`.
+   - A는 이미 다음 단계(`PHOTO_REVEAL_STEP_1`)에 동의한 상태라, 같은 단계 재동의는 도메인이 거부합니다.
+3. **B 동의**: 같은 요청 — B 토큰
+   - 기대 `200`, 양쪽 동의가 모이며 방 단계 상승 → `progressStatus: "PHOTO_REVEAL_STEP_1"`.
+   - 이때 STOMP 구독자에게 단계 변경이 브로드캐스트됩니다(시나리오 3-5에서 확인).
+4. **단계 상승 후 재동의는 200**: 3에서 단계가 오른 뒤 A가 다시 동의하면, 이는 *그 다음* 단계
+   (`PHOTO_REVEAL_STEP_2`)에 대한 **최초 동의**이므로 `409`가 아니라 `200`입니다(다시 B 동의를 기다리는 대기 상태).
 
 ```json
-// 2단계(B 동의) 성공 응답
-{ "timestamp": "...", "data": { "roomId": 1, "roomStatus": "ACTIVE", "progressStatus": "PHOTO_REVEAL_STEP_1", "lastMessageId": 2, "unreadCount": 0 } }
+// 3단계(B 동의) 성공 응답 — B의 unreadCount는 B가 아직 안 읽은 'A가 보낸 메시지' 수.
+// 시드 직후 B가 R-4만 단독 실행하면 A의 메시지(id=1) 1건이 미열람이라 unreadCount = 1.
+// E2E 순서에서 B가 먼저 읽음 처리(3-4)를 했다면 0.
+{ "timestamp": "...", "data": { "roomId": 1, "roomStatus": "ACTIVE", "progressStatus": "PHOTO_REVEAL_STEP_1", "lastMessageId": 2, "unreadCount": 1 } }
 ```
 
 ### 시나리오 R-5. 채팅방 나가기 (종료)
@@ -249,9 +277,19 @@ pm.environment.set('accessTokenB', issueAccessToken(pm.environment.get('memberBI
 채팅 실시간 채널은 **STOMP over WebSocket**입니다. 두 사용자(A·B)를 각각 **WebSocket 요청 탭**으로 띄워
 A가 보낸 메시지를 B가 수신하는지 확인합니다.
 
-> ℹ️ **NULL 종료자 주의** — STOMP는 각 프레임 끝에 **NULL 문자(`0000`)**가 와야 합니다. 아래 프레임 표기에서
-> `^@`는 이 NULL 1바이트를 뜻합니다. Postman WebSocket 메시지 입력창에서 NULL 입력이 까다로운 환경이라면
-> **부록 A의 StompJS 스니펫**으로 대체하세요(프레이밍·하트비트를 자동 처리해 가장 안정적입니다).
+> ⚠️ **NULL 종료자 — Postman Raw WebSocket의 한계** — STOMP는 각 프레임 끝에 **실제 NULL 바이트(`0x00`)**가
+>와야 합니다. 아래 프레임 표기의 `^@`는 이 NULL 1바이트를 가리키는 **설명용 기호일 뿐**이며, 입력창에
+> `^@`·`\0`·`0000`을 그대로 타이핑해도 진짜 NULL 문자가 되지 않습니다(문자 그대로 전송됨 → 서버가 프레임을
+> 파싱하지 못함).
+>
+> 따라서 STOMP 테스트 전에 먼저 확인하세요:
+> 1. 사용하는 **Postman 버전의 Raw WebSocket 입력창이 실제 NULL 문자 입력을 지원하는지** 확인합니다.
+> 2. 지원하지 않으면 Postman Raw WebSocket만으로는 STOMP 프레임을 보낼 수 없습니다 — 이 경우 아래 프레임 예시는
+>    **구조 참고용**으로만 보고, 실제 송수신은 **부록 A의 StompJS 클라이언트(필수 대안)**로 수행하세요. StompJS가
+>    NULL 프레이밍·하트비트를 자동 처리하므로 실시간 송수신/단계 브로드캐스트 검증이 안정적으로 재현됩니다.
+>
+> 즉, 이 문서의 핵심 실시간 시나리오(3-3·3-4·3-5)는 Postman Raw WebSocket으로는 재현되지 않을 수 있으며,
+> 그럴 때 StompJS가 사실상 필수입니다.
 
 ### 3-1. 연결 (CONNECT)
 
@@ -395,31 +433,66 @@ NULL 프레이밍·하트비트를 직접 다루지 않아도 되는 대안입�
 <script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7/bundles/stomp.umd.min.js"></script>
 ```
 
-```javascript
-// A 사용자 클라이언트
-const token = '<accessTokenA 값 붙여넣기>';
-const client = new StompJs.Client({
-  brokerURL: 'ws://localhost:8080/ws',
-  connectHeaders: { Authorization: 'Bearer ' + token }, // CONNECT 네이티브 헤더로 전달
-  debug: (s) => console.log(s),
-  reconnectDelay: 0,
-});
-client.onConnect = () => {
-  client.subscribe('/user/queue/errors', (m) => console.error('ERROR:', m.body));
-  client.subscribe('/topic/rooms/1',     (m) => console.log('RECV:', m.body));
+> ⚠️ **실행 순서 주의** — A가 연결 직후 곧바로 송신하면, B가 아직 연결·구독 전이라 B 수신 테스트가 실패합니다.
+> 따라서 **A·B 두 클라이언트를 먼저 연결·구독**시켜 양쪽 준비를 확인한 뒤에 송신하고, 읽음 처리는 **고정 id가
+> 아니라 실제로 수신한 `messageId`**로 하세요(메시지 id는 재실행 때마다 달라집니다).
 
-  // 송신
-  client.publish({ destination: '/app/rooms/1/send', body: JSON.stringify({ type: 'TEXT', content: '안녕하세요 STOMP' }) });
-  // 읽음
-  client.publish({ destination: '/app/rooms/1/read', body: JSON.stringify({ lastReadMessageId: 3 }) });
-};
-client.onStompError = (f) => console.error('STOMP ERROR', f.headers, f.body);
-client.activate();
+**1단계 — A·B 각각 연결·구독** (각자 자기 토큰으로 한 번씩 실행. B는 `accessTokenB`로)
+
+```javascript
+// 공통 클라이언트 생성 함수 — A 콘솔/탭과 B 콘솔/탭에서 각각 토큰만 바꿔 실행
+function connect(token, label) {
+  let lastReceivedId = null; // 수신한 마지막 messageId 기억(읽음 처리에 사용)
+  const client = new StompJs.Client({
+    brokerURL: 'ws://localhost:8080/ws',
+    connectHeaders: { Authorization: 'Bearer ' + token }, // CONNECT 네이티브 헤더로 전달
+    debug: (s) => console.log(s),
+    reconnectDelay: 0,
+  });
+  client.onConnect = () => {
+    client.subscribe('/user/queue/errors', (m) => console.error(label, 'ERROR:', m.body));
+    client.subscribe('/topic/rooms/1', (m) => {
+      const body = JSON.parse(m.body);
+      if (body.messageId != null) lastReceivedId = body.messageId; // 메시지면 id 기억
+      console.log(label, 'RECV:', m.body);
+    });
+    console.log(label, '연결·구독 완료 — 준비됨');
+  };
+  client.onStompError = (f) => console.error(label, 'STOMP ERROR', f.headers, f.body);
+  client.activate();
+  // 송신/읽음에서 쓰도록 핸들 노출
+  return {
+    send: (text) => client.publish({ destination: '/app/rooms/1/send',
+      body: JSON.stringify({ type: 'TEXT', content: text }) }),
+    readReceived: () => client.publish({ destination: '/app/rooms/1/read',
+      body: JSON.stringify({ lastReadMessageId: lastReceivedId }) }),
+    get lastReceivedId() { return lastReceivedId; },
+  };
+}
+
+// A 콘솔/탭:  const a = connect('<accessTokenA 값>', 'A');
+// B 콘솔/탭:  const b = connect('<accessTokenB 값>', 'B');
 ```
 
-- B 사용자는 위 스크립트를 `accessTokenB`로 한 번 더 실행하면 됩니다(별도 탭/콘솔).
-- 단계 변경 확인: 한쪽 콘솔이 `/topic/rooms/1` 구독 중일 때, REST로 양쪽 `progress/agree`를 호출하면
-  `{"eventType":"PROGRESS_CHANGED",...}`가 `RECV`로 찍힙니다.
+**2단계 — 양쪽 "준비됨" 로그 확인 후 A에서 송신**
+
+```javascript
+// A 콘솔에서
+a.send('안녕하세요 STOMP');
+// → A·B 두 콘솔에 동일한 MESSAGE가 RECV로 찍힘(messageId는 매번 새로 발급)
+```
+
+**3단계 — B가 방금 수신한 실제 id로 읽음 처리**
+
+```javascript
+// B 콘솔에서 — 고정값(3)이 아니라 방금 수신한 messageId 사용
+console.log('B가 읽을 id:', b.lastReceivedId);
+b.readReceived();
+// → 이후 B로 GET /api/chat/rooms/1 호출 시 unreadCount가 0으로 줄어듦
+```
+
+- 단계 변경 확인: A·B 콘솔이 `/topic/rooms/1`을 구독한 상태에서 REST로 양쪽 `progress/agree`(R-4)를 호출하면
+  `{"eventType":"PROGRESS_CHANGED",...}`가 양쪽 `RECV`로 찍힙니다.
 
 ## 부록 B. 빠른 참조 — STOMP 프레임 모음
 
@@ -461,7 +534,9 @@ content-type:application/json
 {"lastReadMessageId":3}^@
 ```
 
-> `^@` = NULL(`0000`) 1바이트. 각 프레임은 헤더와 본문 사이에 빈 줄 1개, 끝에 NULL이 필요합니다.
+> `^@`는 **NULL 바이트(`0x00`) 1개를 가리키는 설명 기호**입니다(그대로 타이핑하면 안 됨). 각 프레임은 헤더와
+> 본문 사이에 빈 줄 1개, 끝에 진짜 NULL 1바이트가 필요합니다. Postman 입력창에서 NULL을 넣기 어렵다면 §3 안내대로
+> 부록 A의 StompJS로 보내세요.
 
 ---
 
