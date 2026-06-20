@@ -24,14 +24,17 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessage, Long> 
       Pageable pageable);
 
   /**
-   * 내가 참여 중인 방들의 안읽음 메시지 수를 한 번의 집계 쿼리로 계산한다(목록 조회 N+1 회피, 설계 §7-4).
+   * 내가 나가지 않은 방들의 안읽음 메시지 수를 한 번의 집계 쿼리로 계산한다(목록 조회 N+1 회피, 설계 §7-4).
    * 안읽음 = 내 {@code lastReadMessageId} 이후의 메시지 중 내가 보낸 것이 아닌 메시지(SYSTEM 포함).
    * 안읽음이 0인 방은 결과에 포함되지 않으므로, 호출 측에서 기본값 0으로 처리한다.
+   *
+   * <p>목록 가시성과 동일하게 방 상태(ACTIVE/CLOSED)로 거르지 않고 내 {@code leftAt IS NULL}만 본다(§7-6 비대칭 종료).
+   * 상대가 먼저 나가 종료된 방도 남은 사람의 목록에 남으므로, 그 방의 안읽음 수도 단건 조회({@link #countUnreadInRoom})와
+   * 일치하도록 함께 집계한다(방 상태 조건을 넣으면 목록은 0, 단건은 실측이 되어 불일치).
    */
   @Query("select m.chatRoom.id as roomId, count(m.id) as unreadCount "
       + "from ChatMessage m, ChatRoomMember crm "
       + "where crm.member.id = :memberId and crm.leftAt is null "
-      + "and crm.chatRoom.roomStatus = com.blursome.blursome.chat.domain.ChatRoomStatus.ACTIVE "
       + "and m.chatRoom = crm.chatRoom "
       + "and (crm.lastReadMessageId is null or m.id > crm.lastReadMessageId) "
       + "and (m.sender is null or m.sender.id <> :memberId) "

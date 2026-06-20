@@ -19,7 +19,8 @@ BlurSome의 채팅(Chat) 도메인 전체 로직을 정의합니다. WebSocket +
 
 - 매칭된 두 회원이 실시간으로 대화한다.
 - 대화가 진행됨에 따라 **상호 동의**로 사진 공개 단계(`progressStatus`)를 올린다.
-- 한쪽이 나가거나 대화가 종료되면 방을 `CLOSED` 처리한다.
+- 한쪽이 나가거나 대화가 종료되면 방을 `CLOSED` 처리한다. 단, **나간 사람만** 즉시 목록에서 사라지고, **남은 사람은**
+  방이 종료돼도 직접 나갈 때까지 목록·이력을 그대로 볼 수 있다(송신만 막힘). → §7-6.
 
 ### 핵심 결정 (확정)
 
@@ -324,7 +325,7 @@ ChatRoomService.openRoom(a, b)        @Transactional
   과거에 나가서 `CLOSED`된 방만 있는 경우에는 **새 방을 개설**한다. → `ChatRoomService.openRoom`에서 활성 방을 먼저 조회해 분기.
 - ✅ **동시 매칭 경합**: 선조회-후생성은 원자적이지 않아 동시 요청 시 중복이 생길 수 있으므로, `chat_room.active_pair_key` **유니크 제약**으로 최종 방어한다.
   경합에서 진 쪽은 `saveAndFlush`에서 제약 위반(`DataIntegrityViolationException`) → `CHAT_409_ROOM_CREATION_CONFLICT`로 변환되며, 재시도 시 선조회가 이미 만들어진 방을 반환한다.
-- ✅ **조회 시 활성 방만 노출**: 1:1 방에서 한쪽이 나가면 방은 `CLOSED`가 되지만 상대의 `leftAt`은 `null`로 남는다. 따라서 목록/단건/이력 조회의 참여자 검증은 `leftAt IS NULL` + `roomStatus = ACTIVE`를 함께 확인한다.
+- ✅ **조회는 내가 나갔는지로만 판별**: 1:1 방에서 한쪽이 나가면 방은 `CLOSED`가 되지만 상대의 `leftAt`은 `null`로 남는다. 목록/단건/이력 조회의 참여자 검증은 방 상태(`ACTIVE`/`CLOSED`)가 아니라 **`leftAt IS NULL`만** 확인한다 — 상대가 먼저 나가 방이 종료돼도 남은 사람은 계속 조회할 수 있고(상대 나간 것 확인 후 본인이 나가기), 내가 나간 방만 목록에서 즉시 사라진다. 송신·읽음 같은 **쓰기**는 별도로 `roomStatus = ACTIVE`까지 확인해 종료된 방을 `ROOM_CLOSED`로 막는다.
 
 ### 7-2. 연결 & 구독
 
@@ -333,9 +334,10 @@ ChatRoomService.openRoom(a, b)        @Transactional
 [Client] ─ SUBSCRIBE ─▶ /topic/rooms/{roomId}     (참여자 검증 후 허용)
 ```
 
-- ✅ 구독 시 해당 회원이 그 방의 참여자(`ChatRoomMember`, `leftAt IS NULL`)인지 검증한다(`StompAuthChannelInterceptor`의
-  `SUBSCRIBE` 처리). 비참여자 구독은 연결을 끊지 않고 해당 세션의 개인 오류 큐(`/user/queue/errors`)로 통지한 뒤 프레임을
-  드롭해 차단한다(`preSend`가 null 반환).
+- ✅ 구독 시 해당 회원이 그 방에서 나가지 않은 참여자(`ChatRoomMember`, `leftAt IS NULL`)인지 조회 가시성 규칙으로 검증한다
+  (`StompAuthChannelInterceptor`의 `SUBSCRIBE` 처리). 방이 종료(`CLOSED`)된 뒤에도 남은 참여자는 읽음 표시 등 실시간 이벤트를
+  받을 수 있어야 하므로 구독은 허용한다(송신은 쓰기 경로에서 `ROOM_CLOSED`로 별도로 막힌다). 비참여자·나간 회원의 구독은 연결을
+  끊지 않고 해당 세션의 개인 오류 큐(`/user/queue/errors`)로 통지한 뒤 프레임을 드롭해 차단한다(`preSend`가 null 반환).
 
 ### 7-3. 메시지 송수신
 
@@ -407,20 +409,40 @@ ChatRoomService.openRoom(a, b)        @Transactional
   책임이다.
 - 단계가 오르면 클라이언트는 해당 단계에 설정된 사진의 블러를 해제해 공개한다. Chat은 "현재 몇 단계인지"만 알리고, 사진 자체는 보유·전송하지 않는다.
 
-### 7-6. 채팅방 나가기 (종료)
+### 7-6. 채팅방 나가기 (비대칭 종료)
 
 명시적 "채팅방 나가기"만 영구 처리한다. 앱 종료/연결 끊김은 아무 것도 저장하지 않는다(상대 접속 상태 미제공).
 
 ```
 채팅방 나가기:  POST /api/chat/rooms/{roomId}/leave
-   ├─ ChatRoomMember.leave()      (leftAt = now)
-   └─ ChatRoom.close()            (roomStatus = CLOSED)   ← 1:1이므로 한쪽 나가기 = 종료
+   ├─ ChatRoomMember.leave()      (나가는 본인의 leftAt = now)
+   └─ ChatRoom.close()            (roomStatus = CLOSED)   ← 1:1이므로 한쪽 나가기 = 방 종료
    → 재입장 불가. 다시 대화하려면 새 매칭으로 새 방 개설.
 
 앱 종료 / 연결 끊김:  (DB 변경 없음)
    └─ 재연결 + /topic/rooms/{roomId} 재구독
       → lastReadMessageId 기준으로 안읽음을 계산해 대화를 그대로 이어간다.
 ```
+
+**나간 뒤의 비대칭 동작** — 한쪽이 나가면 방은 `CLOSED`가 되지만 두 참여자의 경험은 다르다(나간 본인만 `leftAt`이 세팅됨):
+
+| 항목          | 나간 사용자 (A, `leftAt` 세팅)        | 남은 사용자 (B, `leftAt IS NULL`)                    |
+|-------------|-------------------------------|-----------------------------------------------|
+| 채팅 목록       | **즉시 사라짐** (`leftAt` 세팅으로 목록 쿼리에서 제외) | **목록에 남음** — 상대가 나간 것을 확인 후 본인이 직접 나갈 때까지 유지 |
+| 이전 대화 기록 조회 | **불가** (`ROOM_NOT_FOUND` 404) | **가능** (방이 `CLOSED`여도 조회 가시성은 `leftAt`으로만 판별)  |
+| 새 메시지 전송    | **불가** (`ROOM_CLOSED` 409)    | **불가** (`ROOM_CLOSED` 409 — 방이 `CLOSED`라 송신 차단) |
+| 목록에 보이는 정보  | —                             | 상대방(A) 닉네임 + 진행됐던 단계(`progressStatus`)         |
+
+- ✅ **조회 가시성**(`getVisibleMembership`)은 방 상태와 무관하게 **내 `leftAt IS NULL`**일 때만 통과한다 → A는 막히고(404) B는 통과.
+- ✅ **쓰기 가시성**(`getWritableMembership`)은 `roomStatus = ACTIVE` + 내 `leftAt IS NULL`을 함께 본다 → A·B 모두 송신 차단(`ROOM_CLOSED`).
+- ✅ **남은 사람(B)도 나가기 가능**: 상대가 먼저 나가 `CLOSED`된 방에서 B가 다시 `/leave`를 호출하면 B의 `leftAt`이 세팅돼 B의 목록에서도 사라진다(`ChatRoom.close()`는 멱등이라 재호출은 no-op).
+- ✅ **단계 동의**(`agreeProgress`)는 방 상태를 바꾸는 쓰기이므로 종료된 방에서는 `getWritableMembership`로 막힌다(`ROOM_CLOSED`).
+- ✅ **퇴장 ↔ 송신 동시성(비관적 락)**: 송신은 "방 ACTIVE 확인 → 메시지 저장"이고 퇴장은 "방 CLOSED"라, 락이 없으면 송신이 ACTIVE를 확인한
+  직후 상대가 나가도 메시지가 저장돼 *종료된 방에 송신*이 새어 나갈 수 있다. 이를 막기 위해 **쓰기 경로(`getWritableMembership`)와 퇴장(`leaveRoom`)이
+  같은 `chat_room` 행을 비관적 쓰기 락(`findByIdForUpdate`, `SELECT … FOR UPDATE`)으로 먼저 잡아 직렬화**한다. 퇴장이 먼저 커밋되면 락 해제 후
+  송신은 `CLOSED`를 보고 `ROOM_CLOSED`로 막힌다. 두 경로 모두 방 행을 가장 먼저 잠그므로 잠금 순서가 일관돼 교착이 없다.
+- ✅ **종료된 방의 안읽음 집계 일치**: 목록이 종료된 방도 포함하므로, 배치 안읽음 집계(`countUnreadByRoom`)도 방 상태로 거르지 않고 `leftAt IS NULL`만 본다.
+  방 상태 조건을 넣으면 목록은 `unreadCount = 0`, 단건 조회는 실측이 되어 불일치하기 때문이다(단건 `countUnreadInRoom`과 동일 기준).
 
 ---
 
@@ -430,8 +452,9 @@ ChatRoomService.openRoom(a, b)        @Transactional
 |--------------|-------------------------------------------------------------------------------------------------|
 | 방별 메시지 이력    | `idx_chat_message_room (chat_room_id, id)` 기반, **id 커서 페이지네이션**(`id < lastSeenId` desc limit N) |
 | 마지막 메시지 미리보기 | `ChatRoom.lastMessageId` 비정규화 — 방 목록 조회 시 N+1/정렬 비용 절감. ✅ 동시 송신 경합에서 과거 id로 되돌아가지 않도록 조건부 UPDATE(`ChatRoomRepository.advanceLastMessage`, `lastMessageId < :id`일 때만 전진)로 갱신 |
-| 안읽음 카운트      | `lastReadMessageId` 기준 카운트, 필요 시 Redis 캐싱                                                       |
-| 내 방 목록       | `ChatRoomMember`에서 `member=me and leftAt IS NULL`로 조회 후 방 정보 조인                                 |
+| 안읽음 카운트      | `lastReadMessageId` 기준 카운트(`countUnreadByRoom`/`countUnreadInRoom` 동일 기준 — 방 상태 무관, `leftAt IS NULL`만), 필요 시 Redis 캐싱 |
+| 내 방 목록       | `ChatRoomMember`에서 `member=me and leftAt IS NULL`로 조회 후 방 정보 조인(방 상태 무관 — `CLOSED` 방도 내가 안 나갔으면 노출) |
+| 퇴장 ↔ 송신 직렬화 | `chat_room` 행 비관적 쓰기 락(`findByIdForUpdate`)을 쓰기 경로와 퇴장이 공유 — 종료된 방에 메시지가 새지 않도록 보장(§7-6) |
 
 - Repository는 `JpaRepository<Entity, Long>` 상속, 복잡 쿼리는 JPQL `@Query` (ARCHITECTURE § 6).
 
@@ -439,8 +462,9 @@ ChatRoomService.openRoom(a, b)        @Transactional
 
 ## 9. 보안 / 권한 규칙
 
-1. ✅ **참여자만**: 메시지 송신·구독·읽음·이력 조회는 해당 방의 활성 참여자(`leftAt IS NULL`)만 가능. 가시성 검증은
-   `ChatRoomMembershipReader`로 단일화하며, 조회용(`getVisibleMembership`)과 쓰기용(`getWritableMembership`)을 분리한다.
+1. ✅ **참여자만**: 메시지 송신·구독·읽음·이력 조회는 해당 방에서 나가지 않은 참여자(`leftAt IS NULL`)만 가능. 가시성 검증은
+   `ChatRoomMembershipReader`로 단일화하며, 조회용(`getVisibleMembership`, **내 `leftAt`만 확인** → 종료된 방도 남은 사람은 조회 가능)과
+   쓰기용(`getWritableMembership`, **`roomStatus = ACTIVE`까지 확인** → 종료된 방은 송신 차단)을 분리한다(§7-6 비대칭 종료).
 2. ✅ **발신자 위조 방지**: 발신자는 클라이언트 입력이 아닌 STOMP principal(JWT의 `memberId`)로 결정.
 3. ✅ **방 상태 검증**: `CLOSED` 방에는 송신·읽음 불가. 쓰기 경로는 종료를 `ROOM_CLOSED`(409)로 명시한다(§10).
 4. ✅ **읽음 커서 위조 방지**: `lastReadMessageId`가 그 방의 실제 메시지인지 검증해(§7-4) 조작으로 안읽음 카운트를 무력화하지 못하게 한다.
@@ -454,9 +478,9 @@ ChatRoomService.openRoom(a, b)        @Transactional
 
 `com.blursome.chat.exception.ChatErrorCode` (`ErrorCode` 구현 Enum):
 
-> ✅ **경로별 매핑 차이**: 조회(REST)는 종료된 방을 노출하지 않도록 `ROOM_NOT_FOUND`(404)로 숨기고, 쓰기(STOMP 송신·읽음)는
-> 종료를 `ROOM_CLOSED`(409)로 명시한다. 방 없음(`ROOM_NOT_FOUND`)·비참여(`NOT_PARTICIPANT`) 판별은 두 경로가 동일하다.
-> 잘못된 본문/타입(빈 본문·`SYSTEM` 송신·조작된 읽음 커서)은 `INVALID_MESSAGE`(400)로 통일한다.
+> ✅ **경로별 매핑 차이**: 조회(REST)는 **내가 나간 방**만 `ROOM_NOT_FOUND`(404)로 숨긴다(상대가 나가 종료된 방은 남은 사람에게 계속 노출).
+> 쓰기(STOMP 송신·읽음, 단계 동의)는 종료된 방을 `ROOM_CLOSED`(409)로 명시한다. 방 없음(`ROOM_NOT_FOUND`)·비참여(`NOT_PARTICIPANT`)
+> 판별은 두 경로가 동일하다. 잘못된 본문/타입(빈 본문·`SYSTEM` 송신·조작된 읽음 커서)은 `INVALID_MESSAGE`(400)로 통일한다.
 
 | 코드(안)                              | 상황            | HTTP |
 |------------------------------------|---------------|------|

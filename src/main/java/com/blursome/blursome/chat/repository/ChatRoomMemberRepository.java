@@ -13,15 +13,15 @@ import org.springframework.data.repository.query.Param;
 public interface ChatRoomMemberRepository extends JpaRepository<ChatRoomMember, Long> {
 
   /**
-   * 내가 현재 참여 중인 활성({@code ACTIVE}) 방 목록을 방 정보까지 함께 조회한다.
-   * 1:1 방은 한쪽이 나가면 종료되지만 상대의 {@code leftAt}은 null로 남으므로, {@code leftAt IS NULL}만으로는
-   * 종료된 방이 노출된다. 따라서 방 상태가 {@code ACTIVE}인 것만 조회한다.
+   * 내가 아직 나가지 않은({@code leftAt IS NULL}) 방 목록을 방 정보까지 함께 조회한다.
+   * 1:1 방은 상대가 먼저 나가면 종료({@code CLOSED})되지만, 남은 참여자는 상대가 나간 것을 확인하고 직접 나갈 때까지
+   * 목록에 그대로 남겨 둬야 한다(설계 §7-6). 따라서 방 상태({@code ACTIVE}/{@code CLOSED})로 거르지 않고 내가
+   * 나갔는지({@code leftAt})로만 판별한다 — 내가 나간 방만 목록에서 즉시 사라진다.
    * 미리보기 기준(마지막 메시지 id) 내림차순 — 메시지가 없는 새 방은 뒤로 간다(MySQL NULL 정렬).
    */
   @Query("select crm from ChatRoomMember crm "
       + "join fetch crm.chatRoom r "
       + "where crm.member.id = :memberId and crm.leftAt is null "
-      + "and r.roomStatus = com.blursome.blursome.chat.domain.ChatRoomStatus.ACTIVE "
       + "order by r.lastMessageId desc")
   List<ChatRoomMember> findActiveMembershipsWithRoom(@Param("memberId") Long memberId);
 
