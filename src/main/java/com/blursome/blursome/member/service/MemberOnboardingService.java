@@ -13,7 +13,6 @@ import com.blursome.blursome.member.verification.SchoolEmailPolicy;
 import com.blursome.blursome.member.verification.SchoolEmailVerificationStore;
 import com.blursome.blursome.member.verification.SchoolEmailVerificationStore.VerificationEntry;
 import com.blursome.blursome.member.verification.VerificationCodeGenerator;
-import java.time.Duration;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -31,9 +30,6 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
 public class MemberOnboardingService {
-
-  /** 인증 코드 유효 시간. */
-  private static final Duration CODE_TTL = Duration.ofMinutes(5);
 
   private final MemberService memberService;
   private final MemberRepository memberRepository;
@@ -59,7 +55,7 @@ public class MemberOnboardingService {
     schoolEmailPolicy.validate(schoolEmail);
 
     String code = verificationCodeGenerator.generate();
-    verificationStore.save(memberId, schoolEmail, code, CODE_TTL);
+    verificationStore.save(memberId, schoolEmail, code, SchoolEmailVerificationStore.CODE_TTL);
     emailVerificationSender.send(schoolEmail, code);
   }
 

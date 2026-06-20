@@ -1,0 +1,41 @@
+# 통합 테스트(@SpringBootTest + Testcontainers) 전용 프로파일.
+# - datasource(url/username/password)는 Testcontainers @ServiceConnection이 주입하므로 비워둔다.
+# - 시크릿류는 CI에 환경변수가 없으므로 더미 값을 직접 채워 컨텍스트가 온전히 뜨게 한다.
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: create-drop   # 컨테이너에 엔티티 기준 스키마 생성 (매핑 검증 포함)
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+  data:
+    redis:
+      host: localhost          # Lettuce는 기동 시 연결하지 않으므로 미기동이어도 컨텍스트는 뜸
+      port: 6379
+  mail:
+    host: localhost            # host가 있어야 JavaMailSender 빈이 생성된다(기동 시 연결 안 함)
+    port: 25
+
+app:
+  jwt:
+    secret: test-jwt-secret-key-for-ci-at-least-32-bytes-long
+    access-token-expires-in: 1800
+    refresh-token-expires-in: 1209600
+  oauth:
+    kakao:
+      client-id: test-client-id
+      client-secret: test-client-secret
+      redirect-uri: http://localhost/login/oauth/kakao
+      token-uri: https://kauth.kakao.com/oauth/token
+      user-info-uri: https://kapi.kakao.com/v2/user/me
+  cookie:
+    secure: false
+    same-site: Lax
+  mail:
+    from: no-reply@blursome.test
+
+logging:
+  level:
+    root: WARN
+    com.blursome: INFO

@@ -20,6 +20,18 @@ spring:
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
 
+  # 로컬에서도 실제 Gmail SMTP로 발송한다. 발송을 검증하려면 .env에 GMAIL_ADDRESS/GMAIL_APP_PASSWORD를
+  # 채운다(미설정 시 빈 자격증명으로 빈만 생성되고, 발송 시도 시 인증 실패한다).
+  # 발송 없이 로그로만 점검하려면 ACTIVE=local,maillog 처럼 maillog 프로파일을 함께 활성화한다.
+  mail:
+    host: smtp.gmail.com
+    port: 587
+    username: ${GMAIL_ADDRESS:}
+    password: ${GMAIL_APP_PASSWORD:}
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+
 app:
   jwt:
     secret: ${JWT_SECRET}
@@ -36,6 +48,8 @@ app:
   cookie:
     secure: false
     same-site: Lax
+  mail:
+    from: ${GMAIL_ADDRESS:no-reply@blursome.local}
 
 logging:
   level:

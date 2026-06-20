@@ -1,0 +1,177 @@
+name: CI / 배포
+
+# 검증(CI): develop·main 의 push·PR 공통 — 테스트 + 컨테이너 검증
+# 배포(CD): main 푸시(병합)에서만 — arm64 빌드 → GHCR → EC2
+# 셋업 가이드: docs/architecture/GITHUB_DEPLOYMENT.md
+# 설계:       docs/architecture/AWS_DEPLOYMENT.md §6.6
+#
+# 필요한 GitHub Secrets:
+#   EC2_HOST       배포 대상 EC2 공인 IP 또는 도메인
+#   EC2_USER       SSH 사용자 (Ubuntu AMI 기본값: ubuntu)
+#   EC2_SSH_KEY    EC2 접속용 개인키 (PEM 전문)
+#   DEPLOY_PATH    EC2에 클론된 저장소 경로 (예: /home/ubuntu/Backend)
+#   GHCR_PAT       EC2에서 GHCR 이미지 pull용 PAT (read:packages)
+#                  ※ GHCR 패키지를 public으로 두면 GHCR_PAT·GHCR_USERNAME 생략 가능
+#   GHCR_USERNAME  위 PAT 소유자의 GitHub 사용자명 (GHCR_PAT와 한 쌍)
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  IMAGE: ghcr.io/it-is-a-secret/blursome
+
+jobs:
+  # ---------------------------------------------------------
+  # CI-1: 테스트 (PR·push 공통)
+  # ---------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 21 설정
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: 테스트 실행
+        run: ./gradlew test --no-daemon
+
+  # ---------------------------------------------------------
+  # CI-2: 컨테이너 검증 (PR 에서만)
+  #   - compose 문법 검증
+  #   - Dockerfile 빌드 검증 (amd64, 로컬 로드)
+  #   - mysql+redis+app 기동 후 /api/ping 스모크 테스트
+  # ---------------------------------------------------------
+  container-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      # compose의 env_file: .env 참조 때문에 검증 전에 .env가 존재해야 한다.
+      - name: CI용 .env 생성
+        run: |
+          cat > .env <<'EOF'
+          ACTIVE=prod
+          DB_URL=jdbc:mysql://mysql:3306/blursome?serverTimezone=Asia/Seoul&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true
+          DB_USERNAME=blursome
+          DB_PASSWORD=ci-password
+          REDIS_HOST=redis
+          REDIS_PORT=6379
+          REDIS_PASSWORD=ci-password
+          JWT_SECRET=ci-test-secret-key-of-at-least-32-bytes-long
+          JWT_ACCESS_TOKEN_EXPIRES_IN=1800
+          JWT_REFRESH_TOKEN_EXPIRES_IN=1209600
+          KAKAO_CLIENT_ID=ci
+          KAKAO_CLIENT_SECRET=ci
+          KAKAO_REDIRECT_URI=http://localhost/login/oauth/kakao
+          SPRING_JPA_HIBERNATE_DDL_AUTO=update
+          IMAGE_TAG=ci
+          EOF
+
+      - name: compose 문법 검증 (CI 오버라이드 포함)
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml config -q
+
+      - name: 이미지 빌드 (amd64, 로컬 로드)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE }}:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 컨테이너 기동 (mysql·redis·app)
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d mysql redis app
+
+      - name: /api/ping 스모크 테스트
+        run: |
+          for i in $(seq 1 40); do
+            if curl -fsS http://localhost:8080/api/ping | grep -q pong; then
+              echo "✅ ping OK"; exit 0
+            fi
+            sleep 5
+          done
+          echo "❌ ping 실패 — app 로그 출력"; docker compose logs app; exit 1
+
+      - name: 정리
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v
+
+  # ---------------------------------------------------------
+  # CD: arm64 이미지 빌드 → GHCR push → EC2 배포
+  #     (main 푸시/병합에서만 실행)
+  # ---------------------------------------------------------
+  build-and-deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # 동시 배포 직렬화 — 겹쳐 실행돼도 순차 처리(진행 중 배포는 취소하지 않음)
+    concurrency:
+      group: deploy-main
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # t4g(arm64) 타깃 빌드를 위한 에뮬레이션/buildx 준비
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: GHCR 로그인 (push 용)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: arm64 이미지 빌드 및 푸시
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          # :latest 는 편의/롤백 포인터, 실제 배포는 아래 단계에서 :<sha>로 고정
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: EC2 SSH 배포
+        uses: appleboy/ssh-action@v1
+        env:
+          GHCR_PAT: ${{ secrets.GHCR_PAT }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          IMAGE_TAG: ${{ github.sha }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          envs: GHCR_PAT,GHCR_USERNAME,IMAGE_TAG
+          script: |
+            set -e
+            cd "${{ secrets.DEPLOY_PATH }}"
+            git fetch --all
+            git checkout main
+            git pull --ff-only
+            # GHCR 패키지가 private 일 때만 로그인 (PAT·USERNAME이 모두 있을 때)
+            if [ -n "$GHCR_PAT" ] && [ -n "$GHCR_USERNAME" ]; then
+              echo "$GHCR_PAT" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+            fi
+            # 이번 커밋 이미지(:<sha>)로 고정 배포 (latest 레이스 회피)
+            export IMAGE_TAG="$IMAGE_TAG"
+            docker compose pull
+            docker compose up -d
+            docker image prune -f

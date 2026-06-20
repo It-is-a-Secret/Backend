@@ -37,6 +37,8 @@ public class SecurityConfig {
             .requestMatchers(HttpMethod.GET,
                 "/api/auth/oauth/kakao/authorize",
                 "/api/auth/oauth/kakao/callback").permitAll()
+            // 배포 헬스체크(ping/pong)
+            .requestMatchers(HttpMethod.GET, "/api/ping").permitAll()
             .requestMatchers("/error").permitAll()
             // STOMP 핸드셰이크. 실제 인증은 STOMP CONNECT 단계의 ChannelInterceptor가 담당한다(설계 §6-1, §6-3).
             .requestMatchers("/ws/**").permitAll()
