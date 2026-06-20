@@ -49,4 +49,11 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessage, Long> 
   long countUnreadInRoom(@Param("roomId") Long roomId,
       @Param("lastReadMessageId") Long lastReadMessageId,
       @Param("memberId") Long memberId);
+
+  /**
+   * 해당 메시지가 그 방에 실제로 존재하는지 확인한다(읽음 커서 조작 방지, 설계 §7-4).
+   * 읽음 위치는 클라이언트가 보낸 값이므로, 방에 없는 id(예: {@code Long.MAX_VALUE})로 안읽음 카운트를 영구
+   * 무력화하지 못하도록 송신·읽음 처리 전에 검증한다.
+   */
+  boolean existsByIdAndChatRoom_Id(Long id, Long chatRoomId);
 }

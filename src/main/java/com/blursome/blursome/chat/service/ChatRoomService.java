@@ -8,7 +8,6 @@ import com.blursome.blursome.chat.dto.response.ChatRoomSummaryResponse;
 import com.blursome.blursome.chat.event.ChatProgressAdvancedEvent;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
-import com.blursome.blursome.chat.repository.ChatRoomRepository;
 import com.blursome.blursome.global.exception.BaseException;
 import java.util.List;
 import java.util.Map;
@@ -27,10 +26,10 @@ import org.springframework.transaction.annotation.Transactional;
 @Transactional(readOnly = true)
 public class ChatRoomService {
 
-  private final ChatRoomRepository chatRoomRepository;
   private final ChatRoomMemberRepository chatRoomMemberRepository;
   private final ChatMessageService chatMessageService;
   private final ChatRoomCreator chatRoomCreator;
+  private final ChatRoomMembershipReader membershipReader;
   private final ApplicationEventPublisher eventPublisher;
 
   /**
@@ -85,7 +84,7 @@ public class ChatRoomService {
 
   /** 방 단건을 조회한다. 가시성·권한 검증 후 단건 안읽음 수만 계산한다. */
   public ChatRoomSummaryResponse getRoom(Long roomId, Long memberId) {
-    ChatRoomMember membership = getVisibleMembership(roomId, memberId);
+    ChatRoomMember membership = membershipReader.getVisibleMembership(roomId, memberId);
     long unreadCount = chatMessageService.getUnreadCount(
         roomId, membership.getLastReadMessageId(), memberId);
     return ChatRoomSummaryResponse.of(membership.getChatRoom(), unreadCount);
@@ -94,7 +93,7 @@ public class ChatRoomService {
   /** 방의 메시지 이력을 조회한다. 가시성·권한 검증 후 메시지 서비스에 위임한다. */
   public List<ChatMessageResponse> getMessageHistory(Long roomId, Long memberId, Long cursor,
       int size) {
-    getVisibleMembership(roomId, memberId);
+    membershipReader.getVisibleMembership(roomId, memberId);
     return chatMessageService.getHistory(roomId, cursor, size);
   }
 
@@ -109,7 +108,7 @@ public class ChatRoomService {
    */
   @Transactional
   public ChatRoomSummaryResponse agreeProgress(Long roomId, Long memberId) {
-    ChatRoomMember membership = getVisibleMembership(roomId, memberId);
+    ChatRoomMember membership = membershipReader.getVisibleMembership(roomId, memberId);
     ChatRoom room = membership.getChatRoom();
     if (room.getProgressStatus().isLast()) {
       throw BaseException.from(ChatErrorCode.PROGRESS_ALREADY_AGREED);
@@ -138,7 +137,7 @@ public class ChatRoomService {
    */
   @Transactional
   public void leaveRoom(Long roomId, Long memberId) {
-    ChatRoomMember membership = getVisibleMembership(roomId, memberId);
+    ChatRoomMember membership = membershipReader.getVisibleMembership(roomId, memberId);
     membership.leave();
     membership.getChatRoom().close();
   }
@@ -152,25 +151,5 @@ public class ChatRoomService {
         .filter(member -> !member.getId().equals(me.getId()))
         .findFirst()
         .orElseThrow(() -> BaseException.from(ChatErrorCode.ROOM_NOT_FOUND));
-  }
-
-  /**
-   * 방 가시성·권한을 판별하고 참여 행을 반환한다.
-   * 방 없음 → 404({@code ROOM_NOT_FOUND}), 방은 있으나 내가 멤버가 아님(남의 방) → 403({@code NOT_PARTICIPANT}),
-   * 멤버지만 방이 종료(CLOSED)됐거나 내가 이미 나갔으면(leftAt 존재) 더는 노출되지 않음 → 404({@code ROOM_NOT_FOUND}).
-   * 멤버 판별을 먼저 하므로 비참여자는 방의 종료 여부를 알 수 없다(403 우선).
-   *
-   * <p>활성 참여자는 {@code leftAt IS NULL}만 해당한다(설계 §9). 1:1에서는 나가기가 곧 방 종료라 보통 방 상태로
-   * 걸러지지만, 데이터 불일치·향후 상태 확장에 대비해 참여 행의 {@code leftAt}도 함께 검증한다.
-   */
-  private ChatRoomMember getVisibleMembership(Long roomId, Long memberId) {
-    ChatRoom room = chatRoomRepository.findById(roomId)
-        .orElseThrow(() -> BaseException.from(ChatErrorCode.ROOM_NOT_FOUND));
-    ChatRoomMember membership = chatRoomMemberRepository.findMembership(roomId, memberId)
-        .orElseThrow(() -> BaseException.from(ChatErrorCode.NOT_PARTICIPANT));
-    if (!room.isActive() || membership.hasLeft()) {
-      throw BaseException.from(ChatErrorCode.ROOM_NOT_FOUND);
-    }
-    return membership;
   }
 }
