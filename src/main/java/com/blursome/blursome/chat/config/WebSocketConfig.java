@@ -29,7 +29,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     registry.addEndpoint("/ws")
         .setAllowedOriginPatterns(
 //             "*", // 로컬 테스트(STOMP) 용도
-            "https://blursome.example.com",   // 운영 프론트 도메인
+            "https://front-theta-three-32.vercel.app",   // 운영 프론트 도메인
             "http://localhost:5173"           // 로컬 개발용 (Vite 기본 포트 등)
         );
   }
