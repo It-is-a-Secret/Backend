@@ -69,7 +69,8 @@ public class ChatRoomController {
     return ResponseEntity.ok(DataResponse.ok(chatRoomService.agreeProgress(roomId, memberId)));
   }
 
-  @Operation(summary = "채팅방 나가기", description = "채팅방을 영구히 나간다. 1:1이므로 방이 즉시 종료된다(재입장 불가).")
+  @Operation(summary = "채팅방 나가기", description = "채팅방을 영구히 나간다(재입장 불가). 1:1이므로 방이 즉시 종료(CLOSED)된다. "
+      + "나간 본인은 즉시 목록에서 사라지고 이력 조회·송신이 모두 막히지만, 남은 상대는 직접 나갈 때까지 목록·이력을 그대로 볼 수 있다(송신만 차단).")
   @PostMapping("/{roomId}/leave")
   public ResponseEntity<Void> leaveRoom(
       @AuthenticationPrincipal Long memberId,

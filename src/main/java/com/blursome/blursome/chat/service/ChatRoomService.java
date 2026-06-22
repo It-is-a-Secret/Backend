@@ -9,7 +9,9 @@ import com.blursome.blursome.chat.event.ChatProgressAdvancedEvent;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
 import com.blursome.blursome.chat.repository.ChatRoomRepository;
+import com.blursome.blursome.chat.repository.RoomPartnerInfo;
 import com.blursome.blursome.global.exception.BaseException;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -19,24 +21,25 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * 채팅방 Facade — 방 개설/조회와 메시지 이력 조회를 조율한다.
- * 방 개설({@link #openRoom})은 REST로 노출하지 않고 매칭 도메인이 호출하는 진입점이다(설계 §7-1).
+ * 채팅방 Facade — 방 개설/조회와 메시지 이력 조회를 조율한다. 방 개설({@link #openRoom})은 REST로 노출하지 않고 매칭 도메인이 호출하는
+ * 진입점이다(설계 §7-1).
  */
 @Service
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
 public class ChatRoomService {
 
-  private final ChatRoomRepository chatRoomRepository;
   private final ChatRoomMemberRepository chatRoomMemberRepository;
+  private final ChatRoomRepository chatRoomRepository;
   private final ChatMessageService chatMessageService;
   private final ChatRoomCreator chatRoomCreator;
+  private final ChatRoomMembershipReader membershipReader;
   private final ApplicationEventPublisher eventPublisher;
 
   /**
-   * 매칭된 두 회원의 1:1 방을 개설한다. 이미 두 회원 사이에 {@code ACTIVE} 방이 있으면 그 방을 반환하고(중복 방지),
-   * 없을 때만 새로 만든다. 과거에 종료({@code CLOSED})된 방만 있으면 새 방을 개설한다.
-   * 실제 쓰기는 {@link ChatRoomCreator}의 독립 트랜잭션에서 일어나므로 이 메서드 자체는 읽기 전용으로 둔다.
+   * 매칭된 두 회원의 1:1 방을 개설한다. 이미 두 회원 사이에 {@code ACTIVE} 방이 있으면 그 방을 반환하고(중복 방지), 없을 때만 새로 만든다. 과거에
+   * 종료({@code CLOSED})된 방만 있으면 새 방을 개설한다. 실제 쓰기는 {@link ChatRoomCreator}의 독립 트랜잭션에서 일어나므로 이 메서드 자체는
+   * 읽기 전용으로 둔다.
    */
   public ChatRoom openRoom(Long memberAId, Long memberBId) {
     validateDistinctMembers(memberAId, memberBId);
@@ -45,8 +48,8 @@ public class ChatRoomService {
   }
 
   /**
-   * 1:1 고정 모델의 참여자 사전 검증. 잘못된 호출(null/동일 회원)이 하위 제약 위반으로 500으로 새지 않도록
-   * 진입점에서 명시적인 400 도메인 예외로 막는다. null 검증을 먼저 하므로 이후 {@code equals}는 NPE-safe.
+   * 1:1 고정 모델의 참여자 사전 검증. 잘못된 호출(null/동일 회원)이 하위 제약 위반으로 500으로 새지 않도록 진입점에서 명시적인 400 도메인 예외로 막는다.
+   * null 검증을 먼저 하므로 이후 {@code equals}는 NPE-safe.
    */
   private void validateDistinctMembers(Long memberAId, Long memberBId) {
     if (memberAId == null || memberBId == null) {
@@ -58,8 +61,8 @@ public class ChatRoomService {
   }
 
   /**
-   * 새 방을 만든다. 동시 개설 경합에서 지면(active_pair_key 유니크 제약 위반) 상대가 방금 커밋한 ACTIVE 방을
-   * 새 트랜잭션으로 재조회해 그대로 반환한다(완전 멱등). 위반인데도 방이 안 보이면 일시적 경합으로 보고 409로 변환.
+   * 새 방을 만든다. 동시 개설 경합에서 지면(active_pair_key 유니크 제약 위반) 상대가 방금 커밋한 ACTIVE 방을 새 트랜잭션으로 재조회해 그대로
+   * 반환한다(완전 멱등). 위반인데도 방이 안 보이면 일시적 경합으로 보고 409로 변환.
    */
   private ChatRoom createRoom(Long memberAId, Long memberBId) {
     try {
@@ -70,38 +73,75 @@ public class ChatRoomService {
     }
   }
 
-  /** 내가 참여 중인 방 목록을 안읽음 수와 함께 조회한다(안읽음은 단일 집계 쿼리로 계산). */
+  /**
+   * 내가 참여 중인 방 목록을 안읽음 수·마지막 메시지 미리보기·상대 정보(닉네임·읽음 커서)와 함께 조회한다. 안읽음·마지막 메시지·상대
+   * 정보는 각각 단일 배치 쿼리로 모아 계산해 방 수만큼의 N+1을 피한다(설계 §7-4).
+   */
   public List<ChatRoomSummaryResponse> getMyRooms(Long memberId) {
     List<ChatRoomMember> memberships =
         chatRoomMemberRepository.findActiveMembershipsWithRoom(memberId);
     Map<Long, Long> unreadByRoom = chatMessageService.getUnreadCounts(memberId);
+    Map<Long, ChatMessageResponse> lastMessages = chatMessageService.getLastMessages(
+        memberships.stream().map(m -> m.getChatRoom().getLastMessageId()).toList());
+    Map<Long, RoomPartnerInfo> partnerByRoom = findPartnerInfos(memberships, memberId);
     return memberships.stream()
         .map(membership -> {
           ChatRoom room = membership.getChatRoom();
-          return ChatRoomSummaryResponse.of(room, unreadByRoom.getOrDefault(room.getId(), 0L));
+          ChatMessageResponse lastMessage =
+              room.getLastMessageId() == null ? null : lastMessages.get(room.getLastMessageId());
+          RoomPartnerInfo partner = partnerByRoom.get(room.getId());
+          return ChatRoomSummaryResponse.of(
+              room,
+              partner == null ? null : partner.getPartnerNickname(),
+              lastMessage,
+              partner == null ? null : partner.getLastReadMessageId(),
+              unreadByRoom.getOrDefault(room.getId(), 0L));
         })
         .toList();
   }
 
-  /** 방 단건을 조회한다. 가시성·권한 검증 후 단건 안읽음 수만 계산한다. */
-  public ChatRoomSummaryResponse getRoom(Long roomId, Long memberId) {
-    ChatRoomMember membership = getVisibleMembership(roomId, memberId);
-    long unreadCount = chatMessageService.getUnreadCount(
-        roomId, membership.getLastReadMessageId(), memberId);
-    return ChatRoomSummaryResponse.of(membership.getChatRoom(), unreadCount);
+  /**
+   * 내가 참여 중인 방들의 상대 정보(닉네임·읽음 커서)를 {@code roomId → RoomPartnerInfo} 맵으로 한 번에 조회한다(N+1 회피).
+   */
+  private Map<Long, RoomPartnerInfo> findPartnerInfos(List<ChatRoomMember> memberships,
+      Long memberId) {
+    List<Long> roomIds = memberships.stream().map(m -> m.getChatRoom().getId()).toList();
+    if (roomIds.isEmpty()) {
+      return Map.of();
+    }
+    Map<Long, RoomPartnerInfo> result = new HashMap<>();
+    for (RoomPartnerInfo partner : chatRoomMemberRepository.findPartnerInfos(roomIds, memberId)) {
+      result.put(partner.getRoomId(), partner);
+    }
+    return result;
   }
 
-  /** 방의 메시지 이력을 조회한다. 가시성·권한 검증 후 메시지 서비스에 위임한다. */
+  /**
+   * 방 단건을 조회한다. 가시성·권한 검증 후 단건 안읽음 수·마지막 메시지 미리보기·상대 정보(닉네임·읽음 커서)를 계산한다.
+   */
+  public ChatRoomSummaryResponse getRoom(Long roomId, Long memberId) {
+    ChatRoomMember membership = membershipReader.getVisibleMembership(roomId, memberId);
+    ChatRoom room = membership.getChatRoom();
+    long unreadCount = chatMessageService.getUnreadCount(
+        roomId, membership.getLastReadMessageId(), memberId);
+    ChatMessageResponse lastMessage = chatMessageService.getLastMessage(room.getLastMessageId());
+    ChatRoomMember partner = findOtherMembership(roomId, membership);
+    return ChatRoomSummaryResponse.of(room, partner.getMember().getNickName(), lastMessage,
+        partner.getLastReadMessageId(), unreadCount);
+  }
+
+  /**
+   * 방의 메시지 이력을 조회한다. 가시성·권한 검증 후 메시지 서비스에 위임한다.
+   */
   public List<ChatMessageResponse> getMessageHistory(Long roomId, Long memberId, Long cursor,
       int size) {
-    getVisibleMembership(roomId, memberId);
+    membershipReader.getVisibleMembership(roomId, memberId);
     return chatMessageService.getHistory(roomId, cursor, size);
   }
 
   /**
-   * 다음 단계 공개에 동의한다(설계 §7-5). 동의 대상은 클라이언트 입력이 아니라 서버가 방의 현재 단계 다음으로 계산한다(§9).
-   * 내가 동의 단계를 올린 뒤 양쪽 동의가 모두 다음 단계 이상이면 방 단계가 한 칸 오른다.
-   * 이미 마지막 단계이거나 이미 그 단계에 동의했으면 {@code PROGRESS_ALREADY_AGREED}(409).
+   * 다음 단계 공개에 동의한다(설계 §7-5). 동의 대상은 클라이언트 입력이 아니라 서버가 방의 현재 단계 다음으로 계산한다(§9). 내가 동의 단계를 올린 뒤 양쪽 동의가
+   * 모두 다음 단계 이상이면 방 단계가 한 칸 오른다. 이미 마지막 단계이거나 이미 그 단계에 동의했으면 {@code PROGRESS_ALREADY_AGREED}(409).
    * 클래스 기본값({@code readOnly = true})을 덮어 쓰기 트랜잭션으로 연다.
    *
    * <p>단계가 실제로 오르면 {@link ChatProgressAdvancedEvent}를 발행한다. 상대 클라이언트에 대한 실시간
@@ -109,7 +149,9 @@ public class ChatRoomService {
    */
   @Transactional
   public ChatRoomSummaryResponse agreeProgress(Long roomId, Long memberId) {
-    ChatRoomMember membership = getVisibleMembership(roomId, memberId);
+    // 단계 동의는 방 상태를 바꾸는 쓰기다. 종료(CLOSED)된 방에서는 더 진행할 수 없으므로 쓰기 규칙으로 검증해
+    // 종료된 방 동의를 ROOM_CLOSED(409)로 막는다(조회 가시성은 종료된 방도 허용하므로 여기선 쓰기 규칙을 쓴다).
+    ChatRoomMember membership = membershipReader.getWritableMembership(roomId, memberId);
     ChatRoom room = membership.getChatRoom();
     if (room.getProgressStatus().isLast()) {
       throw BaseException.from(ChatErrorCode.PROGRESS_ALREADY_AGREED);
@@ -121,56 +163,47 @@ public class ChatRoomService {
       // 동의는 단조 증가만 허용 — 이미 그 단계에 동의한 재요청은 도메인이 거부한다.
       throw BaseException.from(ChatErrorCode.PROGRESS_ALREADY_AGREED);
     }
-    boolean advanced =
-        room.advanceProgressIfBothAgreed(membership, findOtherMembership(roomId, membership));
+    ChatRoomMember other = findOtherMembership(roomId, membership);
+    boolean advanced = room.advanceProgressIfBothAgreed(membership, other);
     if (advanced) {
       eventPublisher.publishEvent(new ChatProgressAdvancedEvent(roomId, room.getProgressStatus()));
     }
     long unreadCount = chatMessageService.getUnreadCount(
         roomId, membership.getLastReadMessageId(), memberId);
-    return ChatRoomSummaryResponse.of(room, unreadCount);
+    ChatMessageResponse lastMessage = chatMessageService.getLastMessage(room.getLastMessageId());
+    return ChatRoomSummaryResponse.of(
+        room, other.getMember().getNickName(), lastMessage, other.getLastReadMessageId(),
+        unreadCount);
   }
 
   /**
-   * 채팅방을 나간다(영구, 설계 §7-6). 1:1이므로 한쪽 나가기는 방 종료({@code CLOSED})로 이어진다.
-   * 종료 후에는 양쪽 모두 가시성 검증에서 막혀({@code ROOM_NOT_FOUND}) 재요청이 자연히 차단된다.
+   * 채팅방을 나간다(영구, 설계 §7-6). 1:1이므로 한쪽 나가기는 방 종료({@code CLOSED})로 이어진다. 나가는 본인은 즉시 목록에서
+   * 사라지고(자신의 {@code leftAt} 세팅) 이후 이력·송신이 모두 막힌다. 반면 남은 상대는 방이 종료돼도 직접 나갈 때까지는
+   * 목록·이력을 계속 볼 수 있고(조회 가시성은 방 상태가 아니라 본인 {@code leftAt}으로만 판별), 송신만 {@code ROOM_CLOSED}로
+   * 막힌다. 상대가 나간 종료된 방에서 남은 사람도 이 메서드로 직접 나갈 수 있다({@code close()}는 멱등이라 재호출은 no-op).
    * 클래스 기본값({@code readOnly = true})을 덮어 쓰기 트랜잭션으로 연다.
    */
   @Transactional
   public void leaveRoom(Long roomId, Long memberId) {
-    ChatRoomMember membership = getVisibleMembership(roomId, memberId);
+    // 방 행을 "가장 먼저" 비관적 쓰기 락으로 잡는다 — 쓰기 경로(getWritableMembership)와 동일한 잠금 순서로 동시 송신·중복
+    // 퇴장과 직렬화한다(§7-6 동시성). 락을 먼저 잡은 뒤 멤버십을 읽으므로, 동시 중복 퇴장에서도 항상 최신 참여 상태를 본다
+    // (락 전에 읽으면 stale leftAt을 들고 leave()가 두 번 적용될 수 있다). 퇴장이 먼저 커밋되면 락 해제 후 송신은 CLOSED를
+    // 보고 ROOM_CLOSED로 막혀 메시지가 종료된 방에 새지 않는다.
+    ChatRoom room = chatRoomRepository.findByIdForUpdate(roomId)
+        .orElseThrow(() -> BaseException.from(ChatErrorCode.ROOM_NOT_FOUND));
+    ChatRoomMember membership = membershipReader.getVisibleMembership(roomId, memberId);
     membership.leave();
-    membership.getChatRoom().close();
+    room.close();
   }
 
   /**
-   * 1:1 방에서 본인을 제외한 상대 참여 행을 찾는다. 가시성 검증을 통과한 ACTIVE 방은 양쪽이 모두 참여 중이므로
-   * 상대 행이 반드시 존재한다(없으면 데이터 정합성 문제 → {@code ROOM_NOT_FOUND}).
+   * 1:1 방에서 본인을 제외한 상대 참여 행을 찾는다. 가시성 검증을 통과한 ACTIVE 방은 양쪽이 모두 참여 중이므로 상대 행이 반드시 존재한다(없으면 데이터 정합성
+   * 문제 → {@code ROOM_NOT_FOUND}).
    */
   private ChatRoomMember findOtherMembership(Long roomId, ChatRoomMember me) {
     return chatRoomMemberRepository.findAllByRoomId(roomId).stream()
         .filter(member -> !member.getId().equals(me.getId()))
         .findFirst()
         .orElseThrow(() -> BaseException.from(ChatErrorCode.ROOM_NOT_FOUND));
-  }
-
-  /**
-   * 방 가시성·권한을 판별하고 참여 행을 반환한다.
-   * 방 없음 → 404({@code ROOM_NOT_FOUND}), 방은 있으나 내가 멤버가 아님(남의 방) → 403({@code NOT_PARTICIPANT}),
-   * 멤버지만 방이 종료(CLOSED)됐거나 내가 이미 나갔으면(leftAt 존재) 더는 노출되지 않음 → 404({@code ROOM_NOT_FOUND}).
-   * 멤버 판별을 먼저 하므로 비참여자는 방의 종료 여부를 알 수 없다(403 우선).
-   *
-   * <p>활성 참여자는 {@code leftAt IS NULL}만 해당한다(설계 §9). 1:1에서는 나가기가 곧 방 종료라 보통 방 상태로
-   * 걸러지지만, 데이터 불일치·향후 상태 확장에 대비해 참여 행의 {@code leftAt}도 함께 검증한다.
-   */
-  private ChatRoomMember getVisibleMembership(Long roomId, Long memberId) {
-    ChatRoom room = chatRoomRepository.findById(roomId)
-        .orElseThrow(() -> BaseException.from(ChatErrorCode.ROOM_NOT_FOUND));
-    ChatRoomMember membership = chatRoomMemberRepository.findMembership(roomId, memberId)
-        .orElseThrow(() -> BaseException.from(ChatErrorCode.NOT_PARTICIPANT));
-    if (!room.isActive() || membership.hasLeft()) {
-      throw BaseException.from(ChatErrorCode.ROOM_NOT_FOUND);
-    }
-    return membership;
   }
 }

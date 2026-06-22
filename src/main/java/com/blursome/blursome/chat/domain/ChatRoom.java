@@ -77,11 +77,6 @@ public class ChatRoom extends BaseEntity {
     return low + "-" + high;
   }
 
-  /** 마지막 메시지 미리보기 id를 갱신한다(메시지 저장 시 호출). */
-  public void updateLastMessage(Long messageId) {
-    this.lastMessageId = messageId;
-  }
-
   /** 방을 종료한다. 1:1이므로 한쪽 나가기로도 호출된다. 이미 종료된 경우 멱등(no-op). */
   public void close() {
     if (this.roomStatus == ChatRoomStatus.CLOSED) {

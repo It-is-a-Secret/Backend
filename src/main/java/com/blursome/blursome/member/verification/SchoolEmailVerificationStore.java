@@ -17,6 +17,9 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class SchoolEmailVerificationStore {
 
+  /** 인증 코드 유효 시간(단일 출처). 저장 TTL과 메일 본문 안내가 이 값을 공유한다. */
+  public static final Duration CODE_TTL = Duration.ofMinutes(5);
+
   private static final String KEY_FORMAT = "blursome:member:%d:school-email-verification";
   private static final String VALUE_DELIMITER = "|";
 

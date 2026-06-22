@@ -23,6 +23,15 @@ spring:
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
 
+  mail:
+    host: smtp.gmail.com
+    port: 587
+    username: ${GMAIL_ADDRESS}
+    password: ${GMAIL_APP_PASSWORD}
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+
 app:
   jwt:
     secret: ${JWT_SECRET}
@@ -38,7 +47,9 @@ app:
       user-info-uri: https://kapi.kakao.com/v2/user/me
   cookie:
     secure: true
-    same-site: Lax
+    same-site: None
+  mail:
+    from: ${GMAIL_ADDRESS}
 
 server:
   tomcat:
