@@ -36,12 +36,13 @@ public class AuthService {
    *
    * @param provider OAuth 공급자
    * @param authorizationCode 공급자 인가 화면에서 발급된 1회용 코드
+   * @param redirectUri 인가 요청에 사용된 것과 동일한 redirect_uri (토큰 교환 시 일치 검증됨)
    * @return 새로 발급된 AccessToken·RefreshToken 쌍
    */
   @Transactional
-  public TokenPair login(OAuthProvider provider, String authorizationCode) {
+  public TokenPair login(OAuthProvider provider, String authorizationCode, String redirectUri) {
     OAuthClient client = oAuthClientResolver.resolve(provider);
-    OAuthUserInfo userInfo = client.fetchUserInfo(authorizationCode);
+    OAuthUserInfo userInfo = client.fetchUserInfo(authorizationCode, redirectUri);
     Member member = memberService.findOrCreateByOAuth(userInfo);
     return issueTokens(member);
   }
