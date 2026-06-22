@@ -71,7 +71,7 @@ jobs:
           JWT_REFRESH_TOKEN_EXPIRES_IN=1209600
           KAKAO_CLIENT_ID=ci
           KAKAO_CLIENT_SECRET=ci
-          KAKAO_REDIRECT_URI=http://localhost/login/oauth/kakao
+          KAKAO_REDIRECT_URIS=http://localhost:5173/auth,https://front-theta-three-32.vercel.app/auth
           SPRING_JPA_HIBERNATE_DDL_AUTO=update
           IMAGE_TAG=ci
           EOF

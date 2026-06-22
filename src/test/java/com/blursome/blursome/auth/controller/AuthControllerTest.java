@@ -24,6 +24,7 @@ import com.blursome.blursome.global.security.JwtAuthenticationFilter;
 import com.blursome.blursome.global.security.JwtTokenProvider;
 import com.blursome.blursome.member.domain.OAuthProvider;
 import jakarta.servlet.http.Cookie;
+import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -75,9 +76,31 @@ class AuthControllerTest {
   }
 
   @Test
+  @DisplayName("화이트리스트에 등록된 redirect_uri를 전달하면 인가 URL에 그 값을 사용한다")
+  void handleKakaoAuthorizeWithRegisteredRedirectUri() throws Exception {
+    mockMvc.perform(get("/api/auth/oauth/kakao/authorize")
+            .param("redirect_uri", "http://localhost:5173/auth"))
+        .andExpect(status().isFound())
+        .andExpect(redirectedUrl(
+            "https://kauth.kakao.com/oauth/authorize"
+                + "?response_type=code"
+                + "&client_id=test-client-id"
+                + "&redirect_uri=http://localhost:5173/auth"));
+  }
+
+  @Test
+  @DisplayName("화이트리스트에 없는 redirect_uri를 전달하면 400과 REDIRECT_URI_NOT_ALLOWED를 반환한다")
+  void handleKakaoAuthorizeWithUnregisteredRedirectUri() throws Exception {
+    mockMvc.perform(get("/api/auth/oauth/kakao/authorize")
+            .param("redirect_uri", "https://evil.example.com/auth"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("AUTH_400_OAUTH_REDIRECT_URI_NOT_ALLOWED"));
+  }
+
+  @Test
   @DisplayName("카카오 콜백 시 로그인 후 AccessToken은 바디로, RefreshToken은 쿠키로 반환한다")
   void handleKakaoCallback() throws Exception {
-    given(authService.login(eq(OAuthProvider.KAKAO), anyString()))
+    given(authService.login(eq(OAuthProvider.KAKAO), anyString(), anyString()))
         .willReturn(new TokenPair("access", "refresh", 1800L, 1209600L));
 
     mockMvc.perform(get("/api/auth/oauth/kakao/callback").param("code", "abc"))
@@ -155,7 +178,9 @@ class AuthControllerTest {
       return new KakaoOAuthProperties(
           "test-client-id",
           "test-client-secret",
-          "http://localhost:8080/api/auth/oauth/kakao/callback",
+          List.of(
+              "http://localhost:8080/api/auth/oauth/kakao/callback",
+              "http://localhost:5173/auth"),
           "https://kauth.kakao.com/oauth/authorize",
           "https://kauth.kakao.com/oauth/token",
           "https://kapi.kakao.com/v2/user/me");

@@ -47,7 +47,7 @@ class OAuthClientResolverTest {
     }
 
     @Override
-    public OAuthUserInfo fetchUserInfo(String authorizationCode) {
+    public OAuthUserInfo fetchUserInfo(String authorizationCode, String redirectUri) {
       return new OAuthUserInfo(OAuthProvider.KAKAO, "1", "e@e.com", "blur", null);
     }
   }

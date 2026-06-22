@@ -33,8 +33,8 @@ public class KakaoOAuthClient implements OAuthClient {
   }
 
   @Override
-  public OAuthUserInfo fetchUserInfo(String authorizationCode) {
-    KakaoTokenResponse token = requestAccessToken(authorizationCode);
+  public OAuthUserInfo fetchUserInfo(String authorizationCode, String redirectUri) {
+    KakaoTokenResponse token = requestAccessToken(authorizationCode, redirectUri);
     KakaoUserInfoResponse userInfo = requestUserInfo(token.accessToken());
     return new OAuthUserInfo(
         OAuthProvider.KAKAO,
@@ -45,12 +45,12 @@ public class KakaoOAuthClient implements OAuthClient {
     );
   }
 
-  private KakaoTokenResponse requestAccessToken(String code) {
+  private KakaoTokenResponse requestAccessToken(String code, String redirectUri) {
     MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
     form.add("grant_type", GRANT_TYPE);
     form.add("client_id", properties.clientId());
     form.add("client_secret", properties.clientSecret());
-    form.add("redirect_uri", properties.redirectUri());
+    form.add("redirect_uri", redirectUri);
     form.add("code", code);
 
     try {

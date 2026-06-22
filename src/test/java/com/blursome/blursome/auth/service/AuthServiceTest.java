@@ -63,7 +63,7 @@ class AuthServiceTest {
     OAuthUserInfo info = new OAuthUserInfo(
         OAuthProvider.KAKAO, "kakao-1", "e@e.com", "blur", "img");
     given(oAuthClientResolver.resolve(OAuthProvider.KAKAO)).willReturn(kakaoClient);
-    given(kakaoClient.fetchUserInfo("code-abc")).willReturn(info);
+    given(kakaoClient.fetchUserInfo("code-abc", "http://localhost:5173/auth")).willReturn(info);
     Member member = sampleMember();
     given(memberService.findOrCreateByOAuth(info)).willReturn(member);
     given(jwtTokenProvider.issueAccessToken(1L, MemberRole.USER)).willReturn("access");
@@ -72,7 +72,7 @@ class AuthServiceTest {
     given(jwtTokenProvider.getRefreshTtlSeconds()).willReturn(1209600L);
 
     // when
-    TokenPair result = authService.login(OAuthProvider.KAKAO, "code-abc");
+    TokenPair result = authService.login(OAuthProvider.KAKAO, "code-abc", "http://localhost:5173/auth");
 
     // then
     assertThat(result.accessToken()).isEqualTo("access");
