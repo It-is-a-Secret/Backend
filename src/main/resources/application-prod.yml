@@ -47,7 +47,7 @@ app:
       user-info-uri: https://kapi.kakao.com/v2/user/me
   cookie:
     secure: true
-    same-site: Lax
+    same-site: None
   mail:
     from: ${GMAIL_ADDRESS}
 
