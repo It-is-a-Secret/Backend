@@ -26,7 +26,9 @@ app:
     kakao:
       client-id: test-client-id
       client-secret: test-client-secret
-      redirect-uri: http://localhost/login/oauth/kakao
+      redirect-uris:
+        - http://localhost:8080/api/auth/oauth/kakao/callback
+        - http://localhost:5173/auth
       token-uri: https://kauth.kakao.com/oauth/token
       user-info-uri: https://kapi.kakao.com/v2/user/me
   cookie:

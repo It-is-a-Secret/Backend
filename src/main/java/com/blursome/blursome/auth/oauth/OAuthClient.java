@@ -20,7 +20,8 @@ public interface OAuthClient {
    * 인가 코드로 액세스 토큰을 교환하고 공급자로부터 사용자 정보를 조회한다.
    *
    * @param authorizationCode 클라이언트가 공급자 인가 화면에서 발급받은 1회용 코드
+   * @param redirectUri 인가 요청에 사용된 것과 동일한 redirect_uri (토큰 교환 시 일치 검증됨)
    * @return 공급자 식별 정보(provider, providerId)와 프로필을 담은 사용자 정보
    */
-  OAuthUserInfo fetchUserInfo(String authorizationCode);
+  OAuthUserInfo fetchUserInfo(String authorizationCode, String redirectUri);
 }

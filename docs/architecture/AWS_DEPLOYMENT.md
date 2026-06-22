@@ -250,7 +250,8 @@ JWT_REFRESH_TOKEN_EXPIRES_IN=1209600
 
 KAKAO_CLIENT_ID=<카카오 REST API 키>
 KAKAO_CLIENT_SECRET=<카카오 시크릿>
-KAKAO_REDIRECT_URI=https://<도메인>/login/oauth/kakao
+# 콤마 구분 화이트리스트. 첫 번째가 기본값. 카카오 콘솔에 등록한 값과 정확히 일치해야 함.
+KAKAO_REDIRECT_URIS=https://<프론트 도메인>/auth,http://localhost:5173/auth
 
 # --- S3 (객체 저장, 추후 연동 시) ---
 # 자격증명은 EC2 IAM Role로 자동 주입되므로 Access Key를 넣지 않는다.
