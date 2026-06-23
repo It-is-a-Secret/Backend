@@ -1,5 +1,7 @@
 package com.blursome.blursome.member.service;
 
+import com.blursome.blursome.feed.domain.Feed;
+import com.blursome.blursome.feed.service.FeedService;
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.member.domain.InterestCategory;
 import com.blursome.blursome.member.domain.Member;
@@ -38,6 +40,7 @@ public class MemberOnboardingService {
   private final VerificationCodeGenerator verificationCodeGenerator;
   private final SchoolEmailVerificationStore verificationStore;
   private final EmailVerificationSender emailVerificationSender;
+  private final FeedService feedService;
 
   /**
    * 학교 이메일로 6자리 인증 코드를 발송한다.
@@ -89,8 +92,8 @@ public class MemberOnboardingService {
   /**
    * 온보딩 프로필을 저장하고 가입을 완료한다({@code VERIFIED → COMPLETED}).
    *
-   * <p>닉네임·생년·학과·MBTI를 회원에 세팅하고 관심사를 별도 행으로 저장한다. 닉네임 유니크 충돌은
-   * 도메인 예외로 변환한다.
+   * <p>닉네임은 회원에 세팅하고, 공개 프로필(성별·생년·학과·MBTI)은 {@code Feed}로, 관심사는 별도 행으로
+   * 저장한다. 닉네임 유니크 충돌은 도메인 예외로 변환한다.
    *
    * @throws BaseException 학교 인증 전이거나, 이미 온보딩을 마쳤거나, 닉네임이 중복인 경우
    */
@@ -98,9 +101,7 @@ public class MemberOnboardingService {
   public MemberProfileResponse completeOnboarding(Long memberId, OnboardingRequest request) {
     Member member = memberService.findActiveMember(memberId);
 
-    member.completeOnboarding(
-        request.nickName(), request.birthYear(), request.department(), request.mbti(),
-        request.gender());
+    member.completeOnboarding(request.nickName());
     try {
       memberRepository.flush();
     } catch (DataIntegrityViolationException e) {
@@ -113,12 +114,17 @@ public class MemberOnboardingService {
         .toList();
     interestCategoryRepository.saveAll(interests);
 
-    return MemberProfileResponse.of(member, interests);
+    Feed feed = feedService.createFeed(
+        member, request.gender(), request.birthYear(), request.department(), request.mbti());
+
+    return MemberProfileResponse.of(member, feed, interests);
   }
 
-  /** 내 프로필을 관심사와 함께 조회한다. */
+  /** 내 프로필을 공개 프로필(Feed)·관심사와 함께 조회한다. 온보딩 미완료 회원은 Feed가 없어 해당 필드가 null. */
   public MemberProfileResponse getMyProfile(Long memberId) {
     Member member = memberService.findActiveMember(memberId);
-    return MemberProfileResponse.of(member, interestCategoryRepository.findByMemberId(memberId));
+    Feed feed = feedService.findByMemberId(memberId).orElse(null);
+    return MemberProfileResponse.of(
+        member, feed, interestCategoryRepository.findByMemberId(memberId));
   }
 }

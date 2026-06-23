@@ -1,5 +1,6 @@
 package com.blursome.blursome.member.dto.response;
 
+import com.blursome.blursome.feed.domain.Feed;
 import com.blursome.blursome.member.domain.Gender;
 import com.blursome.blursome.member.domain.InterestCategory;
 import com.blursome.blursome.member.domain.Mbti;
@@ -7,7 +8,12 @@ import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.RegistrationStatus;
 import java.util.List;
 
-/** 회원 프로필 응답(온보딩 완료 결과·내 정보 조회). */
+/**
+ * 회원 프로필 응답(온보딩 완료 결과·내 정보 조회).
+ *
+ * <p>공개 프로필(생년·학과·MBTI·성별)은 {@link Feed}가 보유한다. 온보딩 미완료 회원은 피드가 없어
+ * {@code feed}가 {@code null}이며, 해당 필드는 모두 {@code null}로 응답한다.
+ */
 public record MemberProfileResponse(
     Long id,
     String nickName,
@@ -20,15 +26,16 @@ public record MemberProfileResponse(
     List<InterestResponse> interests
 ) {
 
-  public static MemberProfileResponse of(Member member, List<InterestCategory> interests) {
+  public static MemberProfileResponse of(
+      Member member, Feed feed, List<InterestCategory> interests) {
     return new MemberProfileResponse(
         member.getId(),
         member.getNickName(),
         member.getSchoolEmail(),
-        member.getBirthYear(),
-        member.getDepartment(),
-        member.getMbti(),
-        member.getGender(),
+        feed == null ? null : feed.getBirthYear(),
+        feed == null ? null : feed.getDepartment(),
+        feed == null ? null : feed.getMbti(),
+        feed == null ? null : feed.getGender(),
         member.getRegistrationStatus(),
         interests.stream().map(InterestResponse::from).toList()
     );
