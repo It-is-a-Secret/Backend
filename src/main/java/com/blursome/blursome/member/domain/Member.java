@@ -22,8 +22,8 @@ import lombok.NoArgsConstructor;
  *
  * <p>소셜 로그인에서 받은 식별 정보({@code provider}, {@code providerId}, {@code name}, {@code email})와,
  * 가입 과정에서 채워지는 온보딩 정보({@code nickName}, {@code schoolEmail}), 상태 필드({@code role},
- * {@code activityStatus}, {@code registrationStatus})로 구성된다. 관심사는 별도 엔티티
- * ({@code InterestCategory})로 분리하며, 공개 프로필 정보({@code gender}, {@code birthYear},
+ * {@code activityStatus}, {@code registrationStatus})로 구성된다. 관심사 키워드는 별도 엔티티
+ * ({@code MemberKeyword})로 분리하며, 공개 프로필 정보({@code gender}, {@code birthYear},
  * {@code department}, {@code mbti})는 온보딩 완료 시 생성되는 {@code Feed} 엔티티가 보유한다(중복 제거).
  *
  * <p>가입 단계는 {@code UNVERIFIED → VERIFIED → COMPLETED} 순으로만 전진하며(순차 강제·단조 증가),
@@ -151,9 +151,9 @@ public class Member extends BaseEntity {
   /**
    * 온보딩을 완료한다({@code VERIFIED → COMPLETED}). 학교 인증이 선행되어야 한다.
    *
-   * <p>닉네임만 회원에 세팅한다. 공개 프로필(생년·학과·MBTI·성별)과 관심사({@link InterestCategory})는
-   * 별도 애그리거트({@code Feed}, {@code InterestCategory})로 서비스 계층에서 저장한다
-   * (설계 {@code docs/member/MEMBER_ONBOARDING.md}).
+   * <p>닉네임만 회원에 세팅한다. 공개 프로필(생년·학과·MBTI·성별)과 관심사 키워드({@code MemberKeyword})는
+   * 별도 애그리거트({@code Feed}, {@code MemberKeyword})로 서비스 계층에서 저장한다
+   * (설계 {@code docs/member/MEMBER_ONBOARDING.md}, {@code docs/keyword/KEYWORD_DOMAIN.md}).
    *
    * @throws BaseException 활성 회원이 아니거나, 학교 인증 전이거나, 이미 온보딩을 마친 경우
    */
