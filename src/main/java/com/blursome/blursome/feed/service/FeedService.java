@@ -35,7 +35,7 @@ public class FeedService {
   }
 
   /** 회원의 피드를 조회한다. 온보딩 미완료 회원은 피드가 없으므로 {@code Optional.empty()}. */
-  public Optional<Feed> findByMemberId(Long memberId) {
+  public Optional<Feed> findFeedByMemberId(Long memberId) {
     return feedRepository.findByMemberId(memberId);
   }
 }

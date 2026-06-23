@@ -123,7 +123,7 @@ public class MemberOnboardingService {
   /** 내 프로필을 공개 프로필(Feed)·관심사와 함께 조회한다. 온보딩 미완료 회원은 Feed가 없어 해당 필드가 null. */
   public MemberProfileResponse getMyProfile(Long memberId) {
     Member member = memberService.findActiveMember(memberId);
-    Feed feed = feedService.findByMemberId(memberId).orElse(null);
+    Feed feed = feedService.findFeedByMemberId(memberId).orElse(null);
     return MemberProfileResponse.of(
         member, feed, interestCategoryRepository.findByMemberId(memberId));
   }
