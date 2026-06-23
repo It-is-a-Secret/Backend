@@ -21,9 +21,10 @@ import lombok.NoArgsConstructor;
  * 회원 엔티티.
  *
  * <p>소셜 로그인에서 받은 식별 정보({@code provider}, {@code providerId}, {@code name}, {@code email})와,
- * 가입 과정에서 채워지는 온보딩 정보({@code nickName}, {@code schoolEmail}, {@code birthYear},
- * {@code department}, {@code mbti}, {@code gender}), 상태 필드({@code role}, {@code activityStatus},
- * {@code registrationStatus})로 구성된다. 관심사는 별도 엔티티({@code InterestCategory})로 분리한다.
+ * 가입 과정에서 채워지는 온보딩 정보({@code nickName}, {@code schoolEmail}), 상태 필드({@code role},
+ * {@code activityStatus}, {@code registrationStatus})로 구성된다. 관심사는 별도 엔티티
+ * ({@code InterestCategory})로 분리하며, 공개 프로필 정보({@code gender}, {@code birthYear},
+ * {@code department}, {@code mbti})는 온보딩 완료 시 생성되는 {@code Feed} 엔티티가 보유한다(중복 제거).
  *
  * <p>가입 단계는 {@code UNVERIFIED → VERIFIED → COMPLETED} 순으로만 전진하며(순차 강제·단조 증가),
  * 모든 상태 전이는 불변식을 검증하는 도메인 메서드로만 수행한다. 설계 근거는 {@code docs/member/MEMBER_DOMAIN.md} 참조.
@@ -78,20 +79,6 @@ public class Member extends BaseEntity {
   private String schoolEmail;
 
   @Enumerated(EnumType.STRING)
-  @Column(length = 10)
-  private Gender gender;
-
-  @Column(name = "birth_year")
-  private Integer birthYear;
-
-  @Column(length = 50)
-  private String department;
-
-  @Enumerated(EnumType.STRING)
-  @Column(length = 4)
-  private Mbti mbti;
-
-  @Enumerated(EnumType.STRING)
   @Column(nullable = false, length = 20)
   private MemberRole role;
 
@@ -126,7 +113,7 @@ public class Member extends BaseEntity {
 
   /**
    * 소셜 로그인 정보로 새 회원을 생성한다. 기본 역할 {@code USER}, 활동 {@code ACTIVE}, 가입 단계 {@code UNVERIFIED}.
-   * 온보딩 정보({@code nickName}, {@code schoolEmail}, {@code gender})는 후속 단계에서 채워진다.
+   * 온보딩 정보({@code nickName}, {@code schoolEmail})는 후속 단계에서 채워진다.
    */
   public static Member createOAuthMember(
       OAuthProvider provider,
@@ -164,13 +151,13 @@ public class Member extends BaseEntity {
   /**
    * 온보딩을 완료한다({@code VERIFIED → COMPLETED}). 학교 인증이 선행되어야 한다.
    *
-   * <p>닉네임·생년·학과·MBTI·성별 프로필을 세팅한다. 관심사({@link InterestCategory})는 별도
-   * 애그리거트로, 서비스 계층에서 저장한다(설계 {@code docs/member/MEMBER_ONBOARDING.md}).
+   * <p>닉네임만 회원에 세팅한다. 공개 프로필(생년·학과·MBTI·성별)과 관심사({@link InterestCategory})는
+   * 별도 애그리거트({@code Feed}, {@code InterestCategory})로 서비스 계층에서 저장한다
+   * (설계 {@code docs/member/MEMBER_ONBOARDING.md}).
    *
    * @throws BaseException 활성 회원이 아니거나, 학교 인증 전이거나, 이미 온보딩을 마친 경우
    */
-  public void completeOnboarding(
-      String nickName, Integer birthYear, String department, Mbti mbti, Gender gender) {
+  public void completeOnboarding(String nickName) {
     requireActive();
     if (this.registrationStatus == RegistrationStatus.UNVERIFIED) {
       throw BaseException.from(MemberErrorCode.MEMBER_SCHOOL_VERIFICATION_REQUIRED);
@@ -179,10 +166,6 @@ public class Member extends BaseEntity {
       throw BaseException.from(MemberErrorCode.MEMBER_ALREADY_ONBOARDED);
     }
     this.nickName = nickName;
-    this.birthYear = birthYear;
-    this.department = department;
-    this.mbti = mbti;
-    this.gender = gender;
     this.registrationStatus = RegistrationStatus.COMPLETED;
   }
 
@@ -212,7 +195,8 @@ public class Member extends BaseEntity {
   }
 
   /**
-   * 탈퇴 회원을 재활성화한다({@code WITHDRAWN → ACTIVE}). 가입 단계·온보딩 정보는 직전 상태 그대로 복구한다.
+   * 탈퇴 회원을 재활성화한다({@code WITHDRAWN → ACTIVE}). 가입 단계·온보딩 정보({@code nickName}/
+   * {@code schoolEmail})는 직전 상태 그대로 복구한다.
    *
    * @throws BaseException 이미 활성 상태인 경우
    */
