@@ -1,7 +1,6 @@
 package com.blursome.blursome.member.dto.request;
 
 import com.blursome.blursome.member.domain.Gender;
-import com.blursome.blursome.member.domain.InterestCategoryType;
 import com.blursome.blursome.member.domain.Mbti;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -14,8 +13,8 @@ import java.util.List;
 /**
  * 온보딩(프로필 작성) 요청. 학교 이메일 인증 완료(VERIFIED) 회원만 사용한다.
  *
- * <p>관심사는 고정 카탈로그 {@link InterestCategoryType} 값의 목록으로 받으며, 각 행의 설명은
- * 카탈로그 기본값으로 저장된다.
+ * <p>관심사는 키워드 카탈로그({@code GET /api/keywords})에서 받은 태그 id 목록으로 받는다. 태그 존재·활성
+ * 여부와 필수 카테고리(각 최소 1개) 검증은 서비스 계층이 수행한다.
  */
 public record OnboardingRequest(
     @NotBlank(message = "닉네임은 필수입니다.")
@@ -37,8 +36,8 @@ public record OnboardingRequest(
     @NotNull(message = "성별은 필수입니다.")
     Gender gender,
 
-    @NotEmpty(message = "관심사는 하나 이상 선택해야 합니다.")
-    List<InterestCategoryType> interests
+    @NotEmpty(message = "관심사 키워드는 하나 이상 선택해야 합니다.")
+    List<Long> keywordTagIds
 ) {
 
 }
