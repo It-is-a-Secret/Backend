@@ -33,7 +33,8 @@ public class MemberService {
    * OAuth 사용자 정보를 기준으로 기존 회원을 조회하거나, 없으면 새 회원을 생성한다.
    *
    * <p>이미 가입된 회원이면 탈퇴 상태인 경우 재활성화한 뒤 OAuth 프로필 정보(이름·프로필 이미지)를
-   * 최신 값으로 갱신한다. 가입 이력이 없으면 새 회원을 생성한다.
+   * 최신 값으로 갱신하고, 로그인은 활동이므로 마지막 활동 시각을 갱신한다. 가입 이력이 없으면 새 회원을
+   * 생성한다(생성 시 {@code lastActiveAt}이 초기화됨).
    *
    * @param userInfo OAuth 제공자로부터 전달받은 사용자 정보
    * @return 조회 또는 생성된 회원 엔티티
@@ -46,6 +47,7 @@ public class MemberService {
             existing.reactivate();
           }
           existing.updateProfileFromOAuth(userInfo.name(), userInfo.profileImageUrl());
+          existing.recordActivity();
           return existing;
         })
         .orElseGet(() -> createMember(userInfo));

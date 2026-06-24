@@ -60,7 +60,9 @@ BlurSome의 회원(Member) 도메인을 정의합니다. 소셜 로그인으로 
 | `role` | `MemberRole`, `nullable=false`, len 20, default `USER` | 권한 |
 | `activityStatus` | `ActivityStatus`, `nullable=false`, len 20, default `ACTIVE` | 탈퇴 등 활동 상태 |
 | `registrationStatus` | `RegistrationStatus`, `nullable=false`, len 30, default `UNVERIFIED` | 가입 단계 |
-| `createdAt`/`updatedAt` | `BaseEntity` | 감사 필드 |
+| `withdrawnAt` | `LocalDateTime`, nullable | 탈퇴 시각. `withdraw()`에서 세팅·`reactivate()`에서 해제. **탈퇴 후 30일 보존·영구 삭제 배치의 기준** |
+| `lastActiveAt` | `LocalDateTime`, nullable | 마지막 접속·주요 활동 시각. 로그인 시 갱신. "최근 접속 우선 노출" 정렬 기준 |
+| `createdAt`/`updatedAt` | `BaseEntity` | 감사 필드. ⚠️ `updatedAt`은 프로필 갱신 등 임의 수정에도 변하므로 **탈퇴 시각 대용으로 쓰지 않는다**(→ `withdrawnAt` 사용) |
 
 #### 제약 조건
 
@@ -133,8 +135,9 @@ createOAuthMember()
 
 - `WITHDRAWN`은 소프트삭제 상태. 행을 삭제하지 않고 `providerId`를 보존해 감사·재가입 추적이 가능하다.
 - `WITHDRAWN` 회원은 가입 단계 전이(`verifySchoolEmail`/`completeOnboarding`)·서비스 진입이 모두 차단된다.
-- **재가입(✅ 결정: 기존 행 재활성화)**: 탈퇴자가 같은 소셜 계정으로 재로그인하면 `findByProviderAndProviderId`가 기존 WITHDRAWN 행을 찾는다(새 행 생성은 `uk_member_provider` 충돌이라 불가). 이때 `reactivate()`로 `activityStatus`만 `ACTIVE`로 되돌리고 **`registrationStatus`·온보딩 필드(`nickName`/`schoolEmail`)는 보존된 값 그대로 복구**한다(닉네임·학교인증 재수행 불필요). 공개 프로필을 담은 `Feed`도 그대로 유지된다.
-- (후순위 ⏳) 재가입 쿨다운이 필요하면 `withdrawnAt` 타임스탬프 + N일 제한을 추가한다. 1차는 미적용.
+- **재가입(✅ 결정: 기존 행 재활성화)**: 탈퇴자가 같은 소셜 계정으로 재로그인하면 `findByProviderAndProviderId`가 기존 WITHDRAWN 행을 찾는다(새 행 생성은 `uk_member_provider` 충돌이라 불가). 이때 `reactivate()`로 `activityStatus`를 `ACTIVE`로 되돌리고 `withdrawnAt`을 해제하며, **`registrationStatus`·온보딩 필드(`nickName`/`schoolEmail`)는 보존된 값 그대로 복구**한다(닉네임·학교인증 재수행 불필요). 공개 프로필을 담은 `Feed`도 그대로 유지된다.
+- **탈퇴 시각 기록(✅ 추가, 이슈 #39)**: `withdraw()`는 `withdrawnAt = now()`를 기록한다. `BaseEntity.updatedAt`은 임의 수정에도 갱신되어 탈퇴 시각으로 부정확하므로, 보존·정렬 판정은 전용 컬럼 `withdrawnAt`을 쓴다.
+- **30일 보존 후 영구 삭제(🧩 설계 반영, 스케줄러는 후속 이슈)**: 탈퇴 회원은 30일간 소프트삭제 상태로 보존했다가 영구 삭제한다. 배치는 `activityStatus = WITHDRAWN AND withdrawnAt < now() - 30일` 대상을 주기적으로 하드 삭제(또는 익명화)한다. 30일 내 재로그인하면 `reactivate()`로 살아나며 `withdrawnAt`이 비워져 삭제 대상에서 빠진다. 실제 스케줄러 구현은 후속 이슈로 분리한다.
 - `SUSPENDED`(관리자 정지)는 후순위 — 필요 시 enum append.
 
 ---
@@ -182,11 +185,19 @@ void updateProfileFromOAuth(String name, String profileImageUrl)
 ```java
 void withdraw()
 //   불변식: ACTIVE 여야 함. 이미 WITHDRAWN이면 예외.
-//   activityStatus = WITHDRAWN. (registrationStatus·온보딩 필드는 보존)
+//   activityStatus = WITHDRAWN, withdrawnAt = now(). (registrationStatus·온보딩 필드는 보존)
 
 void reactivate()
 //   불변식: WITHDRAWN 여야 함. 이미 ACTIVE면 예외.
-//   activityStatus = ACTIVE. registrationStatus·nickName·schoolEmail은 건드리지 않는다(직전 상태 복구).
+//   activityStatus = ACTIVE, withdrawnAt = null. registrationStatus·nickName·schoolEmail은 건드리지 않는다(직전 상태 복구).
+```
+
+### 4-6. 활동 시각 갱신 (단계와 무관)
+
+```java
+void recordActivity()
+//   lastActiveAt = now(). 상태 전이가 아니므로 활동 상태와 무관하게 동작한다.
+//   로그인 등 활동 시점에 서비스가 호출(findOrCreateByOAuth). 신규 회원은 생성 시 초기화된다.
 ```
 
 ### 4-5. 조회 헬퍼 (질의 메서드)
@@ -357,9 +368,12 @@ MemberService.withdraw(memberId)                        @Transactional
 | 7 | 성별 | **`Gender` = MALE, FEMALE 로 제한** |
 | 8 | 가입 단계 네이밍 | **`UNVERIFIED → VERIFIED → COMPLETED`** (기획 Unverified/Verified와 정렬, `COMPLETED`는 `ActivityStatus.ACTIVE`와 이름 충돌 회피). 기획 'Active'·'Guest'는 파생 접근상태로 보고 별도 enum 미도입(§3-0) |
 
+| 9 | 활동성·탈퇴 타임스탬프 | **`withdrawnAt`·`lastActiveAt` 추가**(이슈 #39). 탈퇴 30일 보존 후 영구 삭제·최근 접속 정렬의 기준. `updatedAt`은 탈퇴 시각 대용으로 쓰지 않음 |
+
 ### ⏳ 남은 검토 항목
 
-- **재가입 쿨다운** — 탈퇴 후 N일 재가입 제한 도입 시 `withdrawnAt` 추가(1차 미적용).
+- **탈퇴 30일 보존 영구 삭제 스케줄러** — 설계(§3-2)는 확정. 배치 구현은 후속 이슈로 분리.
+- **재가입 쿨다운** — 필요 시 `withdrawnAt + N일` 제한 추가(현재 미적용, 타임스탬프는 이미 확보).
 - **학교 이메일 인증 메커니즘** — 인정 메일 도메인 화이트리스트, 인증 코드 발송/검증 흐름(인증 서비스 책임).
 - **`SUSPENDED`(관리자 정지)** 도입 시점.
 
