@@ -49,4 +49,6 @@ dependencies {
 
 tasks.withType<Test> {
 	useJUnitPlatform()
+	// 실 S3 검증 같은 옵트인 테스트 게이트용 시스템 프로퍼티를 테스트 JVM으로 전달한다.
+	System.getProperty("s3.verify")?.let { systemProperty("s3.verify", it) }
 }
