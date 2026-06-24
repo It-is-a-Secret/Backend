@@ -1,6 +1,8 @@
 package com.blursome.blursome.feed.controller;
 
+import com.blursome.blursome.feed.dto.request.FeedImageSaveRequest;
 import com.blursome.blursome.feed.dto.request.PresignedUrlRequest;
+import com.blursome.blursome.feed.dto.response.FeedImageResponse;
 import com.blursome.blursome.feed.dto.response.PresignedUrlResponse;
 import com.blursome.blursome.feed.service.FeedImageService;
 import com.blursome.blursome.global.response.DataResponse;
@@ -33,5 +35,18 @@ public class FeedImageController {
   ) {
     return ResponseEntity.ok(
         DataResponse.ok(feedImageService.issuePresignedUploadUrls(memberId, request)));
+  }
+
+  @Operation(summary = "피드 이미지 메타데이터 저장 (full-replace)",
+      description = "프론트가 원본 S3 업로드를 마친 뒤 피드 이미지 메타데이터를 저장한다. 요청 목록을 피드 사진 전체 집합으로 "
+          + "보는 full-replace 방식이며(기존 DB 행 대체, S3 객체 즉시 삭제 안 함), 원본 key로부터 variant_key를 계산하고 "
+          + "processing_status=PROCESSING으로 시작한다. 인증 주체에서 피드를 도출하므로 feedId를 받지 않는다.")
+  @PostMapping
+  public ResponseEntity<DataResponse<FeedImageResponse>> saveImages(
+      @AuthenticationPrincipal Long memberId,
+      @Valid @RequestBody FeedImageSaveRequest request
+  ) {
+    return ResponseEntity.ok(
+        DataResponse.ok(feedImageService.replaceImages(memberId, request)));
   }
 }

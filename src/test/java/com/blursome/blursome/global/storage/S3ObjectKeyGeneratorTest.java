@@ -69,4 +69,37 @@ class S3ObjectKeyGeneratorTest {
     assertThatThrownBy(() -> generator.toVariantKey("originals/1/noext"))
         .isInstanceOf(IllegalArgumentException.class);
   }
+
+  @Test
+  @DisplayName("생성한 원본 키는 같은 회원 소유로 인정된다")
+  void isOwnedOriginalKey_acceptsGeneratedKey() {
+    String key = generator.generateOriginalKey(7L, "png");
+
+    assertThat(generator.isOwnedOriginalKey(7L, key)).isTrue();
+  }
+
+  @ParameterizedTest(name = "[{index}] {0}")
+  @CsvSource({
+      // 다른 회원 prefix (IDOR)
+      "originals/8/11111111-1111-1111-1111-111111111111.png",
+      // variants 버킷 key
+      "variants/7/11111111-1111-1111-1111-111111111111.jpg",
+      // uuid가 아닌 임의 파일명
+      "originals/7/evil.png",
+      // 확장자 없음
+      "originals/7/11111111-1111-1111-1111-111111111111",
+      // 경로 구분자 끼워넣기
+      "originals/7/sub/11111111-1111-1111-1111-111111111111.png"
+  })
+  @DisplayName("다른 회원 prefix·형식 위반 key는 소유로 인정하지 않는다")
+  void isOwnedOriginalKey_rejectsInvalid(String key) {
+    assertThat(generator.isOwnedOriginalKey(7L, key)).isFalse();
+  }
+
+  @Test
+  @DisplayName("memberId나 key가 null이면 소유로 인정하지 않는다")
+  void isOwnedOriginalKey_rejectsNull() {
+    assertThat(generator.isOwnedOriginalKey(null, "originals/7/x.png")).isFalse();
+    assertThat(generator.isOwnedOriginalKey(7L, null)).isFalse();
+  }
 }

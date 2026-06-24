@@ -7,10 +7,15 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.blursome.blursome.feed.domain.FeedImageProcessingStatus;
+import com.blursome.blursome.feed.dto.request.FeedImageSaveRequest;
 import com.blursome.blursome.feed.dto.request.PresignedUrlRequest;
+import com.blursome.blursome.feed.dto.response.FeedImageResponse;
 import com.blursome.blursome.feed.dto.response.PresignedUrlResponse;
 import com.blursome.blursome.feed.dto.response.PresignedUrlResponse.PresignedUrl;
+import com.blursome.blursome.feed.exception.FeedImageErrorCode;
 import com.blursome.blursome.feed.service.FeedImageService;
+import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.global.security.JwtAuthentication;
 import com.blursome.blursome.global.security.JwtAuthenticationEntryPoint;
 import com.blursome.blursome.global.security.JwtAuthenticationFilter;
@@ -146,6 +151,71 @@ class FeedImageControllerTest {
             .contentType(MediaType.APPLICATION_JSON)
             .content(body))
         .andExpect(status().isBadRequest());
+  }
+
+  @Test
+  @DisplayName("메타데이터 저장 요청 시 200과 저장된 이미지 목록을 반환한다")
+  void saveImages() throws Exception {
+    FeedImageResponse response = new FeedImageResponse(List.of(
+        new FeedImageResponse.Image(
+            1L, 1, "https://cdn/variants/100/a.jpg", 70, FeedImageProcessingStatus.PROCESSING)));
+    given(feedImageService.replaceImages(eq(MEMBER_ID), any(FeedImageSaveRequest.class)))
+        .willReturn(response);
+
+    String body = """
+        {"images":[{"objectKey":"originals/100/a.png","displayOrder":1,"blurLevel":70}]}
+        """;
+
+    mockMvc.perform(post("/api/feeds/me/images")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.images[0].id").value(1))
+        .andExpect(jsonPath("$.data.images[0].displayOrder").value(1))
+        .andExpect(jsonPath("$.data.images[0].variantUrl").value("https://cdn/variants/100/a.jpg"))
+        .andExpect(jsonPath("$.data.images[0].processingStatus").value("PROCESSING"));
+  }
+
+  @Test
+  @DisplayName("이미지 목록이 비어 있으면 400을 반환한다")
+  void rejectEmptyImages() throws Exception {
+    mockMvc.perform(post("/api/feeds/me/images")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"images\":[]}"))
+        .andExpect(status().isBadRequest());
+  }
+
+  @Test
+  @DisplayName("displayOrder가 범위(1~5)를 벗어나면 400을 반환한다")
+  void rejectDisplayOrderOutOfRange() throws Exception {
+    String body = """
+        {"images":[{"objectKey":"originals/100/a.png","displayOrder":6,"blurLevel":70}]}
+        """;
+
+    mockMvc.perform(post("/api/feeds/me/images")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isBadRequest());
+  }
+
+  @Test
+  @DisplayName("순서가 중복되면 서비스가 던진 FEED_IMAGE_400_DUPLICATE_ORDER로 400을 반환한다")
+  void rejectDuplicateOrder() throws Exception {
+    given(feedImageService.replaceImages(eq(MEMBER_ID), any(FeedImageSaveRequest.class)))
+        .willThrow(BaseException.from(FeedImageErrorCode.DUPLICATE_ORDER));
+
+    String body = """
+        {"images":[
+          {"objectKey":"originals/100/a.png","displayOrder":1,"blurLevel":70},
+          {"objectKey":"originals/100/b.jpg","displayOrder":1,"blurLevel":80}
+        ]}
+        """;
+
+    mockMvc.perform(post("/api/feeds/me/images")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("FEED_IMAGE_400_DUPLICATE_ORDER"));
   }
 
   @TestConfiguration

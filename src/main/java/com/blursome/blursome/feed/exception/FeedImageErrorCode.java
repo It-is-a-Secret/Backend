@@ -17,6 +17,10 @@ public enum FeedImageErrorCode implements ErrorCode {
       "피드 이미지 노출 순서가 중복되었습니다.",
       "FEED_IMAGE_400_DUPLICATE_ORDER"
   ),
+  INVALID_OBJECT_KEY(HttpStatus.BAD_REQUEST,
+      "유효하지 않은 원본 객체 key입니다.",
+      "FEED_IMAGE_400_INVALID_OBJECT_KEY"
+  ),
   NOT_FOUND(HttpStatus.NOT_FOUND,
       "피드 이미지를 찾을 수 없습니다.",
       "FEED_IMAGE_404_NOT_FOUND"
