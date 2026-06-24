@@ -12,6 +12,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
+import java.time.LocalDateTime;
 import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
@@ -90,6 +91,15 @@ public class Member extends BaseEntity {
   @Column(name = "registration_status", nullable = false, length = 30)
   private RegistrationStatus registrationStatus;
 
+  // 탈퇴 시각. 탈퇴 후 30일 보존·영구 삭제 배치의 기준이며, withdraw()에서 세팅·reactivate()에서 해제한다.
+  // BaseEntity.updatedAt은 프로필 갱신 등 임의 수정에도 변하므로 탈퇴 시각 대용으로 쓰지 않는다.
+  @Column(name = "withdrawn_at")
+  private LocalDateTime withdrawnAt;
+
+  // 마지막 접속·주요 활동 시각. 로그인 시 갱신하며, "최근 접속 우선 노출" 정렬의 기준이 된다.
+  @Column(name = "last_active_at")
+  private LocalDateTime lastActiveAt;
+
   @Builder(access = AccessLevel.PRIVATE)
   private Member(
       OAuthProvider provider,
@@ -99,7 +109,8 @@ public class Member extends BaseEntity {
       String profileImageUrl,
       MemberRole role,
       ActivityStatus activityStatus,
-      RegistrationStatus registrationStatus
+      RegistrationStatus registrationStatus,
+      LocalDateTime lastActiveAt
   ) {
     this.provider = provider;
     this.providerId = providerId;
@@ -109,11 +120,13 @@ public class Member extends BaseEntity {
     this.role = role;
     this.activityStatus = activityStatus;
     this.registrationStatus = registrationStatus;
+    this.lastActiveAt = lastActiveAt;
   }
 
   /**
    * 소셜 로그인 정보로 새 회원을 생성한다. 기본 역할 {@code USER}, 활동 {@code ACTIVE}, 가입 단계 {@code UNVERIFIED}.
    * 온보딩 정보({@code nickName}, {@code schoolEmail})는 후속 단계에서 채워진다.
+   * 최초 진입도 활동이므로 {@code lastActiveAt}을 생성 시각으로 초기화한다.
    */
   public static Member createOAuthMember(
       OAuthProvider provider,
@@ -131,6 +144,7 @@ public class Member extends BaseEntity {
         .role(MemberRole.USER)
         .activityStatus(ActivityStatus.ACTIVE)
         .registrationStatus(RegistrationStatus.UNVERIFIED)
+        .lastActiveAt(LocalDateTime.now())
         .build();
   }
 
@@ -184,6 +198,7 @@ public class Member extends BaseEntity {
 
   /**
    * 회원을 탈퇴 처리한다(소프트삭제, {@code ACTIVE → WITHDRAWN}). 가입 단계·온보딩 정보는 보존한다.
+   * 탈퇴 시각({@code withdrawnAt})을 기록해 30일 보존 후 영구 삭제 배치의 기준으로 삼는다.
    *
    * @throws BaseException 이미 탈퇴한 회원인 경우
    */
@@ -192,11 +207,12 @@ public class Member extends BaseEntity {
       throw BaseException.from(MemberErrorCode.MEMBER_ALREADY_WITHDRAWN);
     }
     this.activityStatus = ActivityStatus.WITHDRAWN;
+    this.withdrawnAt = LocalDateTime.now();
   }
 
   /**
    * 탈퇴 회원을 재활성화한다({@code WITHDRAWN → ACTIVE}). 가입 단계·온보딩 정보({@code nickName}/
-   * {@code schoolEmail})는 직전 상태 그대로 복구한다.
+   * {@code schoolEmail})는 직전 상태 그대로 복구하고, 탈퇴 시각({@code withdrawnAt})은 해제한다.
    *
    * @throws BaseException 이미 활성 상태인 경우
    */
@@ -205,6 +221,15 @@ public class Member extends BaseEntity {
       throw BaseException.from(MemberErrorCode.MEMBER_ALREADY_ACTIVE);
     }
     this.activityStatus = ActivityStatus.ACTIVE;
+    this.withdrawnAt = null;
+  }
+
+  /**
+   * 마지막 접속·주요 활동 시각({@code lastActiveAt})을 현재 시각으로 갱신한다.
+   * 로그인 등 활동 시점에 서비스 계층이 호출한다. 상태 전이가 아니므로 활동 상태와 무관하게 동작한다.
+   */
+  public void recordActivity() {
+    this.lastActiveAt = LocalDateTime.now();
   }
 
   public boolean isActive() {
