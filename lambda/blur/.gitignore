@@ -1,0 +1,14 @@
+# Python 캐시
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# 패키징 산출물 (zip + Layer)
+build/
+python/
+*.zip
+
+# 실제 계정 ID/버킷이 박힌 배포 설정(로컬 전용). 템플릿은 notification.example.json 사용.
+notification.json

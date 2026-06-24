@@ -1,0 +1,4 @@
+# 로컬 단위 테스트용 의존성. (런타임 Layer 에는 포함하지 않는다)
+-r requirements.txt
+boto3>=1.34
+pytest>=8.0
