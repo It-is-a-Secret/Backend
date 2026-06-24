@@ -10,6 +10,7 @@ import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
@@ -27,6 +28,13 @@ import lombok.NoArgsConstructor;
     uniqueConstraints = @UniqueConstraint(
         name = "uk_chat_room_member",
         columnNames = {"chat_room_id", "member_id"}
+    ),
+    // uk_chat_room_member의 선두 컬럼이 chat_room_id라 member_id 단독 조회
+    // (내 채팅 목록·상대 정보: findActiveMembershipsWithRoom, findPartnerInfos)가 인덱스를 못 탄다.
+    // member_id 보조 인덱스를 별도로 둬 풀스캔을 방지한다.
+    indexes = @Index(
+        name = "idx_chat_room_member_member",
+        columnList = "member_id"
     )
 )
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
@@ -40,7 +48,7 @@ public class ChatRoomMember extends BaseEntity {
   private LocalDateTime joinedAt;
 
   @Column
-  // 나갔던 회원의 "재입장"은 새 행 생성이 아니라 기존 행의 {@code leftAt} 을 다시 {@code null}
+  // 채팅방 퇴장 시각. leave()로 한 번 세팅되면 영구 퇴장이며, 재입장은 제공하지 않는다(null로 되돌리지 않음).
   private LocalDateTime leftAt;
 
   @Column
