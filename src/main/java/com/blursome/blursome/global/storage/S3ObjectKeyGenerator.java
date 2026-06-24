@@ -2,6 +2,7 @@ package com.blursome.blursome.global.storage;
 
 import java.util.Locale;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import org.springframework.stereotype.Component;
 
 /**
@@ -23,6 +24,10 @@ public class S3ObjectKeyGenerator {
   /** Lambda가 블러본을 항상 jpg로 출력하므로 블러본 확장자는 jpg로 고정한다. */
   private static final String VARIANT_EXTENSION = "jpg";
 
+  /** {@code generateOriginalKey}가 만드는 파일명({@code {uuid}.{ext}}) 형식. 경로 구분자({@code /})는 허용하지 않는다. */
+  private static final Pattern UUID_FILE_NAME = Pattern.compile(
+      "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\.[A-Za-z0-9]+");
+
   /**
    * 새 원본 객체 키를 생성한다. uuid는 매 호출마다 새로 발급된다.
    *
@@ -36,6 +41,27 @@ public class S3ObjectKeyGenerator {
     }
     String normalizedExt = normalizeExtension(extension);
     return ORIGINALS_PREFIX + memberId + "/" + UUID.randomUUID() + "." + normalizedExt;
+  }
+
+  /**
+   * 주어진 원본 키가 {@code memberId} 소유의 정상 형식({@code originals/{memberId}/{uuid}.{ext}})인지 검증한다.
+   * 메타데이터 저장 시 클라이언트가 보낸 key를 신뢰하기 전에 호출해, 다른 회원 prefix나 임의 경로·형식 위반을
+   * 걸러낸다(IDOR·깨진 key 차단). 실제 S3 객체 존재 여부는 검증하지 않는다(블러본 존재는 스케줄러가 추적).
+   *
+   * @param memberId 인증된 회원 id
+   * @param originalKey 클라이언트가 제출한 원본 객체 key
+   * @return 형식과 소유자가 모두 일치하면 {@code true}
+   */
+  public boolean isOwnedOriginalKey(Long memberId, String originalKey) {
+    if (memberId == null || originalKey == null) {
+      return false;
+    }
+    String expectedPrefix = ORIGINALS_PREFIX + memberId + "/";
+    if (!originalKey.startsWith(expectedPrefix)) {
+      return false;
+    }
+    String fileName = originalKey.substring(expectedPrefix.length());
+    return UUID_FILE_NAME.matcher(fileName).matches();
   }
 
   /**

@@ -65,6 +65,17 @@ public class S3StorageService {
   }
 
   /**
+   * 공개 variants 버킷의 블러본 key를 공개 접근 URL로 조립한다. 블러본은 공개 GET이 허용되므로 별도 서명
+   * 없이 {@code variantsBaseUrl + variantKey}로 접근할 수 있다. (설계: {@code FEED_IMAGE_DOMAIN.md} §2-1)
+   *
+   * @param variantKey variants 버킷의 블러본 객체 key
+   * @return 블러본 공개 URL
+   */
+  public String toPublicVariantUrl(String variantKey) {
+    return properties.variantsBaseUrl() + variantKey;
+  }
+
+  /**
    * Presigned PUT 발급 결과.
    *
    * @param uploadUrl 프론트가 직접 PUT할 단기 URL
