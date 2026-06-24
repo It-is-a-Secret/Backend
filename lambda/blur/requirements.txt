@@ -1,0 +1,3 @@
+# Lambda Layer 에 들어가는 런타임 의존성.
+# boto3 는 Lambda Python 런타임에 기본 제공되므로 여기에 넣지 않는다(Layer 용량 절약).
+Pillow>=10.2,<12.0
