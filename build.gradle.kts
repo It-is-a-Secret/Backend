@@ -18,6 +18,9 @@ repositories {
 }
 
 dependencies {
+	// AWS SDK v2. S3Presigner는 별도 아티팩트가 아니라 s3 모듈에 포함된다.
+	implementation(platform("software.amazon.awssdk:bom:2.34.0"))
+	implementation("software.amazon.awssdk:s3")
 	implementation("me.paulschwarz:spring-dotenv:4.0.0")
 	implementation("org.springframework.boot:spring-boot-starter-data-jpa")
 	implementation("org.springframework.boot:spring-boot-starter-data-redis")
