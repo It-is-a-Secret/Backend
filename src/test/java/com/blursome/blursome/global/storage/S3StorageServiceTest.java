@@ -1,6 +1,8 @@
 package com.blursome.blursome.global.storage;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 
 import com.blursome.blursome.global.storage.S3StorageService.PresignedUpload;
@@ -19,6 +21,10 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import software.amazon.awssdk.http.SdkHttpFullRequest;
 import software.amazon.awssdk.http.SdkHttpMethod;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedPutObjectRequest;
@@ -28,13 +34,18 @@ import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignReques
 class S3StorageServiceTest {
 
   private static final String ORIGINALS_BUCKET = "blursome-originals-test";
+  private static final String VARIANTS_BUCKET = "blursome-variants-test";
   private static final Duration PUT_EXPIRATION = Duration.ofMinutes(5);
   private static final String OBJECT_KEY = "originals/100/abc.jpg";
+  private static final String VARIANT_KEY = "variants/100/abc.webp";
   private static final String CONTENT_TYPE = "image/jpeg";
   private static final int BLUR_LEVEL = 70;
 
   @Mock
   private S3Presigner s3Presigner;
+
+  @Mock
+  private S3Client s3Client;
 
   @Mock
   private S3Properties properties;
@@ -69,6 +80,45 @@ class S3StorageServiceTest {
     assertThat(result.requiredHeaders())
         .containsEntry("Content-Type", CONTENT_TYPE)
         .containsEntry("x-amz-meta-blur-level", "70");
+  }
+
+  @Test
+  @DisplayName("existsVariant는 variants 버킷 HeadObject가 성공하면 true를 반환한다")
+  void existsVariant_returnsTrue_whenHeadObjectSucceeds() {
+    given(properties.variantsBucket()).willReturn(VARIANTS_BUCKET);
+    ArgumentCaptor<HeadObjectRequest> requestCaptor =
+        ArgumentCaptor.forClass(HeadObjectRequest.class);
+    given(s3Client.headObject(requestCaptor.capture()))
+        .willReturn(HeadObjectResponse.builder().build());
+
+    boolean exists = s3StorageService.existsVariant(VARIANT_KEY);
+
+    assertThat(exists).isTrue();
+    assertThat(requestCaptor.getValue().bucket()).isEqualTo(VARIANTS_BUCKET);
+    assertThat(requestCaptor.getValue().key()).isEqualTo(VARIANT_KEY);
+  }
+
+  @Test
+  @DisplayName("existsVariant는 HeadObject가 404면 false를 반환한다")
+  void existsVariant_returnsFalse_whenNotFound() {
+    given(properties.variantsBucket()).willReturn(VARIANTS_BUCKET);
+    given(s3Client.headObject(any(HeadObjectRequest.class)))
+        .willThrow((S3Exception) S3Exception.builder().statusCode(404).build());
+
+    boolean exists = s3StorageService.existsVariant(VARIANT_KEY);
+
+    assertThat(exists).isFalse();
+  }
+
+  @Test
+  @DisplayName("existsVariant는 404가 아닌 S3 오류는 그대로 전파한다")
+  void existsVariant_propagates_whenOtherS3Error() {
+    given(properties.variantsBucket()).willReturn(VARIANTS_BUCKET);
+    given(s3Client.headObject(any(HeadObjectRequest.class)))
+        .willThrow((S3Exception) S3Exception.builder().statusCode(403).build());
+
+    assertThatThrownBy(() -> s3StorageService.existsVariant(VARIANT_KEY))
+        .isInstanceOf(S3Exception.class);
   }
 
   private PresignedPutObjectRequest presignedWithUrl(String url) {
