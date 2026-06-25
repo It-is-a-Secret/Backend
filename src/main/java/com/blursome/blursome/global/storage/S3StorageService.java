@@ -5,10 +5,13 @@ import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
+import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedPutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest;
 
@@ -67,6 +70,32 @@ public class S3StorageService {
     requiredHeaders.put(METADATA_HEADER_PREFIX + BLUR_LEVEL_METADATA_KEY, blurLevelValue);
 
     return new PresignedUpload(presigned.url().toString(), requiredHeaders);
+  }
+
+  /**
+   * 비공개 originals 버킷의 원본 객체에 대한 단기 Presigned GET URL을 발급한다. 채팅 단계 조건을 충족한
+   * 참여자에게만 원본을 전달하기 위한 경로로, 만료({@code getExpiration}, 기본 5분)가 지나면 접근이 막힌다.
+   * 버킷이 완전 비공개여도 IAM 자격증명 서명으로 일정 시간만 GET을 허용한다.
+   *
+   * <p>발급 자체는 AWS 호출 없는 서명 계산이라 추가 비용이 없다. 채팅 단계 전환당 드물게 일어나는 이벤트라
+   * CloudFront 캐싱 이득이 작아 Presigned GET을 쓴다. (설계: {@code FEED_IMAGE_BLUR_PIPELINE.md} §5·§6)
+   *
+   * @param objectKey originals 버킷의 원본 객체 key
+   * @return 만료 전까지 직접 GET할 수 있는 단기 URL
+   */
+  public String presignOriginalDownload(String objectKey) {
+    GetObjectRequest objectRequest = GetObjectRequest.builder()
+        .bucket(properties.originalsBucket())
+        .key(objectKey)
+        .build();
+
+    PresignedGetObjectRequest presigned = s3Presigner.presignGetObject(
+        GetObjectPresignRequest.builder()
+            .signatureDuration(properties.getExpiration())
+            .getObjectRequest(objectRequest)
+            .build());
+
+    return presigned.url().toString();
   }
 
   /**

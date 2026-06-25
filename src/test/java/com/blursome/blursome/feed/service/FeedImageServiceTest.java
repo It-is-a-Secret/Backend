@@ -285,4 +285,132 @@ class FeedImageServiceTest {
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", "FEED_404_NOT_FOUND");
   }
+
+  // ---------- issueRevealedImages (채팅 단계 공개) ----------
+
+  /** displayOrder/원본 key/variant key를 가진 피드 이미지를 지정 상태로 만든다(공개 발급 테스트용). */
+  private static FeedImage revealImage(int displayOrder, FeedImageProcessingStatus status) {
+    FeedImage image = FeedImage.create(mock(Feed.class), displayOrder,
+        "originals/100/" + displayOrder + ".png", "variants/100/" + displayOrder + ".jpg", 80);
+    if (status == FeedImageProcessingStatus.READY) {
+      image.markReady();
+    } else if (status == FeedImageProcessingStatus.FAILED) {
+      image.markFailed();
+    }
+    return image;
+  }
+
+  @Test
+  @DisplayName("공개 발급: 공개 장수 N 이하는 원본 Presigned GET, 나머지는 블러본 URL로 displayOrder 순서로 내려준다")
+  void issueRevealedImages_revealsFirstNOriginals() {
+    Feed feed = mock(Feed.class);
+    given(feed.getId()).willReturn(FEED_ID);
+    given(feedRepository.findByMemberId(MEMBER_ID)).willReturn(Optional.of(feed));
+    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(List.of(
+        revealImage(1, FeedImageProcessingStatus.READY),
+        revealImage(2, FeedImageProcessingStatus.READY),
+        revealImage(3, FeedImageProcessingStatus.READY)));
+    given(storageService.presignOriginalDownload(anyString()))
+        .willAnswer(invocation -> "https://original/" + invocation.getArgument(0));
+    given(storageService.toPublicVariantUrl(anyString()))
+        .willAnswer(invocation -> "https://cdn/" + invocation.getArgument(0));
+
+    var response = feedImageService.issueRevealedImages(MEMBER_ID, 2);
+
+    assertThat(response.images())
+        .extracting(image -> image.displayOrder())
+        .containsExactly(1, 2, 3);
+    assertThat(response.images())
+        .extracting(image -> image.revealed())
+        .containsExactly(true, true, false);
+    assertThat(response.images())
+        .extracting(image -> image.imageUrl())
+        .containsExactly(
+            "https://original/originals/100/1.png",
+            "https://original/originals/100/2.png",
+            "https://cdn/variants/100/3.jpg");
+    // 블러본 사진에는 원본 발급을 호출하지 않는다.
+    verify(storageService, never()).presignOriginalDownload("originals/100/3.png");
+  }
+
+  @Test
+  @DisplayName("공개 발급: 공개 장수가 보유 사진 수보다 크면 보유 수로 캡해 전부 공개한다")
+  void issueRevealedImages_capsByOwnedCount() {
+    Feed feed = mock(Feed.class);
+    given(feed.getId()).willReturn(FEED_ID);
+    given(feedRepository.findByMemberId(MEMBER_ID)).willReturn(Optional.of(feed));
+    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(List.of(
+        revealImage(1, FeedImageProcessingStatus.READY),
+        revealImage(2, FeedImageProcessingStatus.READY),
+        revealImage(3, FeedImageProcessingStatus.READY)));
+    given(storageService.presignOriginalDownload(anyString()))
+        .willAnswer(invocation -> "https://original/" + invocation.getArgument(0));
+
+    // COMPLETED(5)인데 사진은 3장 → 3장 전부 공개.
+    var response = feedImageService.issueRevealedImages(MEMBER_ID, 5);
+
+    assertThat(response.images())
+        .extracting(image -> image.revealed())
+        .containsExactly(true, true, true);
+    verify(storageService, never()).toPublicVariantUrl(anyString());
+  }
+
+  @Test
+  @DisplayName("공개 발급: 공개 장수가 0이면(MATCHED) 전부 블러본으로 내려주고 원본을 발급하지 않는다")
+  void issueRevealedImages_revealsNoneWhenZero() {
+    Feed feed = mock(Feed.class);
+    given(feed.getId()).willReturn(FEED_ID);
+    given(feedRepository.findByMemberId(MEMBER_ID)).willReturn(Optional.of(feed));
+    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(List.of(
+        revealImage(1, FeedImageProcessingStatus.READY),
+        revealImage(2, FeedImageProcessingStatus.READY)));
+    given(storageService.toPublicVariantUrl(anyString()))
+        .willAnswer(invocation -> "https://cdn/" + invocation.getArgument(0));
+
+    var response = feedImageService.issueRevealedImages(MEMBER_ID, 0);
+
+    assertThat(response.images())
+        .extracting(image -> image.revealed())
+        .containsExactly(false, false);
+    verify(storageService, never()).presignOriginalDownload(anyString());
+  }
+
+  @Test
+  @DisplayName("공개 발급: 미공개 사진의 블러본이 READY가 아니면(PROCESSING/FAILED) 깨진 URL 노출을 막기 위해 응답에서 제외한다")
+  void issueRevealedImages_excludesUnrevealedNonReadyBlur() {
+    Feed feed = mock(Feed.class);
+    given(feed.getId()).willReturn(FEED_ID);
+    given(feedRepository.findByMemberId(MEMBER_ID)).willReturn(Optional.of(feed));
+    // 1: 공개(원본) / 2: 미공개 READY(블러본 노출) / 3: 미공개 PROCESSING(제외) / 4: 미공개 FAILED(제외)
+    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(List.of(
+        revealImage(1, FeedImageProcessingStatus.PROCESSING),
+        revealImage(2, FeedImageProcessingStatus.READY),
+        revealImage(3, FeedImageProcessingStatus.PROCESSING),
+        revealImage(4, FeedImageProcessingStatus.FAILED)));
+    given(storageService.presignOriginalDownload(anyString()))
+        .willAnswer(invocation -> "https://original/" + invocation.getArgument(0));
+    given(storageService.toPublicVariantUrl(anyString()))
+        .willAnswer(invocation -> "https://cdn/" + invocation.getArgument(0));
+
+    var response = feedImageService.issueRevealedImages(MEMBER_ID, 1);
+
+    // 공개된 1번 원본은 블러본 상태(PROCESSING)와 무관하게 제공되고, 미공개 중 READY인 2번만 블러본으로 남는다.
+    assertThat(response.images())
+        .extracting(image -> image.displayOrder())
+        .containsExactly(1, 2);
+    assertThat(response.images())
+        .extracting(image -> image.revealed())
+        .containsExactly(true, false);
+  }
+
+  @Test
+  @DisplayName("공개 발급: 대상 회원의 피드가 없으면 빈 목록을 돌려준다(예외 아님)")
+  void issueRevealedImages_emptyWhenNoFeed() {
+    given(feedRepository.findByMemberId(MEMBER_ID)).willReturn(Optional.empty());
+
+    var response = feedImageService.issueRevealedImages(MEMBER_ID, 3);
+
+    assertThat(response.images()).isEmpty();
+    verify(storageService, never()).presignOriginalDownload(anyString());
+  }
 }
