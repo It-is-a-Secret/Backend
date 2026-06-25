@@ -60,16 +60,6 @@ public class ChatRoomController {
         DataResponse.ok(chatRoomService.getMessageHistory(roomId, memberId, cursor, size)));
   }
 
-  @Operation(summary = "단계 동의", description = "다음 사진 공개 단계에 동의한다. 양쪽이 모두 동의하면 방 단계가 한 칸 오른다. "
-      + "이미 마지막 단계이거나 이미 동의한 단계면 409. 참여자가 아니면 403.")
-  @PostMapping("/{roomId}/progress/agree")
-  public ResponseEntity<DataResponse<ChatRoomSummaryResponse>> agreeProgress(
-      @AuthenticationPrincipal Long memberId,
-      @PathVariable Long roomId
-  ) {
-    return ResponseEntity.ok(DataResponse.ok(chatRoomService.agreeProgress(roomId, memberId)));
-  }
-
   @Operation(summary = "단계별 상대 사진 조회",
       description = "방의 현재 진행 단계가 정하는 공개 장수만큼 상대 원본이 displayOrder 순서대로 단기 Presigned GET으로 "
           + "공개되고, 나머지는 블러본으로 내려온다. 참여 중인 방이어야 하며 참여자가 아니면 403, 방이 없거나 내가 나갔으면 404.")

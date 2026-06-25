@@ -290,8 +290,9 @@ S3 업로드를 마친 뒤, 발급 응답의 `originalKey`를 그대로 보냅�
 ] } }
 ```
 
-2. **단계 상승**: 채팅 단계 동의(`POST /api/chat/rooms/1/progress/agree`를 A·B 각각)로 단계를
-   `PHOTO_REVEAL_STEP_1`(공개 1장) → `STEP_2`(2장)…로 올립니다([채팅 가이드 R-4](../chat/CHAT_API_TEST_GUIDE.md)).
+2. **단계 상승**: 채팅 유효 메시지 누적(A·B가 교대로 유효 TEXT를 주고받아 양방향 최소가 임계값 10/20/…을 넘김)으로
+   단계를 `PHOTO_REVEAL_STEP_1`(공개 1장) → `STEP_2`(2장)…로 올립니다([채팅 가이드 R-4](../chat/CHAT_API_TEST_GUIDE.md)).
+   손으로 임계값까지 채우기 어렵다면 DB로 `UPDATE chat_room SET progress_status = 'PHOTO_REVEAL_STEP_2' WHERE id = 1;`로 강제할 수 있습니다.
 
 3. **STEP_2에서 재조회**: 앞 2장은 `revealed: true` + **원본 단기 Presigned GET URL**, 나머지는 블러본.
 

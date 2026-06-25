@@ -252,9 +252,9 @@ class FeedImagePipelineIntegrationTest {
         .containsExactly(false, false, false);
     verify(s3Presigner, never()).presignGetObject(any(GetObjectPresignRequest.class));
 
-    // 양쪽 동의를 두 번 반복해 단계를 STEP_2(공개 2장)까지 올린다.
-    advanceProgressOneStep(roomId, ownerId, viewerId); // → STEP_1
-    advanceProgressOneStep(roomId, ownerId, viewerId); // → STEP_2
+    // 방 단계를 STEP_2(공개 2장)로 올려 둔다. 단계 상승 트리거(유효 메시지 누적)는 chat 도메인에서 별도 검증하고,
+    // 여기서는 단계에 따른 원본 공개(#53)만 검증하므로 progressStatus를 직접 설정한다.
+    setProgressStatus(roomId, "PHOTO_REVEAL_STEP_2");
 
     // STEP_2: 앞 2장은 원본(revealed), 3번은 블러본. 원본은 originals 버킷 GET으로만 나간다.
     RevealedFeedImagesResponse atStep2 = chatRoomService.getRevealedImages(roomId, viewerId);
@@ -299,10 +299,10 @@ class FeedImagePipelineIntegrationTest {
 
   // ---------- helpers ----------
 
-  /** 한 단계 진행: 양쪽이 다음 단계에 동의하면 방 단계가 한 칸 오른다. */
-  private void advanceProgressOneStep(Long roomId, Long memberAId, Long memberBId) {
-    chatRoomService.agreeProgress(roomId, memberAId);
-    chatRoomService.agreeProgress(roomId, memberBId);
+  /** 방의 사진 공개 단계를 직접 설정한다(단계별 원본 공개 검증용 — 단계 상승 트리거는 chat 도메인 테스트가 담당). */
+  private void setProgressStatus(Long roomId, String progressStatus) {
+    new JdbcTemplate(dataSource).update(
+        "UPDATE chat_room SET progress_status = ? WHERE id = ?", progressStatus, roomId);
   }
 
   /** PROCESSING 상태로 사진을 저장하고 피드 id를 돌려준다(원본 key는 회원 소유 형식이어야 한다). */

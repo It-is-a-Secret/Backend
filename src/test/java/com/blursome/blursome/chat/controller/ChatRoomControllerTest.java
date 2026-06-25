@@ -135,28 +135,6 @@ class ChatRoomControllerTest {
   }
 
   @Test
-  @DisplayName("단계 동의 시 200과 갱신된 방 요약을 반환한다")
-  void handleAgreeProgress() throws Exception {
-    given(chatRoomService.agreeProgress(ROOM_ID, MEMBER_ID))
-        .willReturn(summary(ChatRoomProgressStatus.PHOTO_REVEAL_STEP_1));
-
-    mockMvc.perform(post("/api/chat/rooms/{roomId}/progress/agree", ROOM_ID))
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.data.progressStatus").value("PHOTO_REVEAL_STEP_1"));
-  }
-
-  @Test
-  @DisplayName("이미 동의한 단계 재동의 시 409와 PROGRESS_ALREADY_AGREED를 반환한다")
-  void handleAgreeProgressAlreadyAgreed() throws Exception {
-    given(chatRoomService.agreeProgress(ROOM_ID, MEMBER_ID))
-        .willThrow(BaseException.from(ChatErrorCode.PROGRESS_ALREADY_AGREED));
-
-    mockMvc.perform(post("/api/chat/rooms/{roomId}/progress/agree", ROOM_ID))
-        .andExpect(status().isConflict())
-        .andExpect(jsonPath("$.code").value("CHAT_409_PROGRESS_ALREADY_AGREED"));
-  }
-
-  @Test
   @DisplayName("단계별 사진 조회 시 200과 사진 배열(공개 여부·URL)을 반환한다")
   void handleGetRevealedImages() throws Exception {
     given(chatRoomService.getRevealedImages(ROOM_ID, MEMBER_ID)).willReturn(

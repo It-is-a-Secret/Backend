@@ -4,8 +4,6 @@ import com.blursome.blursome.global.persistence.BaseEntity;
 import com.blursome.blursome.member.domain.Member;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
@@ -15,11 +13,13 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.ColumnDefault;
 
 @Entity
 @Getter
@@ -54,10 +54,17 @@ public class ChatRoomMember extends BaseEntity {
   @Column
   private Long lastReadMessageId;
 
-  // 이 멤버가 동의한 진행 단계. 양쪽 멤버가 같은 단계에 동의하면 방의 progressStatus가 올라간다.
-  @Enumerated(EnumType.STRING)
-  @Column(nullable = false, length = 30)
-  private ChatRoomProgressStatus agreedProgressStatus;
+  // 사진 공개 단계 판정을 위해 누적된 '유효 송신 이벤트' 수(이슈 #79). "현재 남은 메시지 수"가 아니라
+  // 송신 시점에만 증가하는 단조 카운터이며, 사후 삭제로 되돌리지 않는다.
+  // 기존 데이터가 있는 DB에 컬럼이 추가될 때(ddl-auto: update) 기존 행이 NOT NULL을 위반하지 않도록
+  // DB 기본값 0을 명시한다(@ColumnDefault → DDL의 DEFAULT 0). primitive int라 신규 엔티티는 자바에서도 0으로 시작.
+  @Column(nullable = false)
+  @ColumnDefault("0")
+  private int validMessageCount;
+
+  // 이 멤버가 마지막으로 유효 카운트된 시각. 발신자별 디바운스(연속 유효 카운트 최소 간격) 판정에 쓴다.
+  @Column
+  private LocalDateTime lastValidCountedAt;
 
   @ManyToOne(fetch = FetchType.LAZY, optional = false)
   @JoinColumn(name = "chat_room_id", nullable = false)
@@ -71,13 +78,11 @@ public class ChatRoomMember extends BaseEntity {
   private ChatRoomMember(
       ChatRoom chatRoom,
       Member member,
-      LocalDateTime joinedAt,
-      ChatRoomProgressStatus agreedProgressStatus
+      LocalDateTime joinedAt
   ) {
     this.chatRoom = chatRoom;
     this.member = member;
     this.joinedAt = joinedAt;
-    this.agreedProgressStatus = agreedProgressStatus;
   }
 
   public static ChatRoomMember join(ChatRoom chatRoom, Member member) {
@@ -85,7 +90,6 @@ public class ChatRoomMember extends BaseEntity {
         .chatRoom(chatRoom)
         .member(member)
         .joinedAt(LocalDateTime.now())
-        .agreedProgressStatus(ChatRoomProgressStatus.MATCHED)
         .build();
   }
 
@@ -102,14 +106,18 @@ public class ChatRoomMember extends BaseEntity {
   }
 
   /**
-   * 다음 단계 공개에 동의한다. 동의는 단조 증가만 허용(되돌리기 비허용)하므로,
-   * 현재 동의 단계보다 더 진행된 단계만 받아들인다.
+   * 이 발신자가 지금({@code now}) 유효 카운트될 수 있는지 디바운스 기준으로 판정한다(이슈 #79). 마지막 유효
+   * 카운트 시각으로부터 {@code debounce} 이상 지났거나(=같은 발신자의 연속 유효 카운트 최소 간격 충족), 아직 한
+   * 번도 카운트되지 않았으면 가능하다. 타입·길이·교대 조건은 호출 측(정책/방)이 함께 판정한다.
    */
-  public void agreeProgress(ChatRoomProgressStatus target) {
-    if (this.agreedProgressStatus.isAtLeast(target)) {
-      throw new IllegalArgumentException(
-          "동의 단계는 되돌릴 수 없습니다. 현재=" + this.agreedProgressStatus + ", 요청=" + target);
-    }
-    this.agreedProgressStatus = target;
+  public boolean isCountEligible(LocalDateTime now, Duration debounce) {
+    return this.lastValidCountedAt == null
+        || !now.isBefore(this.lastValidCountedAt.plus(debounce));
+  }
+
+  /** 유효 메시지 1건을 누적 카운트한다(단조 증가). 마지막 유효 카운트 시각을 {@code now}로 갱신한다. */
+  public void countValidMessage(LocalDateTime now) {
+    this.validMessageCount++;
+    this.lastValidCountedAt = now;
   }
 }

@@ -2,10 +2,8 @@ package com.blursome.blursome.chat.service;
 
 import com.blursome.blursome.chat.domain.ChatRoom;
 import com.blursome.blursome.chat.domain.ChatRoomMember;
-import com.blursome.blursome.chat.domain.ChatRoomProgressStatus;
 import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
 import com.blursome.blursome.chat.dto.response.ChatRoomSummaryResponse;
-import com.blursome.blursome.chat.event.ChatProgressAdvancedEvent;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
 import com.blursome.blursome.chat.repository.ChatRoomRepository;
@@ -17,7 +15,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,7 +34,6 @@ public class ChatRoomService {
   private final ChatRoomCreator chatRoomCreator;
   private final ChatRoomMembershipReader membershipReader;
   private final FeedImageService feedImageService;
-  private final ApplicationEventPublisher eventPublisher;
 
   /**
    * 매칭된 두 회원의 1:1 방을 개설한다. 이미 두 회원 사이에 {@code ACTIVE} 방이 있으면 그 방을 반환하고(중복 방지), 없을 때만 새로 만든다. 과거에
@@ -140,43 +136,6 @@ public class ChatRoomService {
       int size) {
     membershipReader.getVisibleMembership(roomId, memberId);
     return chatMessageService.getHistory(roomId, cursor, size);
-  }
-
-  /**
-   * 다음 단계 공개에 동의한다(설계 §7-5). 동의 대상은 클라이언트 입력이 아니라 서버가 방의 현재 단계 다음으로 계산한다(§9). 내가 동의 단계를 올린 뒤 양쪽 동의가
-   * 모두 다음 단계 이상이면 방 단계가 한 칸 오른다. 이미 마지막 단계이거나 이미 그 단계에 동의했으면 {@code PROGRESS_ALREADY_AGREED}(409).
-   * 클래스 기본값({@code readOnly = true})을 덮어 쓰기 트랜잭션으로 연다.
-   *
-   * <p>단계가 실제로 오르면 {@link ChatProgressAdvancedEvent}를 발행한다. 상대 클라이언트에 대한 실시간
-   * {@code /topic/rooms/{roomId}} 브로드캐스트는 WebSocket 단계에서 이 이벤트를 구독하는 리스너가 담당한다(설계 §7-5).
-   */
-  @Transactional
-  public ChatRoomSummaryResponse agreeProgress(Long roomId, Long memberId) {
-    // 단계 동의는 방 상태를 바꾸는 쓰기다. 종료(CLOSED)된 방에서는 더 진행할 수 없으므로 쓰기 규칙으로 검증해
-    // 종료된 방 동의를 ROOM_CLOSED(409)로 막는다(조회 가시성은 종료된 방도 허용하므로 여기선 쓰기 규칙을 쓴다).
-    ChatRoomMember membership = membershipReader.getWritableMembership(roomId, memberId);
-    ChatRoom room = membership.getChatRoom();
-    if (room.getProgressStatus().isLast()) {
-      throw BaseException.from(ChatErrorCode.PROGRESS_ALREADY_AGREED);
-    }
-    ChatRoomProgressStatus target = room.getProgressStatus().next();
-    try {
-      membership.agreeProgress(target);
-    } catch (IllegalArgumentException e) {
-      // 동의는 단조 증가만 허용 — 이미 그 단계에 동의한 재요청은 도메인이 거부한다.
-      throw BaseException.from(ChatErrorCode.PROGRESS_ALREADY_AGREED);
-    }
-    ChatRoomMember other = findOtherMembership(roomId, membership);
-    boolean advanced = room.advanceProgressIfBothAgreed(membership, other);
-    if (advanced) {
-      eventPublisher.publishEvent(new ChatProgressAdvancedEvent(roomId, room.getProgressStatus()));
-    }
-    long unreadCount = chatMessageService.getUnreadCount(
-        roomId, membership.getLastReadMessageId(), memberId);
-    ChatMessageResponse lastMessage = chatMessageService.getLastMessage(room.getLastMessageId());
-    return ChatRoomSummaryResponse.of(
-        room, other.getMember().getNickName(), lastMessage, other.getLastReadMessageId(),
-        unreadCount);
   }
 
   /**
