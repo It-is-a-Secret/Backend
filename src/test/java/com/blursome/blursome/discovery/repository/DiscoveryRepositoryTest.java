@@ -63,7 +63,7 @@ class DiscoveryRepositoryTest {
     em.clear();
 
     List<Feed> result = discoveryRepository.findCandidates(
-        Gender.FEMALE, NO_VIEWER, null, PageRequest.ofSize(10));
+        Gender.FEMALE, NO_VIEWER, PageRequest.ofSize(10));
 
     assertThat(result).extracting(Feed::getGender).containsOnly(Gender.FEMALE);
     assertThat(result).hasSize(2);
@@ -78,7 +78,7 @@ class DiscoveryRepositoryTest {
     em.clear();
 
     List<Feed> result = discoveryRepository.findCandidates(
-        Gender.FEMALE, self.getMember().getId(), null, PageRequest.ofSize(10));
+        Gender.FEMALE, self.getMember().getId(), PageRequest.ofSize(10));
 
     assertThat(result).extracting(Feed::getId).containsExactly(other.getId());
   }
@@ -93,26 +93,23 @@ class DiscoveryRepositoryTest {
     em.clear();
 
     List<Feed> result = discoveryRepository.findCandidates(
-        Gender.FEMALE, NO_VIEWER, null, PageRequest.ofSize(10));
+        Gender.FEMALE, NO_VIEWER, PageRequest.ofSize(10));
 
     assertThat(result).extracting(Feed::getId).containsExactly(active.getId());
   }
 
   @Test
-  @DisplayName("feedId 내림차순(최신순)으로 정렬하고 커서보다 과거만 조회한다")
-  void findCandidates_cursorAndOrdering() {
-    Feed f1 = persistOnboardedFeed("c1", Gender.FEMALE);
-    Feed f2 = persistOnboardedFeed("c2", Gender.FEMALE);
-    Feed f3 = persistOnboardedFeed("c3", Gender.FEMALE);
+  @DisplayName("Pageable 상한만큼만 후보를 가져온다(정렬·페이지네이션은 앱 레이어)")
+  void findCandidates_respectsPageableLimit() {
+    persistOnboardedFeed("c1", Gender.FEMALE);
+    persistOnboardedFeed("c2", Gender.FEMALE);
+    persistOnboardedFeed("c3", Gender.FEMALE);
     em.flush();
     em.clear();
 
-    List<Feed> firstPage = discoveryRepository.findCandidates(
-        Gender.FEMALE, NO_VIEWER, null, PageRequest.ofSize(2));
-    assertThat(firstPage).extracting(Feed::getId).containsExactly(f3.getId(), f2.getId());
+    List<Feed> bounded = discoveryRepository.findCandidates(
+        Gender.FEMALE, NO_VIEWER, PageRequest.ofSize(2));
 
-    List<Feed> nextPage = discoveryRepository.findCandidates(
-        Gender.FEMALE, NO_VIEWER, f2.getId(), PageRequest.ofSize(10));
-    assertThat(nextPage).extracting(Feed::getId).containsExactly(f1.getId());
+    assertThat(bounded).hasSize(2);
   }
 }
