@@ -45,10 +45,10 @@ viewer 기준 아래를 **모두** 만족하는 회원만 후보다.
 | 온보딩 완료 | `member.registration_status = COMPLETED` **且** `feed` 존재 |
 | 활성 | `member.activity_status = ACTIVE` **且** `member.withdrawn_at IS NULL` |
 | 본인 제외 | `member.id <> viewerId` |
-| 차단 없음 | `block`에 (viewer↔후보) 어느 방향도 없음 — **#41 의존** (🧩) |
+| 차단 없음 | `block`에 (viewer↔후보) 어느 방향도 없음 — ✅ 구현(#41) |
 | 이미 채팅 중 | **포함**(탐색에서 다시 보여도 됨, 채팅 시작은 기존 방으로 이동) |
 
-> 🧩 **#41(차단 도메인) 의존**: 차단 테이블이 없으면 해당 조건만 비활성으로 먼저 구현하고, #41 머지 후 조건을 추가한다.
+> ✅ **#41(차단 도메인) 반영**: 후보 쿼리에 `not exists (block where 양방향)`을 추가해 차단/피차단을 제외한다.
 
 ---
 
@@ -126,7 +126,7 @@ GET /api/discovery?cursor={opaque}&size={n}     (인증 필요, 온보딩 완료
 CREATE INDEX idx_member_discovery     ON member(gender, activity_status, registration_status, created_at);
 CREATE INDEX idx_member_keyword_member ON member_keyword(member_id);
 CREATE INDEX idx_member_keyword_tag    ON member_keyword(tag_id);
--- (#41 머지 후) CREATE INDEX idx_block_pair ON block(blocker_id, blocked_id);
+-- block: uk_block_pair(blocker_id, blocked_id) + idx_block_blocked(blocked_id) (#41 반영)
 ```
 > 주: `gender`는 현재 `feed`에 있으므로 후보 질의는 `member ⨝ feed` 조인 기준으로 인덱스를 잡는다(실제 컬럼 위치에 맞춰 조정).
 
@@ -135,7 +135,7 @@ CREATE INDEX idx_member_keyword_tag    ON member_keyword(tag_id);
 ## 7. 단계별 구현 계획
 
 ### Phase A — MVP(최신순) 골격
-1. 후보 필터 질의(이성·온보딩완료+feed·활성·본인제외) — 차단 제외는 #41 의존이라 보류 가능
+1. 후보 필터 질의(이성·온보딩완료+feed·활성·본인제외, 차단 제외는 #41로 반영)
 2. 최신순(`created_at desc`) + 커서 페이지네이션
 3. `GET /api/discovery` + FeedCard 응답
 4. 권장 인덱스, 테스트
@@ -151,7 +151,7 @@ CREATE INDEX idx_member_keyword_tag    ON member_keyword(tag_id);
 
 | 항목 | 상태 | 비고 |
 |---|---|---|
-| 차단(block) 도메인 | ⏳ #41 | 후보 필터의 차단/피차단 제외 |
+| 차단(block) 도메인 | ✅ #41 | 후보 필터의 차단/피차단 양방향 제외 반영 |
 | `feed.mbti` nullable | ⏳ | "MBTI 모름" 표현·재분배에 필요(현재 NOT NULL) |
 | 외형 태그 분리 | ⏳ | K 제외 대상. 현재 미구현이라 무관 |
 | MBTI 궁합표 | ⏳ | 없으면 동일=1.0만 적용(궁합/100 생략) |

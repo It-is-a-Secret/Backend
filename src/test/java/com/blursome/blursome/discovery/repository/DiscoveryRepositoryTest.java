@@ -2,6 +2,7 @@ package com.blursome.blursome.discovery.repository;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.blursome.blursome.block.domain.Block;
 import com.blursome.blursome.feed.domain.Feed;
 import com.blursome.blursome.global.persistence.JpaAuditingConfig;
 import com.blursome.blursome.member.domain.Department;
@@ -96,6 +97,24 @@ class DiscoveryRepositoryTest {
         Gender.FEMALE, NO_VIEWER, PageRequest.ofSize(10));
 
     assertThat(result).extracting(Feed::getId).containsExactly(active.getId());
+  }
+
+  @Test
+  @DisplayName("차단/피차단 회원은 양방향으로 후보에서 제외한다")
+  void findCandidates_excludesBlockedBothDirections() {
+    Feed viewer = persistOnboardedFeed("viewer", Gender.MALE);
+    Feed blockedByViewer = persistOnboardedFeed("bbv", Gender.FEMALE); // viewer가 차단
+    Feed blockingViewer = persistOnboardedFeed("biv", Gender.FEMALE);  // viewer를 차단
+    Feed visible = persistOnboardedFeed("vis", Gender.FEMALE);
+    em.persist(Block.of(viewer.getMember(), blockedByViewer.getMember()));
+    em.persist(Block.of(blockingViewer.getMember(), viewer.getMember()));
+    em.flush();
+    em.clear();
+
+    List<Feed> result = discoveryRepository.findCandidates(
+        Gender.FEMALE, viewer.getMember().getId(), PageRequest.ofSize(10));
+
+    assertThat(result).extracting(Feed::getId).containsExactly(visible.getId());
   }
 
   @Test
