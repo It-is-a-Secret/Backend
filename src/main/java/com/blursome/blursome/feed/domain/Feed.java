@@ -68,8 +68,9 @@ public class Feed extends BaseEntity {
   @Column(nullable = false, length = 50)
   private Department department;
 
+  // MBTI는 "모름"을 허용한다(nullable). null이면 탐색 점수에서 M 항목을 빼고 30%를 K/B/D에 재분배한다(#76, 설계 §3).
   @Enumerated(EnumType.STRING)
-  @Column(nullable = false, length = 4)
+  @Column(length = 4)
   private Mbti mbti;
 
   @Builder(access = AccessLevel.PRIVATE)

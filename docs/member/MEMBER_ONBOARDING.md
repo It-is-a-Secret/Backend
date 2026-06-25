@@ -50,7 +50,7 @@
 | `nickName` | `Member.nickName` (+ `Feed.nickName` 복사) | 가입 정체성. 유니크. 피드에 비정규화 중복 |
 | `birthYear` | `Feed.birthYear` | `nullable=false`(피드는 온보딩 후에만 생성) |
 | `department` | `Feed.department` (`Department` enum, STRING) | `nullable=false`, len 50. 학과 정규화(이슈 #40) — 고정 enum 입력 |
-| `mbti` | `Feed.mbti` (`Mbti` enum, STRING) | `nullable=false`, len 4 |
+| `mbti` | `Feed.mbti` (`Mbti` enum, STRING) | **`nullable=true`**, len 4. **선택값**: 미입력(null)="모름"(#76) |
 | `gender` | `Feed.gender` (`Gender` = MALE/FEMALE) | `nullable=false`, len 10 |
 
 > `completeOnboarding`의 시그니처는 `(nickName)`으로 축소됐고, 4개 공개 프로필 필드는 `FeedService.createFeed(member, gender, birthYear, department, mbti)`로 전달된다. 피드 상세는 [`docs/feed/FEED_DOMAIN.md`](../feed/FEED_DOMAIN.md).
@@ -153,7 +153,7 @@ CREATE TABLE `interest_category` (
 
 - `SendSchoolEmailCodeRequest`: `schoolEmail` `@NotBlank @Email`
 - `VerifySchoolEmailRequest`: `schoolEmail` `@NotBlank @Email`, `code` `@Pattern(\d{6})`
-- `OnboardingRequest`: `nickName` `@NotBlank @Size(max=30)`, `birthYear` `@NotNull @Min(1900) @Max(2100)`, `department` `@NotNull`(`Department` enum), `mbti` `@NotNull`, `gender` `@NotNull`, `interests` `@NotEmpty`
+- `OnboardingRequest`: `nickName` `@NotBlank @Size(max=30)`, `birthYear` `@NotNull @Min(1900) @Max(2100)`, `department` `@NotNull`(`Department` enum), `mbti` **선택값(검증 없음, null="모름" 허용, #76)**, `gender` `@NotNull`, `interests` `@NotEmpty`
 
 ---
 

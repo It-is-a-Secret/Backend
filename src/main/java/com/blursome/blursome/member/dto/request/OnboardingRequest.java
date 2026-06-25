@@ -30,7 +30,7 @@ public record OnboardingRequest(
     @NotNull(message = "학과는 필수입니다.")
     Department department,
 
-    @NotNull(message = "MBTI는 필수입니다.")
+    // MBTI는 선택값이다. null("모름")을 허용하며, 탐색 점수에서 M 항목 제외·재분배로 처리한다(#76).
     Mbti mbti,
 
     @NotNull(message = "성별은 필수입니다.")
