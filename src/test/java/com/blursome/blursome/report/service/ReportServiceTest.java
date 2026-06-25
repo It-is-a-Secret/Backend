@@ -1,5 +1,6 @@
 package com.blursome.blursome.report.service;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -140,5 +141,33 @@ class ReportServiceTest {
     reportService.report(1L, request(2L, 10L));
 
     verify(room, never()).markReported();
+  }
+
+  @Test
+  @DisplayName("고유 신고자 5명에 도달하면 대상 회원을 임시 정지(SUSPENDED)한다")
+  void report_fiveDistinctReporters_suspendsTarget() {
+    Member target = member(2L);
+    given(memberRepository.findById(2L)).willReturn(Optional.of(target));
+    given(memberRepository.getReferenceById(1L)).willReturn(member(1L));
+    given(reportRepository.saveAndFlush(any(Report.class))).willAnswer(inv -> inv.getArgument(0));
+    given(reportRepository.countDistinctReporters(eq(2L), any(LocalDateTime.class))).willReturn(5L);
+
+    reportService.report(1L, request(2L, null));
+
+    assertThat(target.isSuspended()).isTrue();
+  }
+
+  @Test
+  @DisplayName("정지 임계치(5명) 미달이면 대상 회원을 정지하지 않는다")
+  void report_belowSuspendThreshold_doesNotSuspend() {
+    Member target = member(2L);
+    given(memberRepository.findById(2L)).willReturn(Optional.of(target));
+    given(memberRepository.getReferenceById(1L)).willReturn(member(1L));
+    given(reportRepository.saveAndFlush(any(Report.class))).willAnswer(inv -> inv.getArgument(0));
+    given(reportRepository.countDistinctReporters(eq(2L), any(LocalDateTime.class))).willReturn(4L);
+
+    reportService.report(1L, request(2L, null));
+
+    assertThat(target.isSuspended()).isFalse();
   }
 }

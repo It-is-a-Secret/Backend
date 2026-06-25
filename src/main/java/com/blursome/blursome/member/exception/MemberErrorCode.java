@@ -17,6 +17,10 @@ public enum MemberErrorCode implements ErrorCode {
       "비활성 회원입니다.",
       "MEMBER_403_INACTIVE"
   ),
+  MEMBER_SUSPENDED(HttpStatus.FORBIDDEN,
+      "신고 누적으로 정지된 계정입니다. 문의가 필요하면 운영팀에 연락해주세요.",
+      "MEMBER_403_SUSPENDED"
+  ),
   MEMBER_OAUTH_CONFLICT(HttpStatus.CONFLICT,
       "동일한 OAuth 계정의 가입 요청이 동시에 처리되었습니다. 잠시 후 다시 시도해주세요.",
       "MEMBER_409_OAUTH_CONFLICT"

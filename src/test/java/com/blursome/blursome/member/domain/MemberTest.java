@@ -54,4 +54,50 @@ class MemberTest {
 
     assertThat(member.getLastActiveAt()).isAfterOrEqualTo(before);
   }
+
+  @Test
+  @DisplayName("suspend() 호출 시 SUSPENDED로 전이하고 isActive는 false가 된다")
+  void suspend_transitionsToSuspendedAndNotActive() {
+    Member member = newMember();
+
+    member.suspend();
+
+    assertThat(member.isSuspended()).isTrue();
+    assertThat(member.isActive()).isFalse();
+  }
+
+  @Test
+  @DisplayName("suspend()는 이미 정지된 회원에 멱등(no-op)이다")
+  void suspend_isIdempotent() {
+    Member member = newMember();
+    member.suspend();
+
+    member.suspend();
+
+    assertThat(member.isSuspended()).isTrue();
+  }
+
+  @Test
+  @DisplayName("suspend()는 탈퇴 회원을 되살리지 않는다(ACTIVE일 때만 전이)")
+  void suspend_doesNotResurrectWithdrawn() {
+    Member member = newMember();
+    member.withdraw();
+
+    member.suspend();
+
+    assertThat(member.isWithdrawn()).isTrue();
+    assertThat(member.isSuspended()).isFalse();
+  }
+
+  @Test
+  @DisplayName("reactivate()는 정지(SUSPENDED) 회원을 ACTIVE로 해제한다")
+  void reactivate_releasesSuspendedMember() {
+    Member member = newMember();
+    member.suspend();
+
+    member.reactivate();
+
+    assertThat(member.isActive()).isTrue();
+    assertThat(member.isSuspended()).isFalse();
+  }
 }

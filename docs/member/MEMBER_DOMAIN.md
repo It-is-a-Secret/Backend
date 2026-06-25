@@ -79,7 +79,7 @@ BlurSome의 회원(Member) 도메인을 정의합니다. 소셜 로그인으로 
 | `OAuthProvider` | `KAKAO` (확장 예정) | 소셜 로그인 제공자. 추가는 append |
 | `MemberRole` | `USER("ROLE_USER")`, `ADMIN("ROLE_ADMIN")` | Spring Security authority 보유 |
 | `Gender` | `MALE`, `FEMALE` | 온보딩 입력. ✅ 두 값으로 제한 |
-| `ActivityStatus` | `ACTIVE`, `WITHDRAWN` | 소프트삭제. `SUSPENDED`(관리자 정지)는 후순위 append |
+| `ActivityStatus` | `ACTIVE`, `WITHDRAWN`, `SUSPENDED` | 소프트삭제 + **신고 제재 임시 정지(`SUSPENDED`, #75)**. 정지는 `ACTIVE`가 아니라 로그인·채팅·탐색에서 차단, 해제는 `reactivate()` |
 | `RegistrationStatus` | `UNVERIFIED` → `VERIFIED` → `COMPLETED` | **선언 순서가 단계 의미를 가짐**(ordinal 비교). append만 허용 |
 
 ---
@@ -138,7 +138,7 @@ createOAuthMember()
 - **재가입(✅ 결정: 기존 행 재활성화)**: 탈퇴자가 같은 소셜 계정으로 재로그인하면 `findByProviderAndProviderId`가 기존 WITHDRAWN 행을 찾는다(새 행 생성은 `uk_member_provider` 충돌이라 불가). 이때 `reactivate()`로 `activityStatus`를 `ACTIVE`로 되돌리고 `withdrawnAt`을 해제하며, **`registrationStatus`·온보딩 필드(`nickName`/`schoolEmail`)는 보존된 값 그대로 복구**한다(닉네임·학교인증 재수행 불필요). 공개 프로필을 담은 `Feed`도 그대로 유지된다.
 - **탈퇴 시각 기록(✅ 추가, 이슈 #39)**: `withdraw()`는 `withdrawnAt = now()`를 기록한다. `BaseEntity.updatedAt`은 임의 수정에도 갱신되어 탈퇴 시각으로 부정확하므로, 보존·정렬 판정은 전용 컬럼 `withdrawnAt`을 쓴다.
 - **30일 보존 후 영구 삭제(🧩 설계 반영, 스케줄러는 후속 이슈)**: 탈퇴 회원은 30일간 소프트삭제 상태로 보존했다가 영구 삭제한다. 배치는 `activityStatus = WITHDRAWN AND withdrawnAt < now() - 30일` 대상을 주기적으로 하드 삭제(또는 익명화)한다. 30일 내 재로그인하면 `reactivate()`로 살아나며 `withdrawnAt`이 비워져 삭제 대상에서 빠진다. 실제 스케줄러 구현은 후속 이슈로 분리한다.
-- `SUSPENDED`(관리자 정지)는 후순위 — 필요 시 enum append.
+- **`SUSPENDED`(신고 제재 임시 정지, ✅ #75)**: 대상의 고유 신고자가 7일 내 **5명**에 도달하면 `ReportService`가 `suspend()`로 `ACTIVE → SUSPENDED` 자동 전이한다. 정지 회원은 `isActive()`가 `false`라 OAuth 로그인(`MEMBER_403_SUSPENDED`로 거부, 재활성화 안 함)·채팅·탐색이 모두 차단된다. 해제는 운영자 수동 `reactivate()`(관리자 도구는 후속 이슈). 탈퇴(`WITHDRAWN`)는 되살리지 않으려 `suspend()`가 `ACTIVE`일 때만 전이한다.
 
 ---
 
@@ -326,6 +326,7 @@ MemberService.withdraw(memberId)                        @Transactional
 |---|---|---|
 | `MEMBER_404_NOT_FOUND` | 회원 없음 | 404 | ✅ |
 | `MEMBER_403_INACTIVE` | 탈퇴/비활성 회원 | 403 | ✅ |
+| `MEMBER_403_SUSPENDED` | 신고 제재로 정지된 회원(로그인 차단, #75) | 403 | ✅ |
 | `MEMBER_409_OAUTH_CONFLICT` | 소셜 가입 동시 요청 충돌 | 409 | ✅ |
 | `MEMBER_409_SCHOOL_EMAIL_DUPLICATED` | 학교 이메일 중복 | 409 | 🧩 |
 | `MEMBER_409_SCHOOL_VERIFICATION_REQUIRED` | 인증 전 온보딩 시도 | 409 | 🧩 |
@@ -375,7 +376,7 @@ MemberService.withdraw(memberId)                        @Transactional
 - **탈퇴 30일 보존 영구 삭제 스케줄러** — 설계(§3-2)는 확정. 배치 구현은 후속 이슈로 분리.
 - **재가입 쿨다운** — 필요 시 `withdrawnAt + N일` 제한 추가(현재 미적용, 타임스탬프는 이미 확보).
 - **학교 이메일 인증 메커니즘** — 인정 메일 도메인 화이트리스트, 인증 코드 발송/검증 흐름(인증 서비스 책임).
-- **`SUSPENDED`(관리자 정지)** 도입 시점.
+- **`SUSPENDED`(신고 제재 임시 정지)** — ✅ #75에서 도입(고유 신고자 5명 자동 정지 + 로그인/채팅/탐색 차단). 운영자 검토 큐·관리자 해제 API와 1명=검토 큐·발신 제한 단방향 정밀화는 후속.
 
 ---
 

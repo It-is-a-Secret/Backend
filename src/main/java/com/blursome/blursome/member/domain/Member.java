@@ -211,8 +211,10 @@ public class Member extends BaseEntity {
   }
 
   /**
-   * 탈퇴 회원을 재활성화한다({@code WITHDRAWN → ACTIVE}). 가입 단계·온보딩 정보({@code nickName}/
-   * {@code schoolEmail})는 직전 상태 그대로 복구하고, 탈퇴 시각({@code withdrawnAt})은 해제한다.
+   * 비활성 회원을 재활성화한다({@code WITHDRAWN}/{@code SUSPENDED → ACTIVE}). 탈퇴 재가입 시 호출되며,
+   * 신고 제재로 정지된 회원의 운영자 수동 해제(#75)에도 사용한다. 가입 단계·온보딩 정보
+   * ({@code nickName}/{@code schoolEmail})는 직전 상태 그대로 복구하고, 탈퇴 시각({@code withdrawnAt})은
+   * 해제한다.
    *
    * @throws BaseException 이미 활성 상태인 경우
    */
@@ -222,6 +224,17 @@ public class Member extends BaseEntity {
     }
     this.activityStatus = ActivityStatus.ACTIVE;
     this.withdrawnAt = null;
+  }
+
+  /**
+   * 회원을 신고 누적 제재로 임시 정지한다({@code ACTIVE → SUSPENDED}, #75). 정지 회원은
+   * {@link #isActive()}가 {@code false}라 로그인·채팅·탐색 게이트에서 모두 차단된다. 이미 정지된 회원은
+   * 멱등(no-op)이며, 탈퇴({@code WITHDRAWN}) 회원은 되살리지 않으려고 그대로 둔다(ACTIVE일 때만 전이).
+   */
+  public void suspend() {
+    if (this.activityStatus == ActivityStatus.ACTIVE) {
+      this.activityStatus = ActivityStatus.SUSPENDED;
+    }
   }
 
   /**
@@ -238,6 +251,11 @@ public class Member extends BaseEntity {
 
   public boolean isWithdrawn() {
     return this.activityStatus == ActivityStatus.WITHDRAWN;
+  }
+
+  /** 신고 누적 제재로 임시 정지된 상태인지 여부(#75). */
+  public boolean isSuspended() {
+    return this.activityStatus == ActivityStatus.SUSPENDED;
   }
 
   public boolean isSchoolVerified() {
