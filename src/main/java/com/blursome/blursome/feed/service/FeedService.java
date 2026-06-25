@@ -2,6 +2,7 @@ package com.blursome.blursome.feed.service;
 
 import com.blursome.blursome.feed.domain.Feed;
 import com.blursome.blursome.feed.repository.FeedRepository;
+import com.blursome.blursome.member.domain.Department;
 import com.blursome.blursome.member.domain.Gender;
 import com.blursome.blursome.member.domain.Mbti;
 import com.blursome.blursome.member.domain.Member;
@@ -30,7 +31,7 @@ public class FeedService {
    */
   @Transactional
   public Feed createFeed(
-      Member member, Gender gender, Integer birthYear, String department, Mbti mbti) {
+      Member member, Gender gender, Integer birthYear, Department department, Mbti mbti) {
     return feedRepository.save(Feed.createOnOnboarding(member, gender, birthYear, department, mbti));
   }
 

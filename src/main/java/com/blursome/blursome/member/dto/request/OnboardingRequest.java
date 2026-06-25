@@ -1,5 +1,6 @@
 package com.blursome.blursome.member.dto.request;
 
+import com.blursome.blursome.member.domain.Department;
 import com.blursome.blursome.member.domain.Gender;
 import com.blursome.blursome.member.domain.Mbti;
 import jakarta.validation.constraints.Max;
@@ -26,9 +27,8 @@ public record OnboardingRequest(
     @Max(value = 2100, message = "생년이 올바르지 않습니다.")
     Integer birthYear,
 
-    @NotBlank(message = "학과는 필수입니다.")
-    @Size(max = 50, message = "학과는 50자 이하여야 합니다.")
-    String department,
+    @NotNull(message = "학과는 필수입니다.")
+    Department department,
 
     @NotNull(message = "MBTI는 필수입니다.")
     Mbti mbti,

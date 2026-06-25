@@ -2,6 +2,7 @@ package com.blursome.blursome.member.dto.response;
 
 import com.blursome.blursome.feed.domain.Feed;
 import com.blursome.blursome.keyword.domain.MemberKeyword;
+import com.blursome.blursome.member.domain.Department;
 import com.blursome.blursome.member.domain.Gender;
 import com.blursome.blursome.member.domain.Mbti;
 import com.blursome.blursome.member.domain.Member;
@@ -20,7 +21,7 @@ public record MemberProfileResponse(
     String nickName,
     String schoolEmail,
     Integer birthYear,
-    String department,
+    Department department,
     Mbti mbti,
     Gender gender,
     RegistrationStatus registrationStatus,

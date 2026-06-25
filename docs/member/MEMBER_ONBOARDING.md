@@ -49,7 +49,7 @@
 |---|---|---|
 | `nickName` | `Member.nickName` (+ `Feed.nickName` 복사) | 가입 정체성. 유니크. 피드에 비정규화 중복 |
 | `birthYear` | `Feed.birthYear` | `nullable=false`(피드는 온보딩 후에만 생성) |
-| `department` | `Feed.department` | `nullable=false`, len 50 |
+| `department` | `Feed.department` (`Department` enum, STRING) | `nullable=false`, len 50. 학과 정규화(이슈 #40) — 고정 enum 입력 |
 | `mbti` | `Feed.mbti` (`Mbti` enum, STRING) | `nullable=false`, len 4 |
 | `gender` | `Feed.gender` (`Gender` = MALE/FEMALE) | `nullable=false`, len 10 |
 
@@ -153,7 +153,7 @@ CREATE TABLE `interest_category` (
 
 - `SendSchoolEmailCodeRequest`: `schoolEmail` `@NotBlank @Email`
 - `VerifySchoolEmailRequest`: `schoolEmail` `@NotBlank @Email`, `code` `@Pattern(\d{6})`
-- `OnboardingRequest`: `nickName` `@NotBlank @Size(max=30)`, `birthYear` `@NotNull @Min(1900) @Max(2100)`, `department` `@NotBlank @Size(max=50)`, `mbti` `@NotNull`, `gender` `@NotNull`, `interests` `@NotEmpty`
+- `OnboardingRequest`: `nickName` `@NotBlank @Size(max=30)`, `birthYear` `@NotNull @Min(1900) @Max(2100)`, `department` `@NotNull`(`Department` enum), `mbti` `@NotNull`, `gender` `@NotNull`, `interests` `@NotEmpty`
 
 ---
 
