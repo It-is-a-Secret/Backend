@@ -106,8 +106,8 @@
 
 - Docker 컨테이너(`mysql:8.0`)로 기동, `127.0.0.1:3306`만 노출
 - 데이터는 named volume 또는 별도 EBS 경로에 영속화
-- **스키마 생성 전략(확정)**: 최초 1회 `ddl-auto: update`로 앱을 띄워 스키마를 자동 생성한 뒤, 그대로 사용한다. 마이그레이션 도구(Flyway 등)는
-  도입하지 않는다. (상세: §6.5)
+- **스키마 생성 전략(확정)**: 런칭 전 개발 단계에는 prod도 `ddl-auto: update`로 운영해 엔티티 변경을 자동 반영한다. **런칭(운영 데이터 적재) 전
+  반드시 `validate`로 되돌린다.** 마이그레이션 도구(Flyway 등)는 도입하지 않는다. (상세: §6.5)
 
 ### 3.4 Nginx (리버스 프록시)
 
@@ -314,22 +314,17 @@ volumes:
   redis-data:
 ```
 
-### 6.5 스키마 생성 — 임시 `ddl-auto: update` 방식 (확정)
+### 6.5 스키마 생성 — 런칭 전 `ddl-auto: update`, 런칭 시 `validate` (확정)
 
-prod는 기본 `ddl-auto: validate`(`application-prod.yml`)라 앱이 스키마를 만들지 않는다. **이번 배포는 마이그레이션 도구 없이, 최초
-1회 `update`로 스키마를 자동 생성한 뒤 그대로 사용**한다.
+런칭 전 개발 단계에서는 엔티티(@Entity) 변경을 DB에 즉시 반영하려고 **prod·local 모두 `ddl-auto: update`**로 둔다
+(`application-prod.yml`/`application-local.yml`에 직접 명시). 마이그레이션 도구(Flyway 등)는 도입하지 않는다.
 
-절차:
+- 엔티티 변경 후 재배포/재기동하면 **컬럼·테이블 추가가 자동 반영**된다. DB 볼륨(`mysql-data`)이 영속화돼 기존 데이터는 유지된다.
+- prod 파일 값을 그대로 쓰므로 별도 환경변수 오버라이드는 불필요하다. (필요 시 `.env`의 `SPRING_JPA_HIBERNATE_DDL_AUTO`로 덮어쓸 수는 있다.)
 
-1. 최초 기동 시에만 `ddl-auto`를 `update`로 적용한다.
-    - 권장: `application-prod.yml`을 직접 고치지 말고 **환경변수로 오버라이드** —
-      `.env`에 `SPRING_JPA_HIBERNATE_DDL_AUTO=update` 추가(Spring Relaxed Binding으로 yml 값을 덮어씀). 이러면 운영
-      파일은 `validate`로 유지된다.
-2. 앱이 떠서 테이블이 생성되면 정상 동작을 확인한다.
-3. 이후 **`update` 오버라이드를 제거**(`.env`에서 줄 삭제)하고 재기동 → 다시 `validate`로 운영한다.
-
-> ⚠️ 주의: `update`는 **컬럼/테이블 추가만** 반영하고 삭제·타입 변경 등은 안전하게 처리하지 못한다. 따라서 상시 `update` 운영은 지양하고, 스키마 변경이
-> 잦아지면 추후 Flyway 도입을 검토한다(§9). DB 볼륨(`mysql-data`)이 영속화되어 있으면 한 번 만든 스키마는 재기동해도 유지된다.
+> ⚠️ **런칭 전 필수**: 운영 데이터를 적재하기 전(런칭 직전) `application-prod.yml`의 `ddl-auto`를 반드시 **`validate`로 되돌린다**.
+> `update`는 **컬럼/테이블 추가만** 반영하고 삭제·타입 변경 등은 안전하게 처리하지 못하므로 상시 운영에는 부적합하다. 스키마 변경이 잦아지면
+> 추후 Flyway 도입을 검토한다(§9).
 
 ### 6.6 빌드 & 배포 흐름 — GitHub Actions CI/CD (확정)
 
