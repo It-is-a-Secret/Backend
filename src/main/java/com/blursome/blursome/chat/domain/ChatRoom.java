@@ -87,6 +87,17 @@ public class ChatRoom extends BaseEntity {
     this.activePairKey = null;
   }
 
+  /**
+   * 신고 누적으로 방을 신고됨({@code REPORTED})으로 전환한다(ACTIVE → REPORTED, 멱등).
+   * REPORTED는 {@link #isActive()}가 아니므로 송신·조회가 동결된다(운영자 검토 대기).
+   * 이미 종료(CLOSED)/신고(REPORTED)된 방은 그대로 둔다.
+   */
+  public void markReported() {
+    if (this.roomStatus == ChatRoomStatus.ACTIVE) {
+      this.roomStatus = ChatRoomStatus.REPORTED;
+    }
+  }
+
   public boolean isActive() {
     return this.roomStatus == ChatRoomStatus.ACTIVE;
   }
