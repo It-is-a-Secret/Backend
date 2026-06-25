@@ -17,6 +17,7 @@ import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
 import com.blursome.blursome.chat.dto.response.ChatRoomSummaryResponse;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.service.ChatRoomService;
+import com.blursome.blursome.feed.dto.response.RevealedFeedImagesResponse;
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.global.security.JwtAuthentication;
 import com.blursome.blursome.global.security.JwtAuthenticationEntryPoint;
@@ -153,6 +154,45 @@ class ChatRoomControllerTest {
     mockMvc.perform(post("/api/chat/rooms/{roomId}/progress/agree", ROOM_ID))
         .andExpect(status().isConflict())
         .andExpect(jsonPath("$.code").value("CHAT_409_PROGRESS_ALREADY_AGREED"));
+  }
+
+  @Test
+  @DisplayName("단계별 사진 조회 시 200과 사진 배열(공개 여부·URL)을 반환한다")
+  void handleGetRevealedImages() throws Exception {
+    given(chatRoomService.getRevealedImages(ROOM_ID, MEMBER_ID)).willReturn(
+        new RevealedFeedImagesResponse(List.of(
+            new RevealedFeedImagesResponse.Image(1, true, "https://original/1"),
+            new RevealedFeedImagesResponse.Image(2, false, "https://cdn/2"))));
+
+    mockMvc.perform(get("/api/chat/rooms/{roomId}/revealed-images", ROOM_ID))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.images[0].displayOrder").value(1))
+        .andExpect(jsonPath("$.data.images[0].revealed").value(true))
+        .andExpect(jsonPath("$.data.images[0].imageUrl").value("https://original/1"))
+        .andExpect(jsonPath("$.data.images[1].revealed").value(false))
+        .andExpect(jsonPath("$.data.images[1].imageUrl").value("https://cdn/2"));
+  }
+
+  @Test
+  @DisplayName("참여자가 아닌 방의 사진 조회 시 403과 NOT_PARTICIPANT를 반환한다")
+  void handleGetRevealedImagesNotParticipant() throws Exception {
+    given(chatRoomService.getRevealedImages(ROOM_ID, MEMBER_ID))
+        .willThrow(BaseException.from(ChatErrorCode.NOT_PARTICIPANT));
+
+    mockMvc.perform(get("/api/chat/rooms/{roomId}/revealed-images", ROOM_ID))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("CHAT_403_NOT_PARTICIPANT"));
+  }
+
+  @Test
+  @DisplayName("종료된 방의 사진 조회 시 409와 ROOM_CLOSED를 반환한다")
+  void handleGetRevealedImagesRoomClosed() throws Exception {
+    given(chatRoomService.getRevealedImages(ROOM_ID, MEMBER_ID))
+        .willThrow(BaseException.from(ChatErrorCode.ROOM_CLOSED));
+
+    mockMvc.perform(get("/api/chat/rooms/{roomId}/revealed-images", ROOM_ID))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("CHAT_409_ROOM_CLOSED"));
   }
 
   @Test

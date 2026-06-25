@@ -10,6 +10,7 @@ import com.blursome.blursome.feed.dto.response.FeedImageResponse;
 import com.blursome.blursome.feed.dto.response.MyFeedImagesResponse;
 import com.blursome.blursome.feed.dto.response.PresignedUrlResponse;
 import com.blursome.blursome.feed.dto.response.PublicFeedImagesResponse;
+import com.blursome.blursome.feed.dto.response.RevealedFeedImagesResponse;
 import com.blursome.blursome.feed.dto.response.PresignedUrlResponse.PresignedUrl;
 import com.blursome.blursome.feed.exception.FeedErrorCode;
 import com.blursome.blursome.feed.exception.FeedImageErrorCode;
@@ -19,6 +20,7 @@ import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.global.storage.S3ObjectKeyGenerator;
 import com.blursome.blursome.global.storage.S3StorageService;
 import com.blursome.blursome.global.storage.S3StorageService.PresignedUpload;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -156,6 +158,52 @@ public class FeedImageService {
         .map(image -> FeedImageResponse.Image.of(image,
             storageService.toPublicVariantUrl(image.getVariantKey())))
         .toList());
+  }
+
+  /**
+   * 채팅 단계 공개용. 회원 피드 사진을 {@code displayOrder} 순서로 정렬해, 공개 장수 {@code revealCount} 이하의
+   * 사진은 비공개 원본 단기 Presigned GET을, 나머지는 공개 블러본 URL을 담아 돌려준다. 채팅 단계가 오를수록
+   * 원본을 1장씩 공개하는 규칙(설계 §3·§4, ④-b)을 feed 도메인 쪽에서 실현하는 진입점이다.
+   *
+   * <p>chat 도메인이 {@code ChatRoomProgressStatus.revealedOriginalCount()}로 산출한 공개 장수 N만 넘기면,
+   * feed가 원본/블러본 key·버킷·발급을 전담한다(chat→feed 단방향, chat은 key 구조를 모름). 실제 공개 장수는
+   * <b>보유 사진 수로 캡</b>한다({@code min(revealCount, 보유 사진 수)}). 예) 사진 3장 + COMPLETED(5) → 3장 전부 공개.
+   *
+   * <p>피드가 없거나 사진이 0장이면 빈 목록을 돌려준다. 원본 공개는 채팅방 참여자·단계 검증을 통과한 호출만
+   * 도달하므로(검증 책임은 chat 서비스), 여기서는 별도 권한 검증을 하지 않는다.
+   *
+   * <p><b>블러본 미생성 처리</b>: 공개되는 원본은 variants(블러본) 생성 상태와 무관하게 originals 객체가 항상
+   * 존재하므로 그대로 Presigned GET을 발급한다. 반면 아직 공개되지 않은 사진은 블러본으로 제공해야 하는데,
+   * 블러본이 {@code READY}가 아니면 variants 객체가 없거나 깨진 URL일 수 있으므로 응답에서 제외한다(깨진 블러본
+   * 노출 방지). 공개 피드 조회의 전부-READY 게이트(§4-a)와 같은 취지지만, 여기서는 공개된 원본까지 함께 막지
+   * 않도록 미공개 사진에만 READY를 요구한다. (설계: {@code FEED_IMAGE_BLUR_PIPELINE.md} §3·§4)
+   *
+   * @param memberId 사진을 공개할 대상 회원 id(채팅 상대)
+   * @param revealCount 공개할 원본 장수 N(0~5). 음수는 0으로 취급한다.
+   * @return 사진별 공개 여부와 URL을 {@code displayOrder} 순서로 담은 응답
+   */
+  @Transactional(readOnly = true)
+  public RevealedFeedImagesResponse issueRevealedImages(Long memberId, int revealCount) {
+    List<FeedImage> images = feedRepository.findByMemberId(memberId)
+        .map(feed -> feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(feed.getId()))
+        .orElseGet(List::of);
+    int revealable = Math.min(Math.max(revealCount, 0), images.size());
+
+    List<RevealedFeedImagesResponse.Image> result = new ArrayList<>(images.size());
+    for (int i = 0; i < images.size(); i++) {
+      FeedImage image = images.get(i);
+      if (i < revealable) {
+        // 공개된 원본: originals 객체는 블러본 생성 상태와 무관하게 존재하므로 항상 Presigned GET으로 제공한다.
+        result.add(RevealedFeedImagesResponse.Image.revealed(
+            image, storageService.presignOriginalDownload(image.getOriginalKey())));
+      } else if (image.isReady()) {
+        // 미공개 사진은 블러본으로 제공하되, 블러본이 확인된(READY) 경우만 노출해 깨진 URL을 막는다.
+        result.add(RevealedFeedImagesResponse.Image.blurred(
+            image, storageService.toPublicVariantUrl(image.getVariantKey())));
+      }
+      // 미공개 + 블러본 미생성(PROCESSING/FAILED)은 깨진 블러본 노출을 막기 위해 응답에서 제외한다.
+    }
+    return new RevealedFeedImagesResponse(result);
   }
 
   /** 한 요청 내 {@code displayOrder} 중복을 검증한다. DTO로 표현하기 어려운 도메인 규칙이라 서비스에서 다룬다. */

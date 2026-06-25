@@ -3,6 +3,7 @@ package com.blursome.blursome.chat.controller;
 import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
 import com.blursome.blursome.chat.dto.response.ChatRoomSummaryResponse;
 import com.blursome.blursome.chat.service.ChatRoomService;
+import com.blursome.blursome.feed.dto.response.RevealedFeedImagesResponse;
 import com.blursome.blursome.global.response.DataResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -67,6 +68,18 @@ public class ChatRoomController {
       @PathVariable Long roomId
   ) {
     return ResponseEntity.ok(DataResponse.ok(chatRoomService.agreeProgress(roomId, memberId)));
+  }
+
+  @Operation(summary = "단계별 상대 사진 조회",
+      description = "방의 현재 진행 단계가 정하는 공개 장수만큼 상대 원본이 displayOrder 순서대로 단기 Presigned GET으로 "
+          + "공개되고, 나머지는 블러본으로 내려온다. 참여 중인 방이어야 하며 참여자가 아니면 403, 방이 없거나 내가 나갔으면 404.")
+  @GetMapping("/{roomId}/revealed-images")
+  public ResponseEntity<DataResponse<RevealedFeedImagesResponse>> getRevealedImages(
+      @AuthenticationPrincipal Long memberId,
+      @PathVariable Long roomId
+  ) {
+    return ResponseEntity.ok(
+        DataResponse.ok(chatRoomService.getRevealedImages(roomId, memberId)));
   }
 
   @Operation(summary = "채팅방 나가기", description = "채팅방을 영구히 나간다(재입장 불가). 1:1이므로 방이 즉시 종료(CLOSED)된다. "

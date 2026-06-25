@@ -22,11 +22,14 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import software.amazon.awssdk.http.SdkHttpFullRequest;
 import software.amazon.awssdk.http.SdkHttpMethod;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
+import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedPutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest;
 
@@ -36,6 +39,7 @@ class S3StorageServiceTest {
   private static final String ORIGINALS_BUCKET = "blursome-originals-test";
   private static final String VARIANTS_BUCKET = "blursome-variants-test";
   private static final Duration PUT_EXPIRATION = Duration.ofMinutes(5);
+  private static final Duration GET_EXPIRATION = Duration.ofMinutes(5);
   private static final String OBJECT_KEY = "originals/100/abc.jpg";
   private static final String VARIANT_KEY = "variants/100/abc.webp";
   private static final String CONTENT_TYPE = "image/jpeg";
@@ -55,6 +59,9 @@ class S3StorageServiceTest {
 
   @Captor
   private ArgumentCaptor<PutObjectPresignRequest> presignRequestCaptor;
+
+  @Captor
+  private ArgumentCaptor<GetObjectPresignRequest> getPresignRequestCaptor;
 
   @Test
   @DisplayName("originals 버킷 대상으로 blur-level 메타데이터를 박아 Presigned PUT을 발급한다")
@@ -80,6 +87,25 @@ class S3StorageServiceTest {
     assertThat(result.requiredHeaders())
         .containsEntry("Content-Type", CONTENT_TYPE)
         .containsEntry("x-amz-meta-blur-level", "70");
+  }
+
+  @Test
+  @DisplayName("presignOriginalDownload는 originals 버킷 대상으로 getExpiration 만료의 Presigned GET을 발급한다")
+  void presignOriginalDownload() {
+    given(properties.originalsBucket()).willReturn(ORIGINALS_BUCKET);
+    given(properties.getExpiration()).willReturn(GET_EXPIRATION);
+    given(s3Presigner.presignGetObject(getPresignRequestCaptor.capture()))
+        .willReturn(presignedGetWithUrl(
+            "https://" + ORIGINALS_BUCKET + ".s3.amazonaws.com/" + OBJECT_KEY));
+
+    String url = s3StorageService.presignOriginalDownload(OBJECT_KEY);
+
+    // 서명에 들어간 GetObjectRequest 검증: originals 버킷·key·만료(getExpiration)
+    GetObjectRequest signedRequest = getPresignRequestCaptor.getValue().getObjectRequest();
+    assertThat(signedRequest.bucket()).isEqualTo(ORIGINALS_BUCKET);
+    assertThat(signedRequest.key()).isEqualTo(OBJECT_KEY);
+    assertThat(getPresignRequestCaptor.getValue().signatureDuration()).isEqualTo(GET_EXPIRATION);
+    assertThat(url).contains(ORIGINALS_BUCKET).contains(OBJECT_KEY);
   }
 
   @Test
@@ -129,6 +155,19 @@ class S3StorageServiceTest {
     return PresignedPutObjectRequest.builder()
         .expiration(Instant.now().plus(PUT_EXPIRATION))
         .isBrowserExecutable(false)
+        .signedHeaders(Map.of("host", List.of(URI.create(url).getHost())))
+        .httpRequest(httpRequest)
+        .build();
+  }
+
+  private PresignedGetObjectRequest presignedGetWithUrl(String url) {
+    SdkHttpFullRequest httpRequest = SdkHttpFullRequest.builder()
+        .method(SdkHttpMethod.GET)
+        .uri(URI.create(url))
+        .build();
+    return PresignedGetObjectRequest.builder()
+        .expiration(Instant.now().plus(GET_EXPIRATION))
+        .isBrowserExecutable(true)
         .signedHeaders(Map.of("host", List.of(URI.create(url).getHost())))
         .httpRequest(httpRequest)
         .build();
