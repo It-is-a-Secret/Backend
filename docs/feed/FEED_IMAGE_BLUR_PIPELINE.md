@@ -172,6 +172,8 @@ variants/{memberId}/{uuid}.jpg       ← 공개(GET). 블러본 1장. 피드 노
 
 > ⚠️ 직전 콘솔 작업에서 BPA를 해제했던 버킷이 originals 용도라면 **BPA를 다시 전부 ON으로 되돌릴 것.** 원본은 절대 공개되면 안 된다.
 
+> ℹ️ **위 "ListBucket 비공개"는 퍼블릭/익명 접근(버킷 정책) 기준이다.** 백엔드(EC2) IAM 자격증명에는 variants 버킷에 대한 `s3:ListBucket`을 **부여한다.** 스케줄러(#51)의 `HeadObject`가 객체 부재 시 403이 아니라 **404를 받기 위함**이며(AWS는 호출 ID에 `s3:ListBucket`이 없으면 부재 객체를 403으로 가린다 → 부재 객체가 영원히 `PROCESSING`에 고착), prefix 열거를 퍼블릭에 여는 것과 무관하다. → §8-5
+
 ### 비공개인데 어떻게 제공하나 (핵심)
 
 - **업로드**: Presigned **PUT** — 버킷이 비공개여도 서명으로 PUT 가능.
@@ -309,6 +311,7 @@ Lambda는 S3 `ObjectCreated` 이벤트로 비동기 실행되므로, 사용자�
 | `blur_level` 범위 | **50 ~ 100 정수**, 기본값 **80** (50=최소 허용 블러, 100=최강). 백엔드 DTO에서 50~100 강제. 정확한 수치는 샘플 이미지 테스트 후 보정 |
 | Presigned GET 만료 | **5분**. 대상=originals 원본. 채팅방 참여자 + progressStatus 공개 장수 충족 시 발급, 재조회 시 재발급 |
 | AWS 자격증명 | 운영 서버가 **access key / secret key를 `.env`로 보유**(구현 단순화 목적). IAM 역할 미사용 |
+| 운영 서버 IAM 권한 | originals: `s3:PutObject` + `s3:GetObject` (`/*`) · variants: 객체 `s3:GetObject` (`/*`) + **버킷 `s3:ListBucket`** (버킷 ARN). `ListBucket`은 `HeadObject`가 부재 객체를 404로 받기 위함 — **미부여 시 403으로 가려져 `PROCESSING` 고착**(§8-1·§5). 이 ListBucket은 백엔드 IAM에만 부여하며 퍼블릭/버킷 정책의 "ListBucket 비공개"와 별개다 |
 
 ---
 
