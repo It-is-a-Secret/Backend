@@ -146,6 +146,14 @@ public class FeedImage extends BaseEntity {
     }
   }
 
+  /**
+   * 블러본 존재가 확인되어 공개 노출 가능한 상태({@link FeedImageProcessingStatus#READY})인지 여부.
+   * 공개 피드 조회의 전부-READY 게이트(§2-5)에서 사용한다.
+   */
+  public boolean isReady() {
+    return this.processingStatus == FeedImageProcessingStatus.READY;
+  }
+
   /** 블러본 존재가 확인되어 공개 노출 가능 상태로 전이한다. (HeadObject 200) */
   public void markReady() {
     this.processingStatus = FeedImageProcessingStatus.READY;

@@ -2,11 +2,14 @@ package com.blursome.blursome.feed.service;
 
 import com.blursome.blursome.feed.domain.Feed;
 import com.blursome.blursome.feed.domain.FeedImage;
+import com.blursome.blursome.feed.domain.FeedImageProcessingStatus;
 import com.blursome.blursome.feed.dto.request.FeedImageSaveRequest;
 import com.blursome.blursome.feed.dto.request.PresignedUrlRequest;
 import com.blursome.blursome.feed.dto.request.PresignedUrlRequest.ImageRequest;
 import com.blursome.blursome.feed.dto.response.FeedImageResponse;
+import com.blursome.blursome.feed.dto.response.MyFeedImagesResponse;
 import com.blursome.blursome.feed.dto.response.PresignedUrlResponse;
+import com.blursome.blursome.feed.dto.response.PublicFeedImagesResponse;
 import com.blursome.blursome.feed.dto.response.PresignedUrlResponse.PresignedUrl;
 import com.blursome.blursome.feed.exception.FeedErrorCode;
 import com.blursome.blursome.feed.exception.FeedImageErrorCode;
@@ -102,6 +105,54 @@ public class FeedImageService {
     // 응답은 노출 순서(displayOrder)대로 내려준다. saveAll 반환 순서는 요청 순서라 정렬을 보장하지 않는다.
     return new FeedImageResponse(saved.stream()
         .sorted(Comparator.comparing(FeedImage::getDisplayOrder))
+        .map(image -> FeedImageResponse.Image.of(image,
+            storageService.toPublicVariantUrl(image.getVariantKey())))
+        .toList());
+  }
+
+  /**
+   * 공개 피드 이미지 조회(다른 회원이 보는 피드). 현재 DB 목록의 <b>모든 이미지가 {@code READY}일 때만</b>
+   * {@code displayOrder} 순서로 노출한다(전부-또는-비노출). 하나라도 {@code PROCESSING}/{@code FAILED}이거나
+   * 이미지가 0장(미존재 피드 포함)이면, 깨진/불완전한 블러본 노출을 막기 위해 노출 대상에서 제외하고
+   * {@code FEED_404_NOT_FOUND}로 응답한다.
+   *
+   * <p>이미지 0장 피드를 명시적으로 제외하는 이유: "전부 {@code READY}" 게이트는 빈 컬렉션에 대해 vacuously
+   * true가 되어 이미지 없는 피드가 새는 함정이 있으므로, {@code isEmpty()} 가드를 별도로 둔다.
+   * (설계: {@code FEED_IMAGE_DOMAIN.md} §2-5, 이슈 #52 0장 처리)
+   *
+   * @param feedId 조회 대상 피드 id
+   * @return 모든 이미지가 {@code READY}인 경우 노출 순서대로 담은 공개 응답
+   * @throws BaseException 게이트 미통과 시 {@code FEED_404_NOT_FOUND}
+   */
+  @Transactional(readOnly = true)
+  public PublicFeedImagesResponse getPublicFeedImages(Long feedId) {
+    List<FeedImage> images = feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(feedId);
+    if (images.isEmpty() || images.stream().anyMatch(image -> !image.isReady())) {
+      throw BaseException.from(FeedErrorCode.FEED_NOT_FOUND);
+    }
+    return new PublicFeedImagesResponse(images.stream()
+        .map(image -> PublicFeedImagesResponse.Image.of(image,
+            storageService.toPublicVariantUrl(image.getVariantKey())))
+        .toList());
+  }
+
+  /**
+   * 본인 피드 이미지 관리 조회. 공개 조회와 달리 업로드 진행/실패를 보여주기 위해 {@code PROCESSING}·
+   * {@code FAILED} 상태도 함께 {@code displayOrder} 순서로 내려준다. {@code FAILED}가 하나라도 있으면
+   * {@code reuploadRequired=true}로 해당 사진 재업로드를 안내한다(v1은 자동 재시도·Lambda 재트리거 없음).
+   *
+   * @param memberId 인증된 회원 id. 본인 피드(회원:피드 1:1)를 도출하므로 별도 소유권 검증이 불필요하다.
+   * @return 본인 피드 사진을 노출 순서대로 담고 재업로드 필요 여부를 함께 내린 응답
+   * @throws BaseException 피드가 없는 경우 {@code FEED_404_NOT_FOUND}
+   */
+  @Transactional(readOnly = true)
+  public MyFeedImagesResponse getMyFeedImages(Long memberId) {
+    Feed feed = feedRepository.findByMemberId(memberId)
+        .orElseThrow(() -> BaseException.from(FeedErrorCode.FEED_NOT_FOUND));
+    List<FeedImage> images = feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(feed.getId());
+    boolean reuploadRequired = images.stream()
+        .anyMatch(image -> image.getProcessingStatus() == FeedImageProcessingStatus.FAILED);
+    return new MyFeedImagesResponse(reuploadRequired, images.stream()
         .map(image -> FeedImageResponse.Image.of(image,
             storageService.toPublicVariantUrl(image.getVariantKey())))
         .toList());
