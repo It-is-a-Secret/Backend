@@ -45,7 +45,7 @@ BlurSome의 피드(Feed) 도메인을 정의합니다. 온보딩을 완료한 �
 | `nickName` | `String`, `nullable=false`, len 30, **유니크** | `Member.nickName` 복사(중복 보유) |
 | `gender` | `Gender`(enum, STRING), `nullable=false`, len 10 | 온보딩 요청 (Feed 단독 보유) |
 | `birthYear` | `Integer`, `nullable=false`, col `birth_year` | 온보딩 요청 (Feed 단독 보유) |
-| `department` | `String`, `nullable=false`, len 50 | 온보딩 요청 (Feed 단독 보유) |
+| `department` | `Department`(enum, STRING), `nullable=false`, len 50 | 온보딩 요청 (Feed 단독 보유). 학과 정규화(이슈 #40) — 자유 문자열 대신 고정 enum이며 소속 계열(`College`)을 보유해 탐색 점수의 동일 학과(+1.0)/동일 계열(+0.5) 가산 기준이 된다(Phase 2) |
 | `mbti` | `Mbti`(enum, STRING), `nullable=false`, len 4 | 온보딩 요청 (Feed 단독 보유) |
 | `createdAt`/`updatedAt` | `BaseEntity` | — |
 

@@ -1,6 +1,7 @@
 package com.blursome.blursome.feed.domain;
 
 import com.blursome.blursome.global.persistence.BaseEntity;
+import com.blursome.blursome.member.domain.Department;
 import com.blursome.blursome.member.domain.Gender;
 import com.blursome.blursome.member.domain.Mbti;
 import com.blursome.blursome.member.domain.Member;
@@ -60,8 +61,9 @@ public class Feed extends BaseEntity {
   @Column(name = "birth_year", nullable = false)
   private Integer birthYear;
 
+  @Enumerated(EnumType.STRING)
   @Column(nullable = false, length = 50)
-  private String department;
+  private Department department;
 
   @Enumerated(EnumType.STRING)
   @Column(nullable = false, length = 4)
@@ -69,7 +71,7 @@ public class Feed extends BaseEntity {
 
   @Builder(access = AccessLevel.PRIVATE)
   private Feed(Member member, String nickName, Gender gender,
-      Integer birthYear, String department, Mbti mbti) {
+      Integer birthYear, Department department, Mbti mbti) {
     this.member = member;
     this.nickName = nickName;
     this.gender = gender;
@@ -84,7 +86,7 @@ public class Feed extends BaseEntity {
    * 호출 전 {@code member.completeOnboarding(nickName)}이 완료되어 있어야 한다.
    */
   public static Feed createOnOnboarding(
-      Member member, Gender gender, Integer birthYear, String department, Mbti mbti) {
+      Member member, Gender gender, Integer birthYear, Department department, Mbti mbti) {
     return Feed.builder()
         .member(member)
         .nickName(member.getNickName())

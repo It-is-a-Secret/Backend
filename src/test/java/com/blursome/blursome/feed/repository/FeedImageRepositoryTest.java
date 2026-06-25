@@ -7,6 +7,7 @@ import com.blursome.blursome.feed.domain.Feed;
 import com.blursome.blursome.feed.domain.FeedImage;
 import com.blursome.blursome.feed.domain.FeedImageProcessingStatus;
 import com.blursome.blursome.global.persistence.JpaAuditingConfig;
+import com.blursome.blursome.member.domain.Department;
 import com.blursome.blursome.member.domain.Gender;
 import com.blursome.blursome.member.domain.Mbti;
 import com.blursome.blursome.member.domain.Member;
@@ -128,7 +129,8 @@ class FeedImageRepositoryTest {
     member.completeOnboarding("nick-" + suffix);
     em.persist(member);
 
-    Feed feed = Feed.createOnOnboarding(member, Gender.MALE, 2000, "컴퓨터공학과", Mbti.INTJ);
+    Feed feed = Feed.createOnOnboarding(
+        member, Gender.MALE, 2000, Department.COMPUTER_ENGINEERING, Mbti.INTJ);
     em.persist(feed);
     return feed;
   }
