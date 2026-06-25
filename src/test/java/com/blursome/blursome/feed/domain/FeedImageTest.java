@@ -119,4 +119,48 @@ class FeedImageTest {
           .isEqualTo(FeedImageProcessingStatus.FAILED);
     }
   }
+
+  @Nested
+  @DisplayName("isPublishable 공개 게이트(#72)")
+  class Publishable {
+
+    /** displayOrder가 1~count인 이미지 목록을 만들고, ready=true면 전부 READY로 전이한다. */
+    private java.util.List<FeedImage> images(int count, boolean ready) {
+      return java.util.stream.IntStream.rangeClosed(1, count)
+          .mapToObj(order -> {
+            FeedImage image = create(order, 80);
+            if (ready) {
+              image.markReady();
+            }
+            return image;
+          })
+          .toList();
+    }
+
+    @Test
+    @DisplayName("정확히 5장 전부 READY면 공개 가능")
+    void publishable_whenExactlyFiveReady() {
+      assertThat(FeedImage.isPublishable(images(5, true))).isTrue();
+    }
+
+    @Test
+    @DisplayName("5장이라도 하나가 READY가 아니면 비공개")
+    void notPublishable_whenAnyNotReady() {
+      java.util.List<FeedImage> images = new java.util.ArrayList<>(images(4, true));
+      images.add(create(5, 80)); // PROCESSING
+      assertThat(FeedImage.isPublishable(images)).isFalse();
+    }
+
+    @Test
+    @DisplayName("전부 READY라도 5장 미만이면 비공개")
+    void notPublishable_whenFewerThanFive() {
+      assertThat(FeedImage.isPublishable(images(4, true))).isFalse();
+    }
+
+    @Test
+    @DisplayName("0장이면 비공개")
+    void notPublishable_whenEmpty() {
+      assertThat(FeedImage.isPublishable(java.util.List.of())).isFalse();
+    }
+  }
 }

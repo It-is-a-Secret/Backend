@@ -113,23 +113,23 @@ public class FeedImageService {
   }
 
   /**
-   * 공개 피드 이미지 조회(다른 회원이 보는 피드). 현재 DB 목록의 <b>모든 이미지가 {@code READY}일 때만</b>
-   * {@code displayOrder} 순서로 노출한다(전부-또는-비노출). 하나라도 {@code PROCESSING}/{@code FAILED}이거나
-   * 이미지가 0장(미존재 피드 포함)이면, 깨진/불완전한 블러본 노출을 막기 위해 노출 대상에서 제외하고
-   * {@code FEED_404_NOT_FOUND}로 응답한다.
+   * 공개 피드 이미지 조회(다른 회원이 보는 피드). DB 목록이 <b>정확히
+   * {@link FeedImage#REQUIRED_PUBLISH_COUNT}장이고 전부 {@code READY}일 때만</b>(전부-또는-비노출)
+   * {@code displayOrder} 순서로 노출한다. 장수 미달/초과거나 하나라도 {@code PROCESSING}/{@code FAILED}이면,
+   * 깨진/불완전한 블러본 노출을 막기 위해 노출 대상에서 제외하고 {@code FEED_404_NOT_FOUND}로 응답한다.
    *
-   * <p>이미지 0장 피드를 명시적으로 제외하는 이유: "전부 {@code READY}" 게이트는 빈 컬렉션에 대해 vacuously
-   * true가 되어 이미지 없는 피드가 새는 함정이 있으므로, {@code isEmpty()} 가드를 별도로 둔다.
-   * (설계: {@code FEED_IMAGE_DOMAIN.md} §2-5, 이슈 #52 0장 처리)
+   * <p>공개 가능 판정은 {@link FeedImage#isPublishable(List)} 단일 게이트를 따른다. 0장 피드도 장수 조건에서
+   * 자연히 비노출되며("정확히 5장" ≠ 0), 탐색 후보 질의({@code DiscoveryRepository})와 같은 규칙이다.
+   * (설계: {@code FEED_IMAGE_DOMAIN.md} §2-5, 이슈 #72 정확히-5장 게이트)
    *
    * @param feedId 조회 대상 피드 id
-   * @return 모든 이미지가 {@code READY}인 경우 노출 순서대로 담은 공개 응답
+   * @return 정확히 5장 전부 {@code READY}인 경우 노출 순서대로 담은 공개 응답
    * @throws BaseException 게이트 미통과 시 {@code FEED_404_NOT_FOUND}
    */
   @Transactional(readOnly = true)
   public PublicFeedImagesResponse getPublicFeedImages(Long feedId) {
     List<FeedImage> images = feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(feedId);
-    if (images.isEmpty() || images.stream().anyMatch(image -> !image.isReady())) {
+    if (!FeedImage.isPublishable(images)) {
       throw BaseException.from(FeedErrorCode.FEED_NOT_FOUND);
     }
     return new PublicFeedImagesResponse(images.stream()

@@ -46,9 +46,12 @@ viewer 기준 아래를 **모두** 만족하는 회원만 후보다.
 | 활성 | `member.activity_status = ACTIVE` **且** `member.withdrawn_at IS NULL` |
 | 본인 제외 | `member.id <> viewerId` |
 | 차단 없음 | `block`에 (viewer↔후보) 어느 방향도 없음 — ✅ 구현(#41) |
+| 피드 공개 가능 | `feed_image`가 **정확히 5장이고 전부 `READY`** — ✅ 구현(#72) |
 | 이미 채팅 중 | **포함**(탐색에서 다시 보여도 됨, 채팅 시작은 기존 방으로 이동) |
 
 > ✅ **#41(차단 도메인) 반영**: 후보 쿼리에 `not exists (block where 양방향)`을 추가해 차단/피차단을 제외한다.
+>
+> ✅ **#72(공개 게이트) 반영**: 온보딩이 `COMPLETED`여도 이미지 파이프라인을 통과하지 못한 피드(0장·`PROCESSING`/`FAILED` 혼입)는 깨진 블러본 노출을 막기 위해 제외한다. 후보 쿼리에 `READY` 개수 = 5(`정확히 5장`)와 비-`READY` 부재(`not exists`)를 함께 강제해 `FeedImage.isPublishable`(공개 피드 조회 게이트)과 동일한 규칙으로 맞춘다. `feed_image(feed_id, processing_status)` 보조 인덱스로 서브쿼리를 뒷받침한다.
 
 ---
 
@@ -152,7 +155,8 @@ CREATE INDEX idx_member_keyword_tag    ON member_keyword(tag_id);
 | 항목 | 상태 | 비고 |
 |---|---|---|
 | 차단(block) 도메인 | ✅ #41 | 후보 필터의 차단/피차단 양방향 제외 반영 |
-| `feed.mbti` nullable | ⏳ | "MBTI 모름" 표현·재분배에 필요(현재 NOT NULL) |
+| 피드 공개 게이트 | ✅ #72 | 후보 필터에 "정확히 5장 전부 READY"(`feed_image`) 추가, `FeedImage.isPublishable`과 동일 규칙 |
+| `feed.mbti` nullable | ⏳ #76 | "MBTI 모름" 표현·재분배에 필요(현재 NOT NULL) |
 | 외형 태그 분리 | ⏳ | K 제외 대상. 현재 미구현이라 무관 |
 | MBTI 궁합표 | ⏳ | 없으면 동일=1.0만 적용(궁합/100 생략) |
 | 정규화 상한·다양성 임계 | 🧩 | 구현 상수로 두고 튜닝 |

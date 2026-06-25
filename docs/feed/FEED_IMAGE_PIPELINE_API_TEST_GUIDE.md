@@ -24,7 +24,7 @@ BlurSome 피드 이미지 블러 파이프라인(#47~#54)을 실제 AWS(S3 + Lam
 | ③ 블러 생성 | S3 `ObjectCreated` → Lambda가 블러본 1장을 `variants`에 생성 | #54 |
 | ④ 메타데이터 저장 | 발급 key로 `FeedImage` 저장(full-replace), `PROCESSING` 시작 | #50 |
 | ⑤ 상태 폴링 | 스케줄러가 `HeadObject`로 블러본 존재 확인 → `READY`/`FAILED` | #51 |
-| ⑥ 공개 피드 | 전부 `READY`일 때만 블러본 URL 노출(전부-또는-비노출) | #52 |
+| ⑥ 공개 피드 | 정확히 5장 전부 `READY`일 때만 블러본 URL 노출(전부-또는-비노출) | #52·#72 |
 | ⑦ 단계 공개 | 채팅 단계가 정한 N장만 원본 Presigned GET, 나머지 블러본 | #53 |
 
 ### 테스트 대상 API 요약
@@ -37,7 +37,7 @@ BlurSome 피드 이미지 블러 파이프라인(#47~#54)을 실제 AWS(S3 + Lam
 | POST | `/api/feeds/me/images/presigned-urls` | 원본 업로드용 Presigned PUT 발급 | #49 |
 | POST | `/api/feeds/me/images` | 피드 이미지 메타데이터 저장(full-replace) | #50 |
 | GET | `/api/feeds/me/images` | 본인 피드 관리 조회(PROCESSING/FAILED 포함) | #52 |
-| GET | `/api/feeds/{feedId}/images` | 공개 피드 조회(전부-READY 게이트, **로그인 회원이면 누구나** — 토큰 필요) | #52 |
+| GET | `/api/feeds/{feedId}/images` | 공개 피드 조회(정확히-5장-전부-READY 게이트, **로그인 회원이면 누구나** — 토큰 필요) | #52·#72 |
 | GET | `/api/chat/rooms/{roomId}/revealed-images` | 채팅 단계별 상대 원본 공개 조회 | #53 |
 
 > ⚠️ **업로드(②)는 백엔드가 아니라 S3로 직접 PUT**합니다. 발급 응답의 `uploadUrl`에 `requiredHeaders`를 그대로
@@ -254,11 +254,11 @@ S3 업로드를 마친 뒤, 발급 응답의 `originalKey`를 그대로 보냅�
 - **FAILED 경로**: 블러본이 끝내 안 생기면(트리거/권한 문제) `created_at + 5분` 초과 시 `FAILED`로 전이됩니다.
   이때 F-4의 `reuploadRequired`가 `true`가 됩니다. → 부록 A의 IAM `ListBucket` 항목을 우선 점검.
 
-### 시나리오 F-6. 공개 피드 조회 (#52, 전부-READY 게이트)
+### 시나리오 F-6. 공개 피드 조회 (#52·#72, 정확히-5장-전부-READY 게이트)
 
 - **요청**: `GET {{baseUrl}}/api/feeds/1/images` — **토큰 필요**(로그인한 회원이면 누구나 남의 피드를 조회할 수 있고,
   소유권 검증은 없음). 토큰 없이 호출하면 `401`이다.
-- **기대(전부 READY)**: `200`, 블러본 URL을 `displayOrder` 순서로.
+- **기대(정확히 5장 전부 READY)**: `200`, 블러본 URL을 `displayOrder` 순서로(5장).
 
 ```json
 { "timestamp": "...", "data": { "images": [
@@ -267,8 +267,9 @@ S3 업로드를 마친 뒤, 발급 응답의 `originalKey`를 그대로 보냅�
 ] } }
 ```
 
-- **기대(하나라도 미완)**: 하나라도 `PROCESSING`/`FAILED`이거나 이미지가 0장이면 → `404 FEED_404_NOT_FOUND`
-  (깨진/처리중 블러본 노출 방지, 전부-또는-비노출).
+- **기대(게이트 미통과)**: 사진이 **5장 미만/초과**거나, 5장이라도 하나라도 `PROCESSING`/`FAILED`이거나,
+  이미지가 0장이면 → `404 FEED_404_NOT_FOUND`(깨진/불완전 블러본 노출 방지, 전부-또는-비노출, #72).
+  같은 규칙이 탐색 후보 노출에도 적용되어, 5장 전부 `READY`가 되기 전에는 상대 탐색 목록에 뜨지 않는다.
 - `variantUrl`을 브라우저로 직접 열어 블러본 이미지가 보이는지(공개 GET) 확인하세요.
 
 ### 시나리오 F-7. 채팅 단계별 원본 공개 (#53)
