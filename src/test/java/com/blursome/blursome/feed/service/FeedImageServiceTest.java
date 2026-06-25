@@ -197,12 +197,18 @@ class FeedImageServiceTest {
     return image;
   }
 
+  /** 1~count번 순서를 가진 READY 이미지 목록. variant_key는 순서로 결정한다. 공개 게이트(정확히 5장) 검증용. */
+  private static List<FeedImage> readyImages(int count) {
+    return java.util.stream.IntStream.rangeClosed(1, count)
+        .mapToObj(order -> feedImage(order, "variants/100/" + order + ".jpg",
+            FeedImageProcessingStatus.READY))
+        .toList();
+  }
+
   @Test
-  @DisplayName("공개 조회: 모든 이미지가 READY면 displayOrder 순서로 블러본 URL을 노출한다")
-  void getPublicFeedImages_allReady() {
-    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(List.of(
-        feedImage(1, VARIANT_A, FeedImageProcessingStatus.READY),
-        feedImage(2, VARIANT_B, FeedImageProcessingStatus.READY)));
+  @DisplayName("공개 조회: 정확히 5장 전부 READY면 displayOrder 순서로 블러본 URL을 노출한다")
+  void getPublicFeedImages_exactlyFiveReady() {
+    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(readyImages(5));
     given(storageService.toPublicVariantUrl(anyString()))
         .willAnswer(invocation -> "https://cdn/" + invocation.getArgument(0));
 
@@ -210,18 +216,20 @@ class FeedImageServiceTest {
 
     assertThat(response.images())
         .extracting(image -> image.displayOrder())
-        .containsExactly(1, 2);
+        .containsExactly(1, 2, 3, 4, 5);
     assertThat(response.images())
         .extracting(image -> image.variantUrl())
-        .containsExactly("https://cdn/" + VARIANT_A, "https://cdn/" + VARIANT_B);
+        .containsExactly("https://cdn/variants/100/1.jpg", "https://cdn/variants/100/2.jpg",
+            "https://cdn/variants/100/3.jpg", "https://cdn/variants/100/4.jpg",
+            "https://cdn/variants/100/5.jpg");
   }
 
   @Test
-  @DisplayName("공개 조회: 하나라도 READY가 아니면 FEED_404_NOT_FOUND로 비노출한다")
+  @DisplayName("공개 조회: 5장이라도 하나가 READY가 아니면 FEED_404_NOT_FOUND로 비노출한다")
   void getPublicFeedImages_notAllReady() {
-    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(List.of(
-        feedImage(1, VARIANT_A, FeedImageProcessingStatus.READY),
-        feedImage(2, VARIANT_B, FeedImageProcessingStatus.PROCESSING)));
+    List<FeedImage> images = new java.util.ArrayList<>(readyImages(4));
+    images.add(feedImage(5, VARIANT_A, FeedImageProcessingStatus.PROCESSING));
+    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(images);
 
     assertThatThrownBy(() -> feedImageService.getPublicFeedImages(FEED_ID))
         .isInstanceOf(BaseException.class)
@@ -229,7 +237,17 @@ class FeedImageServiceTest {
   }
 
   @Test
-  @DisplayName("공개 조회: 이미지가 0장이면(빈 컬렉션 vacuous-true 함정) FEED_404_NOT_FOUND로 비노출한다")
+  @DisplayName("공개 조회: 전부 READY라도 5장 미만이면 FEED_404_NOT_FOUND로 비노출한다")
+  void getPublicFeedImages_fewerThanFive() {
+    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(readyImages(4));
+
+    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(FEED_ID))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "FEED_404_NOT_FOUND");
+  }
+
+  @Test
+  @DisplayName("공개 조회: 이미지가 0장이면 FEED_404_NOT_FOUND로 비노출한다")
   void getPublicFeedImages_empty() {
     given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(List.of());
 

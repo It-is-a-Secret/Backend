@@ -42,7 +42,7 @@ BlurSome의 피드 이미지(`FeedImage`) 도메인을 정의합니다. 회원�
 | 저장 컬럼 | **`original_key`(비공개 원본)·`variant_key`(공개 블러본) 둘 다 S3 key 저장** | ✅ | 공개 URL이 아니라 key를 저장. 블러본 공개 URL은 `baseUrl + variant_key`로 조립, 원본은 `original_key`로 Presigned GET |
 | key 컬럼 길이 | `original_key`·`variant_key` 각 `length=512` | ✅ | S3 객체 key 기준 |
 | `blur_level` 타입·범위 | `Integer`, **50 ~ 100** | ✅ | ⛔ 의미 변경: v1은 프론트 표시 강도, 목표는 **Lambda 블러 강도 지정값**(객체 메타데이터로 전달) → 파이프라인 §1·§2 |
-| 블러본 생성 상태 | **`processing_status`(`PROCESSING`→`READY`/`FAILED`)**, 백엔드 스케줄러가 `HeadObject`로 전이 | ✅ | 시간 기반 FAILED(`created_at`+5분). 공개 피드는 전부 `READY`일 때만 노출 → §2-5 |
+| 블러본 생성 상태 | **`processing_status`(`PROCESSING`→`READY`/`FAILED`)**, 백엔드 스케줄러가 `HeadObject`로 전이 | ✅ | 시간 기반 FAILED(`created_at`+5분). 공개 피드는 **정확히 5장 전부 `READY`**일 때만 노출(#72) → §2-5 |
 | `display_order` 범위 | **1 ~ 5 (피드당 최대 5장)** | ✅ | 1-base, 피드당 사진 5장 상한 |
 | `(feed_id, display_order)` 유니크 | `uk_feed_image_order`로 한 피드 내 순서 중복 방지 | ✅ | DB 레벨 무결성 |
 
@@ -122,7 +122,7 @@ public enum FeedImageProcessingStatus {
 
 > **시간 기반(`created_at`)을 쓰는 이유**: 횟수(`check_count`) 기반은 스케줄러가 죽으면 카운트가 멈춰 판정이 지연되지만, 시간 기반은 스케줄러가 재시작돼도 `created_at`만 보고 즉시 `FAILED`를 판정할 수 있어 더 안전하다. 별도 카운터 컬럼을 두지 않는다.
 
-- **공개 피드 조회**(다른 회원이 보는 피드): 현재 DB 목록의 **모든 이미지가 `READY`일 때만** 피드를 노출한다(전부-또는-비노출). 하나라도 `PROCESSING`/`FAILED`면 비노출 — 깨진 블러본 노출 차단의 핵심 게이트.
+- **공개 피드 조회**(다른 회원이 보는 피드): 사진이 **정확히 5장이고 전부 `READY`일 때만** 피드를 노출한다(전부-또는-비노출, #72). 장수 미달/초과거나 하나라도 `PROCESSING`/`FAILED`면 비노출 — 깨진/불완전 블러본 노출 차단의 핵심 게이트. 이 판정은 `FeedImage.isPublishable(images)` 단일 메서드로 두고, 탐색 후보 질의(`DiscoveryRepository`)도 같은 규칙(`READY` 개수 = 5 + 비-`READY` 부재)을 JPQL 서브쿼리로 강제한다.
 - **본인 피드 관리 조회**(`/api/feeds/me/...`): `PROCESSING`·`FAILED`도 함께 내려 업로드 진행/실패를 보여준다. `FAILED`가 하나라도 있으면 **해당 사진 재업로드를 안내**한다(v1은 자동 재시도·Lambda 재트리거 없음).
 - 스케줄러는 `HeadObject`만 호출하므로 객체 바이트를 받지 않아 비용·전송이 거의 없다. Lambda 통지 없이 B 방식을 유지한다.
 - 운영 중 실패율·UX 문제가 커지면 SQS + DLQ + 자동 재처리를 v2로 도입한다. 상세 사양은 [`FEED_IMAGE_BLUR_PIPELINE.md`](./FEED_IMAGE_BLUR_PIPELINE.md) §8-1.
@@ -252,7 +252,7 @@ com.blursome.global.storage           ✅ S3 인프라 (횡단 관심사)
 > ⛔ **블러 파이프라인 전환이 최우선 후속 작업이다.** 2버킷 분리·서버사이드 블러(Lambda)·`original_key` 스키마(`blur_level`은 Lambda 강도값으로 유지)·단계별 원본 Presigned GET 등은 [`FEED_IMAGE_BLUR_PIPELINE.md`](./FEED_IMAGE_BLUR_PIPELINE.md) §8·§9에서 관리한다. 아래는 v1 범위의 잔여 항목이다.
 
 - **`Feed` 양방향 매핑 여부** — 현재 단방향 유지. 필요 시 `@OneToMany` 추가.
-- **피드 조회 API 연동** — 다른 회원 피드 조회 응답에 이미지 목록(`displayOrder` 정렬) 포함. 공개 조회는 모든 이미지가 `READY`일 때만 노출(§2-5).
+- **피드 조회 API 연동** — 다른 회원 피드 조회 응답에 이미지 목록(`displayOrder` 정렬) 포함. 공개 조회는 정확히 5장 전부 `READY`일 때만 노출(§2-5, #72).
 
 > ✅ **확정 — AWS 자격 증명 운영 구성.** 구현 단순화를 위해 운영 서버가 **access key / secret key를 `.env`로 보유**한다(IAM 역할 미사용). → [`FEED_IMAGE_BLUR_PIPELINE.md`](./FEED_IMAGE_BLUR_PIPELINE.md) §8-5
 

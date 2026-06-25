@@ -9,10 +9,12 @@ import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
+import java.util.List;
 import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
@@ -36,7 +38,10 @@ import lombok.NoArgsConstructor;
         @UniqueConstraint(
             name = "uk_feed_image_order",
             columnNames = {"feed_id", "display_order"})
-    }
+    },
+    // 탐색 후보의 공개 게이트(정확히 5장 전부 READY, #72) 서브쿼리가 feed_id로 좁히고
+    // processing_status로 집계하므로 복합 인덱스로 뒷받침한다.
+    indexes = @Index(name = "idx_feed_image_feed_status", columnList = "feed_id, processing_status")
 )
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class FeedImage extends BaseEntity {
@@ -48,6 +53,11 @@ public class FeedImage extends BaseEntity {
   public static final int MIN_DISPLAY_ORDER = 1;
   /** 피드당 사진 최대 장수이자 노출 순서 상한. */
   public static final int MAX_DISPLAY_ORDER = 5;
+  /**
+   * 피드를 공개(탐색·공개 피드 조회)할 수 있는 필수 사진 장수. 정확히 이 장수가 모두 {@code READY}여야
+   * 공개 대상이 된다(#72). {@link #MAX_DISPLAY_ORDER}와 같은 값으로, 피드는 사진을 빠짐없이 채워야 공개된다.
+   */
+  public static final int REQUIRED_PUBLISH_COUNT = MAX_DISPLAY_ORDER;
   /** 블러 강도 하한. 약하게 굽는 것을 막기 위한 최소값. */
   public static final int MIN_BLUR_LEVEL = 50;
   /** 블러 강도 상한. */
@@ -152,6 +162,18 @@ public class FeedImage extends BaseEntity {
    */
   public boolean isReady() {
     return this.processingStatus == FeedImageProcessingStatus.READY;
+  }
+
+  /**
+   * 피드가 다른 회원에게 공개(탐색·공개 피드 조회)될 수 있는지 판정하는 <b>단일 게이트</b>다(#72).
+   * 사진이 <b>정확히 {@link #REQUIRED_PUBLISH_COUNT}장이고 전부 {@code READY}</b>일 때만 {@code true}.
+   * 장수 미달/초과·{@code PROCESSING}/{@code FAILED} 혼입은 깨진/불완전 블러본 노출을 막기 위해 비공개로 본다.
+   *
+   * <p>탐색 후보 질의({@code DiscoveryRepository})는 같은 규칙을 JPQL 서브쿼리로 강제하므로, 양쪽이
+   * 의미상 동일해야 한다.
+   */
+  public static boolean isPublishable(List<FeedImage> images) {
+    return images.size() == REQUIRED_PUBLISH_COUNT && images.stream().allMatch(FeedImage::isReady);
   }
 
   /** 블러본 존재가 확인되어 공개 노출 가능 상태로 전이한다. (HeadObject 200) */
