@@ -13,6 +13,7 @@ import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.OneToOne;
 import jakarta.persistence.Table;
@@ -38,7 +39,9 @@ import lombok.NoArgsConstructor;
     uniqueConstraints = {
         @UniqueConstraint(name = "uk_feed_member", columnNames = {"member_id"}),
         @UniqueConstraint(name = "uk_feed_nick_name", columnNames = {"nick_name"})
-    }
+    },
+    // 탐색(Discovery) 후보 필터의 주 조건인 이성(gender) 조회를 위한 보조 인덱스.
+    indexes = @Index(name = "idx_feed_gender", columnList = "gender")
 )
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Feed extends BaseEntity {
