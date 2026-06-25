@@ -48,7 +48,7 @@ class DiscoveryRepositoryTest {
    */
   private Feed persistOnboardedFeed(String suffix, Gender gender) {
     Feed feed = persistFeedOnly(suffix, gender);
-    persistImages(feed, 5, 0); // 5장 전부 READY
+    persistImages(feed, 5, 5); // 5장 전부 READY
     return feed;
   }
 

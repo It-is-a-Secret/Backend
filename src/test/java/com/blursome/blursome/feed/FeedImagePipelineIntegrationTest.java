@@ -141,13 +141,17 @@ class FeedImagePipelineIntegrationTest {
         .willAnswer(invocation -> presignedPut(presignUrl(
             invocation.<PutObjectPresignRequest>getArgument(0).putObjectRequest())));
 
-    // (#49) 2장에 대한 Presigned PUT 발급 — originals 버킷·blur-level 메타데이터가 서명에 들어가야 한다.
+    // (#49) 5장에 대한 Presigned PUT 발급 — originals 버킷·blur-level 메타데이터가 서명에 들어가야 한다.
+    // 공개 게이트는 정확히 5장 전부 READY를 요구하므로(#72) 종단 시나리오도 5장으로 채운다.
     PresignedUrlResponse issued = feedImageService.issuePresignedUploadUrls(
         memberId,
         new PresignedUrlRequest(List.of(
             new ImageRequest("first.jpg", "image/jpeg", 70),
-            new ImageRequest("second.png", "image/png", null))));
-    assertThat(issued.images()).hasSize(2);
+            new ImageRequest("second.png", "image/png", null),
+            new ImageRequest("third.jpg", "image/jpeg", null),
+            new ImageRequest("fourth.jpg", "image/jpeg", null),
+            new ImageRequest("fifth.jpg", "image/jpeg", null))));
+    assertThat(issued.images()).hasSize(5);
     assertThat(issued.images()).allSatisfy(image -> {
       assertThat(image.originalKey()).startsWith("originals/" + memberId + "/");
       assertThat(image.uploadUrl()).isNotBlank();
@@ -155,10 +159,10 @@ class FeedImagePipelineIntegrationTest {
     String keyA = issued.images().get(0).originalKey();
     String keyB = issued.images().get(1).originalKey();
 
-    // 발급된 두 PUT 서명을 모두 검증한다: 둘 다 originals 버킷, key/contentType은 요청별로, blur-level은 1번 70·2번 기본값 80.
+    // 발급된 PUT 서명을 검증한다: 모두 originals 버킷, 앞 두 장의 key/contentType/blur-level(1번 70·2번 기본값 80).
     ArgumentCaptor<PutObjectPresignRequest> putCaptor =
         ArgumentCaptor.forClass(PutObjectPresignRequest.class);
-    verify(s3Presigner, times(2)).presignPutObject(putCaptor.capture());
+    verify(s3Presigner, times(5)).presignPutObject(putCaptor.capture());
     List<PutObjectRequest> puts = putCaptor.getAllValues().stream()
         .map(PutObjectPresignRequest::putObjectRequest)
         .toList();
@@ -172,17 +176,19 @@ class FeedImagePipelineIntegrationTest {
     assertThat(puts.get(1).metadata())
         .containsEntry("blur-level", String.valueOf(FeedImage.DEFAULT_BLUR_LEVEL));
 
-    // (#50) 발급받은 원본 key로 메타데이터 저장(full-replace) — 두 행이 PROCESSING으로 생성된다.
+    // (#50) 발급받은 원본 key로 메타데이터 저장(full-replace) — 다섯 행이 PROCESSING으로 생성된다.
+    List<FeedImageSaveRequest.Image> toSave = new ArrayList<>();
+    for (int i = 0; i < issued.images().size(); i++) {
+      toSave.add(new FeedImageSaveRequest.Image(issued.images().get(i).originalKey(), i + 1,
+          i == 0 ? 70 : null));
+    }
     FeedImageResponse saved = feedImageService.replaceImages(
-        memberId,
-        new FeedImageSaveRequest(List.of(
-            new FeedImageSaveRequest.Image(keyA, 1, 70),
-            new FeedImageSaveRequest.Image(keyB, 2, null))));
+        memberId, new FeedImageSaveRequest(toSave));
     assertThat(saved.images())
         .extracting(FeedImageResponse.Image::processingStatus)
         .containsOnly(FeedImageProcessingStatus.PROCESSING);
 
-    // (#52) 아직 블러본이 READY가 아니므로 공개 피드는 전부-READY 게이트에 막혀 404다.
+    // (#72) 아직 블러본이 READY가 아니므로 공개 피드는 정확히-5장-전부-READY 게이트에 막혀 404다.
     Long feedId = feedRepository.findByMemberId(memberId).orElseThrow().getId();
     assertThatThrownBy(() -> feedImageService.getPublicFeedImages(feedId))
         .isInstanceOf(BaseException.class)
@@ -197,11 +203,11 @@ class FeedImagePipelineIntegrationTest {
         .extracting(FeedImage::getProcessingStatus)
         .containsOnly(FeedImageProcessingStatus.READY);
 
-    // (#52) 전부 READY가 되면 공개 피드가 displayOrder 순서로 블러본 URL을 노출한다.
+    // (#72) 정확히 5장 전부 READY가 되면 공개 피드가 displayOrder 순서로 블러본 URL을 노출한다.
     PublicFeedImagesResponse publicFeed = feedImageService.getPublicFeedImages(feedId);
     assertThat(publicFeed.images())
         .extracting(PublicFeedImagesResponse.Image::displayOrder)
-        .containsExactly(1, 2);
+        .containsExactly(1, 2, 3, 4, 5);
     assertThat(publicFeed.images())
         .allSatisfy(image -> assertThat(image.variantUrl()).contains("variants/"));
   }
