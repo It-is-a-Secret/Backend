@@ -3,6 +3,7 @@ package com.blursome.blursome.feed.controller;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -11,6 +12,7 @@ import com.blursome.blursome.feed.domain.FeedImageProcessingStatus;
 import com.blursome.blursome.feed.dto.request.FeedImageSaveRequest;
 import com.blursome.blursome.feed.dto.request.PresignedUrlRequest;
 import com.blursome.blursome.feed.dto.response.FeedImageResponse;
+import com.blursome.blursome.feed.dto.response.MyFeedImagesResponse;
 import com.blursome.blursome.feed.dto.response.PresignedUrlResponse;
 import com.blursome.blursome.feed.dto.response.PresignedUrlResponse.PresignedUrl;
 import com.blursome.blursome.feed.exception.FeedImageErrorCode;
@@ -216,6 +218,24 @@ class FeedImageControllerTest {
             .content(body))
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.code").value("FEED_IMAGE_400_DUPLICATE_ORDER"));
+  }
+
+  @Test
+  @DisplayName("본인 조회 요청 시 200과 reuploadRequired·이미지 목록(processingStatus 포함)을 반환한다")
+  void getMyImages() throws Exception {
+    MyFeedImagesResponse response = new MyFeedImagesResponse(true, List.of(
+        new FeedImageResponse.Image(
+            1L, 1, "https://cdn/variants/100/a.jpg", 70, FeedImageProcessingStatus.READY),
+        new FeedImageResponse.Image(
+            2L, 2, "https://cdn/variants/100/b.jpg", 80, FeedImageProcessingStatus.FAILED)));
+    given(feedImageService.getMyFeedImages(eq(MEMBER_ID))).willReturn(response);
+
+    mockMvc.perform(get("/api/feeds/me/images"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.reuploadRequired").value(true))
+        .andExpect(jsonPath("$.data.images[0].displayOrder").value(1))
+        .andExpect(jsonPath("$.data.images[0].processingStatus").value("READY"))
+        .andExpect(jsonPath("$.data.images[1].processingStatus").value("FAILED"));
   }
 
   @TestConfiguration

@@ -183,4 +183,106 @@ class FeedImageServiceTest {
         .hasFieldOrPropertyWithValue("code", "FEED_404_NOT_FOUND");
     verify(feedImageRepository, never()).saveAll(any());
   }
+
+  /** 주어진 순서·variant_key·상태를 가진 피드 이미지를 만든다. 조회 테스트의 게이트·정렬 검증용. */
+  private static FeedImage feedImage(int displayOrder, String variantKey,
+      FeedImageProcessingStatus status) {
+    FeedImage image = FeedImage.create(
+        mock(Feed.class), displayOrder, "originals/100/" + displayOrder + ".png", variantKey, 80);
+    if (status == FeedImageProcessingStatus.READY) {
+      image.markReady();
+    } else if (status == FeedImageProcessingStatus.FAILED) {
+      image.markFailed();
+    }
+    return image;
+  }
+
+  @Test
+  @DisplayName("공개 조회: 모든 이미지가 READY면 displayOrder 순서로 블러본 URL을 노출한다")
+  void getPublicFeedImages_allReady() {
+    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(List.of(
+        feedImage(1, VARIANT_A, FeedImageProcessingStatus.READY),
+        feedImage(2, VARIANT_B, FeedImageProcessingStatus.READY)));
+    given(storageService.toPublicVariantUrl(anyString()))
+        .willAnswer(invocation -> "https://cdn/" + invocation.getArgument(0));
+
+    var response = feedImageService.getPublicFeedImages(FEED_ID);
+
+    assertThat(response.images())
+        .extracting(image -> image.displayOrder())
+        .containsExactly(1, 2);
+    assertThat(response.images())
+        .extracting(image -> image.variantUrl())
+        .containsExactly("https://cdn/" + VARIANT_A, "https://cdn/" + VARIANT_B);
+  }
+
+  @Test
+  @DisplayName("공개 조회: 하나라도 READY가 아니면 FEED_404_NOT_FOUND로 비노출한다")
+  void getPublicFeedImages_notAllReady() {
+    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(List.of(
+        feedImage(1, VARIANT_A, FeedImageProcessingStatus.READY),
+        feedImage(2, VARIANT_B, FeedImageProcessingStatus.PROCESSING)));
+
+    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(FEED_ID))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "FEED_404_NOT_FOUND");
+  }
+
+  @Test
+  @DisplayName("공개 조회: 이미지가 0장이면(빈 컬렉션 vacuous-true 함정) FEED_404_NOT_FOUND로 비노출한다")
+  void getPublicFeedImages_empty() {
+    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(List.of());
+
+    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(FEED_ID))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "FEED_404_NOT_FOUND");
+  }
+
+  @Test
+  @DisplayName("본인 조회: PROCESSING/FAILED를 포함해 내려주고 FAILED가 있으면 reuploadRequired=true")
+  void getMyFeedImages_includesFailedAndFlagsReupload() {
+    Feed feed = mock(Feed.class);
+    given(feed.getId()).willReturn(FEED_ID);
+    given(feedRepository.findByMemberId(MEMBER_ID)).willReturn(Optional.of(feed));
+    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(List.of(
+        feedImage(1, VARIANT_A, FeedImageProcessingStatus.READY),
+        feedImage(2, VARIANT_B, FeedImageProcessingStatus.FAILED)));
+    given(storageService.toPublicVariantUrl(anyString()))
+        .willAnswer(invocation -> "https://cdn/" + invocation.getArgument(0));
+
+    var response = feedImageService.getMyFeedImages(MEMBER_ID);
+
+    assertThat(response.reuploadRequired()).isTrue();
+    assertThat(response.images())
+        .extracting(image -> image.processingStatus())
+        .containsExactly(FeedImageProcessingStatus.READY, FeedImageProcessingStatus.FAILED);
+  }
+
+  @Test
+  @DisplayName("본인 조회: FAILED가 없으면 reuploadRequired=false")
+  void getMyFeedImages_noFailed() {
+    Feed feed = mock(Feed.class);
+    given(feed.getId()).willReturn(FEED_ID);
+    given(feedRepository.findByMemberId(MEMBER_ID)).willReturn(Optional.of(feed));
+    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(List.of(
+        feedImage(1, VARIANT_A, FeedImageProcessingStatus.READY),
+        feedImage(2, VARIANT_B, FeedImageProcessingStatus.PROCESSING)));
+    given(storageService.toPublicVariantUrl(anyString()))
+        .willAnswer(invocation -> "https://cdn/" + invocation.getArgument(0));
+
+    var response = feedImageService.getMyFeedImages(MEMBER_ID);
+
+    assertThat(response.reuploadRequired()).isFalse();
+    assertThat(response.images()).hasSize(2);
+  }
+
+  @Test
+  @DisplayName("본인 조회: 피드가 없으면 FEED_404_NOT_FOUND로 거부한다")
+  void getMyFeedImages_rejectsWhenFeedNotFound() {
+    given(feedRepository.findByMemberId(MEMBER_ID)).willReturn(Optional.empty());
+
+    assertThatThrownBy(() -> feedImageService.getMyFeedImages(MEMBER_ID))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "FEED_404_NOT_FOUND");
+  }
 }
