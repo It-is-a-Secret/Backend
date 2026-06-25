@@ -78,7 +78,7 @@ D' = 0.10 / 0.70 ≈ 0.143
 Score = K'·K + B'·B + D'·D
 ```
 
-> 🧩 **`feed.mbti` nullable 전환 필요**: "모름"을 표현하려면 현재 `NOT NULL`인 `feed.mbti`를 **nullable**로 바꾸고 온보딩에서 "모름" 입력을 허용해야 한다(현재는 필수). 전환 전까지 M은 항상 동일/궁합 계산만 적용된다.
+> ✅ **`feed.mbti` nullable 적용(#76)**: `feed.mbti`를 nullable로 두고 온보딩에서 "모름"(null) 입력을 허용한다. viewer/후보 중 하나라도 `mbti=null`이면 M을 빼고 30%를 K/B/D에 재분배한다(위 표). 점수 로직(`DiscoveryScorer`)은 null을 직접 판정한다.
 
 ### 활동성 타이브레이커 ✅
 점수가 같으면 **최근 7일 내 접속자**(`member.last_active_at >= now()-7d`)를 먼저, 그다음 `last_active_at` 내림차순으로 정렬한다(가중치에는 미반영).
@@ -156,7 +156,7 @@ CREATE INDEX idx_member_keyword_tag    ON member_keyword(tag_id);
 |---|---|---|
 | 차단(block) 도메인 | ✅ #41 | 후보 필터의 차단/피차단 양방향 제외 반영 |
 | 피드 공개 게이트 | ✅ #72 | 후보 필터에 "정확히 5장 전부 READY"(`feed_image`) 추가, `FeedImage.isPublishable`과 동일 규칙 |
-| `feed.mbti` nullable | ⏳ #76 | "MBTI 모름" 표현·재분배에 필요(현재 NOT NULL) |
+| `feed.mbti` nullable | ✅ #76 | "MBTI 모름"(null) 표현·재분배 활성화. 온보딩 mbti 선택값 |
 | 외형 태그 분리 | ⏳ | K 제외 대상. 현재 미구현이라 무관 |
 | MBTI 궁합표 | ⏳ | 없으면 동일=1.0만 적용(궁합/100 생략) |
 | 정규화 상한·다양성 임계 | 🧩 | 구현 상수로 두고 튜닝 |

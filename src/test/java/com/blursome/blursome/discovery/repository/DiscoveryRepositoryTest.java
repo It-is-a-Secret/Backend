@@ -54,13 +54,18 @@ class DiscoveryRepositoryTest {
 
   /** 온보딩 완료 회원 + 피드만 저장한다(이미지 없음). 공개 게이트 검증용으로 이미지를 따로 붙인다. */
   private Feed persistFeedOnly(String suffix, Gender gender) {
+    return persistFeedOnly(suffix, gender, Mbti.INTJ);
+  }
+
+  /** {@code mbti}를 지정해(또는 null="모름", #76) 온보딩 완료 회원 + 피드만 저장한다(이미지 없음). */
+  private Feed persistFeedOnly(String suffix, Gender gender, Mbti mbti) {
     Member member = Member.createOAuthMember(
         OAuthProvider.KAKAO, "pid-" + suffix, "name-" + suffix, suffix + "@test.com", null);
     member.verifySchoolEmail("school-" + suffix + "@univ.ac.kr");
     member.completeOnboarding("nick-" + suffix);
     em.persist(member);
     Feed feed = Feed.createOnOnboarding(
-        member, gender, 2000, Department.COMPUTER_ENGINEERING, Mbti.INTJ);
+        member, gender, 2000, Department.COMPUTER_ENGINEERING, mbti);
     em.persist(feed);
     return feed;
   }
@@ -214,5 +219,21 @@ class DiscoveryRepositoryTest {
         Gender.FEMALE, NO_VIEWER, PageRequest.ofSize(10));
 
     assertThat(result).extracting(Feed::getId).containsExactly(ready.getId());
+  }
+
+  @Test
+  @DisplayName("MBTI 모름(#76): mbti=null 피드도 정상 적재·조회되어 재분배 후보가 된다")
+  void findCandidates_includesNullMbtiCandidate() {
+    Feed unknownMbti = persistFeedOnly("nombti", Gender.FEMALE, null);
+    persistImages(unknownMbti, 5, 5); // 공개 게이트 통과
+    em.flush();
+    em.clear();
+
+    List<Feed> result = discoveryRepository.findCandidates(
+        Gender.FEMALE, NO_VIEWER, PageRequest.ofSize(10));
+
+    // null mbti가 NOT NULL 위반 없이 적재되고, 조회 결과에 mbti=null로 그대로 실린다(점수 재분배 입력).
+    assertThat(result).extracting(Feed::getId).containsExactly(unknownMbti.getId());
+    assertThat(result.get(0).getMbti()).isNull();
   }
 }
