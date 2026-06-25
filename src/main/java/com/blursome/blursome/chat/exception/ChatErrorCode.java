@@ -17,8 +17,6 @@ public enum ChatErrorCode implements ErrorCode {
       "CHAT_400_CANNOT_OPEN_SELF_ROOM"),
   INVALID_ROOM_PARTICIPANTS(HttpStatus.BAD_REQUEST, "채팅방 참여자 정보가 올바르지 않습니다.",
       "CHAT_400_INVALID_ROOM_PARTICIPANTS"),
-  PROGRESS_ALREADY_AGREED(HttpStatus.CONFLICT, "이미 동의한 단계입니다.",
-      "CHAT_409_PROGRESS_ALREADY_AGREED"),
   ROOM_CREATION_CONFLICT(HttpStatus.CONFLICT,
       "채팅방 개설이 동시에 처리되었습니다. 잠시 후 다시 시도해주세요.",
       "CHAT_409_ROOM_CREATION_CONFLICT");

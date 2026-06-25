@@ -6,7 +6,6 @@ import static org.mockito.BDDMockito.given;
 
 import com.blursome.blursome.chat.domain.ChatRoom;
 import com.blursome.blursome.chat.domain.ChatRoomMember;
-import com.blursome.blursome.chat.domain.ChatRoomProgressStatus;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
 import com.blursome.blursome.chat.repository.ChatRoomRepository;
@@ -174,7 +173,6 @@ class ChatRoomMembershipReaderTest {
         OAuthProvider.KAKAO, "kakao-" + rowId, "name", "member" + rowId + "@example.com", null);
     ChatRoomMember crm = ChatRoomMember.join(room, member);
     ReflectionTestUtils.setField(crm, "id", rowId);
-    ReflectionTestUtils.setField(crm, "agreedProgressStatus", ChatRoomProgressStatus.MATCHED);
     return crm;
   }
 }

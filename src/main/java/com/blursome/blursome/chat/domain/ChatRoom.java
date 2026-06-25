@@ -49,6 +49,11 @@ public class ChatRoom extends BaseEntity {
   @Column(name = "active_pair_key", length = 40)
   private String activePairKey;
 
+  // 마지막으로 유효 카운트된 발신자 회원 id(이슈 #79). "같은 발신자의 연속 메시지는 카운트하지 않음"(교대 발화
+  // 강제) 판정에 쓰는 방 단위 상태다. 아직 유효 카운트가 없으면 null.
+  @Column(name = "last_valid_counted_sender_id")
+  private Long lastValidCountedSenderId;
+
   @Builder(access = AccessLevel.PRIVATE)
   private ChatRoom(
       ChatRoomStatus roomStatus,
@@ -103,21 +108,31 @@ public class ChatRoom extends BaseEntity {
   }
 
   /**
-   * 두 참여자의 동의 단계가 모두 다음 단계 이상이면 방 단계를 한 단계 올린다.
-   *
-   * @return 단계가 올랐으면 {@code true}, 아니면 {@code false}
+   * 직전에 유효 카운트된 발신자와 다른 발신자인지 여부(교대 발화 강제, 이슈 #79). 아직 유효 카운트가 없으면
+   * (첫 유효 메시지) 항상 {@code true}다. 같은 발신자의 연속 메시지는 카운트하지 않기 위한 방 단위 판정이다.
    */
-  public boolean advanceProgressIfBothAgreed(ChatRoomMember a, ChatRoomMember b) {
-    if (this.progressStatus.isLast()) {
+  public boolean isAlternatingSender(Long senderId) {
+    return this.lastValidCountedSenderId == null
+        || !this.lastValidCountedSenderId.equals(senderId);
+  }
+
+  /** 마지막 유효 카운트 발신자를 기록한다(다음 메시지의 교대 발화 판정 기준). */
+  public void recordValidSender(Long senderId) {
+    this.lastValidCountedSenderId = senderId;
+  }
+
+  /**
+   * 사진 공개 단계를 {@code target}으로 전진시킨다(이슈 #79). 단조 증가만 허용하므로 현재보다 더 진행된 단계일
+   * 때만 갱신하고, 같거나 더 낮은 단계 요청은 무시한다(후퇴 방지). 유효 메시지 1건은 {@code min(A, B)}를 최대 1만
+   * 올리므로 보통 한 칸 상승이지만, 호출 측은 변경 여부만 보고 이벤트 발행을 결정한다.
+   *
+   * @return 단계가 실제로 올랐으면 {@code true}, 변화 없으면 {@code false}
+   */
+  public boolean advanceProgressTo(ChatRoomProgressStatus target) {
+    if (target == this.progressStatus || !target.isAtLeast(this.progressStatus)) {
       return false;
     }
-    ChatRoomProgressStatus next = this.progressStatus.next();
-    boolean bothAgreed = a.getAgreedProgressStatus().isAtLeast(next)
-        && b.getAgreedProgressStatus().isAtLeast(next);
-    if (!bothAgreed) {
-      return false;
-    }
-    this.progressStatus = next;
+    this.progressStatus = target;
     return true;
   }
 }

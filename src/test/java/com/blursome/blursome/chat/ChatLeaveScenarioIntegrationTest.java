@@ -85,9 +85,10 @@ class ChatLeaveScenarioIntegrationTest {
   @DisplayName("A가 나가도 B 목록에는 방이 남고 상대(A) 닉네임·진행됐던 단계가 보이며 단건·이력 조회가 가능하다")
   void afterALeaves_bKeepsRoomWithPartnerInfoAndProgress() {
     Fixture f = persistRoom();
-    // 양쪽 동의로 단계를 STEP_1까지 올려 둔다(진행됐던 단계 확인용)
-    chatRoomService.agreeProgress(f.roomId(), f.aId());
-    chatRoomService.agreeProgress(f.roomId(), f.bId());
+    // 진행됐던 단계 확인용으로 방 단계를 STEP_1까지 올려 둔다(단계 상승 트리거 자체는 메시지 카운트 테스트에서 별도 검증).
+    ChatRoom room = chatRoomRepository.findById(f.roomId()).orElseThrow();
+    ReflectionTestUtils.setField(room, "progressStatus", ChatRoomProgressStatus.PHOTO_REVEAL_STEP_1);
+    chatRoomRepository.save(room);
     chatMessageService.send(f.roomId(), f.aId(), text("마지막 메시지"));
 
     chatRoomService.leaveRoom(f.roomId(), f.aId());
@@ -103,8 +104,8 @@ class ChatLeaveScenarioIntegrationTest {
   }
 
   @Test
-  @DisplayName("A가 나간 뒤 B는 송신·읽음·단계 동의가 모두 ROOM_CLOSED로 차단된다")
-  void afterALeaves_bCannotSendReadOrAgree() {
+  @DisplayName("A가 나간 뒤 B는 송신·읽음이 모두 ROOM_CLOSED로 차단된다")
+  void afterALeaves_bCannotSendOrRead() {
     Fixture f = persistRoom();
     ChatMessageResponse sent = chatMessageService.send(f.roomId(), f.aId(), text("안녕"));
 
@@ -114,9 +115,6 @@ class ChatLeaveScenarioIntegrationTest {
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", ChatErrorCode.ROOM_CLOSED.getCode());
     assertThatThrownBy(() -> chatMessageService.markAsRead(f.roomId(), f.bId(), sent.messageId()))
-        .isInstanceOf(BaseException.class)
-        .hasFieldOrPropertyWithValue("code", ChatErrorCode.ROOM_CLOSED.getCode());
-    assertThatThrownBy(() -> chatRoomService.agreeProgress(f.roomId(), f.bId()))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", ChatErrorCode.ROOM_CLOSED.getCode());
   }

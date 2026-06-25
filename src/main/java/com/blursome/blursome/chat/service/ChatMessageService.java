@@ -2,10 +2,12 @@ package com.blursome.blursome.chat.service;
 
 import com.blursome.blursome.chat.domain.ChatMessage;
 import com.blursome.blursome.chat.domain.ChatMessageType;
+import com.blursome.blursome.chat.domain.ChatRevealPolicy;
 import com.blursome.blursome.chat.domain.ChatRoom;
 import com.blursome.blursome.chat.domain.ChatRoomMember;
 import com.blursome.blursome.chat.dto.request.ChatMessageSendRequest;
 import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
+import com.blursome.blursome.chat.event.ChatProgressAdvancedEvent;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.repository.ChatMessageRepository;
 import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
@@ -13,12 +15,15 @@ import com.blursome.blursome.chat.repository.ChatRoomRepository;
 import com.blursome.blursome.chat.repository.RoomUnreadCount;
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.member.domain.Member;
+import java.time.Clock;
+import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,6 +41,9 @@ public class ChatMessageService {
   private final ChatRoomRepository chatRoomRepository;
   private final ChatRoomMemberRepository chatRoomMemberRepository;
   private final ChatRoomMembershipReader membershipReader;
+  private final ChatRevealPolicy revealPolicy;
+  private final ApplicationEventPublisher eventPublisher;
+  private final Clock clock;
 
   /**
    * 실시간 메시지를 저장하고 미리보기를 갱신한다(설계 §7-3). 발신자는 STOMP principal에서 넘어온 {@code senderId}이며,
@@ -52,7 +60,49 @@ public class ChatMessageService {
     ChatMessage message = createMessage(membership.getChatRoom(), membership.getMember(), request);
     chatMessageRepository.save(message);
     chatRoomRepository.advanceLastMessage(roomId, message.getId());
+    applyRevealProgress(membership, message);
     return ChatMessageResponse.from(message);
+  }
+
+  /**
+   * 유효 메시지면 발신자 카운트를 올리고, 양방향 누적 기준({@code min(A, B)})을 넘기면 방의 사진 공개 단계를
+   * 전진시킨다(이슈 #79). 단계가 실제로 바뀐 경우에만 {@link ChatProgressAdvancedEvent}를 발행해 WebSocket
+   * 브로드캐스트를 트리거한다.
+   *
+   * <p>유효 판정: {@code TEXT}이고({@code IMAGE}/{@code SYSTEM} 제외) 본문 {@code trim} 후 최소 길이 이상이며,
+   * 직전에 유효 카운트된 발신자와 다른 발신자(교대 발화)이고, 발신자별 디바운스 간격을 지났을 때다. 이 메서드는
+   * {@code send}의 쓰기 트랜잭션 안에서 호출되며, {@code getWritableMembership}이 방 행을 비관적 락으로 잡아
+   * 방 단위로 송신을 직렬화하므로 카운트 증분·단계 전이를 read-modify-write로 안전하게 수행한다(설계 §7-6 락 순서).
+   */
+  private void applyRevealProgress(ChatRoomMember sender, ChatMessage message) {
+    if (message.getType() != ChatMessageType.TEXT
+        || !revealPolicy.isCountableContent(message.getContent())) {
+      return;
+    }
+    ChatRoom room = sender.getChatRoom();
+    Long senderMemberId = sender.getMember().getId();
+    LocalDateTime now = LocalDateTime.now(clock);
+    if (!room.isAlternatingSender(senderMemberId)
+        || !sender.isCountEligible(now, revealPolicy.countDebounce())) {
+      return;
+    }
+    sender.countValidMessage(now);
+    room.recordValidSender(senderMemberId);
+
+    ChatRoomMember partner = findPartner(room.getId(), sender);
+    long min = Math.min(sender.getValidMessageCount(), partner.getValidMessageCount());
+    if (room.advanceProgressTo(revealPolicy.statusFor(min))) {
+      eventPublisher.publishEvent(
+          new ChatProgressAdvancedEvent(room.getId(), room.getProgressStatus()));
+    }
+  }
+
+  /** 1:1 방에서 발신자를 제외한 상대 참여 행을 찾는다(양방향 min 카운트 계산용). */
+  private ChatRoomMember findPartner(Long roomId, ChatRoomMember sender) {
+    return chatRoomMemberRepository.findAllByRoomId(roomId).stream()
+        .filter(member -> !member.getId().equals(sender.getId()))
+        .findFirst()
+        .orElseThrow(() -> BaseException.from(ChatErrorCode.ROOM_NOT_FOUND));
   }
 
   /**

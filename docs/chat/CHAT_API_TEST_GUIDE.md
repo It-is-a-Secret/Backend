@@ -1,6 +1,6 @@
 # 채팅 기능 Postman 테스트 가이드
 
-BlurSome 채팅 기능(REST 조회·단계 동의·나가기 + WebSocket/STOMP 실시간 송수신)을 **Postman**으로 점검하기 위한
+BlurSome 채팅 기능(REST 조회·나가기 + WebSocket/STOMP 실시간 송수신·유효 메시지 누적 단계 진행)을 **Postman**으로 점검하기 위한
 시나리오·실행 방법 문서입니다. 기능 설계는 [`CHAT_FEATURE.md`](./CHAT_FEATURE.md), 인증 흐름은
 [`../ARCHITECTURE.md § 8`](../ARCHITECTURE.md)를 따릅니다.
 
@@ -15,7 +15,7 @@ BlurSome 채팅 기능(REST 조회·단계 동의·나가기 + WebSocket/STOMP �
 | ① 서버 실행 | `local` 프로파일, `http://localhost:8080` |
 | ② 데이터 시드 | 회원 2명 + ACTIVE 방 1개 + 참여행 2개 (방 개설 REST가 없어 DB로 준비) |
 | ③ 토큰 발급 | Postman Pre-request 스크립트로 AccessToken 직접 생성(로컬) 또는 카카오 콜백 |
-| ④ REST 테스트 | 방 목록/단건/이력 조회, 단계 동의, 나가기 |
+| ④ REST 테스트 | 방 목록/단건/이력 조회, 나가기 |
 | ⑤ STOMP 테스트 | `/ws` 연결 → 구독 → 송신/읽음 수신, 단계 변경 브로드캐스트, 에러 케이스 |
 
 ### 테스트 대상 API 요약
@@ -27,8 +27,10 @@ BlurSome 채팅 기능(REST 조회·단계 동의·나가기 + WebSocket/STOMP �
 | GET | `/api/chat/rooms` | 내 채팅방 목록(안읽음 수 포함) |
 | GET | `/api/chat/rooms/{roomId}` | 방 단건 조회 |
 | GET | `/api/chat/rooms/{roomId}/messages?cursor=&size=` | 메시지 이력(id 커서, 최신순) |
-| POST | `/api/chat/rooms/{roomId}/progress/agree` | 다음 단계 공개 동의 |
+| GET | `/api/chat/rooms/{roomId}/revealed-images` | 단계별 상대 원본 공개 조회(#53) |
 | POST | `/api/chat/rooms/{roomId}/leave` | 채팅방 나가기(종료) |
+
+> ℹ️ **단계 진행은 별도 API가 없습니다.** 단계는 유효 메시지 누적 수로 송신 트랜잭션에서 자동으로 오릅니다(이슈 #79, 아래 R-4).
 
 **STOMP** — 핸드셰이크 `GET /ws`, 인증은 CONNECT 프레임의 `Authorization` 헤더
 
@@ -83,11 +85,11 @@ VALUES
 INSERT INTO chat_room (id, room_status, progress_status, last_message_id, active_pair_key, created_at, updated_at)
 VALUES (1, 'ACTIVE', 'MATCHED', NULL, '1001-1002', NOW(), NOW());
 
--- 참여행 2개 (leftAt = NULL, 동의 단계 MATCHED)
-INSERT INTO chat_room_member (id, chat_room_id, member_id, joined_at, left_at, last_read_message_id, agreed_progress_status, created_at, updated_at)
+-- 참여행 2개 (leftAt = NULL, 유효 메시지 누적 0에서 시작)
+INSERT INTO chat_room_member (id, chat_room_id, member_id, joined_at, left_at, last_read_message_id, valid_message_count, last_valid_counted_at, created_at, updated_at)
 VALUES
-  (1, 1, 1001, NOW(), NULL, NULL, 'MATCHED', NOW(), NOW()),
-  (2, 1, 1002, NOW(), NULL, NULL, 'MATCHED', NOW(), NOW());
+  (1, 1, 1001, NOW(), NULL, NULL, 0, NULL, NOW(), NOW()),
+  (2, 1, 1002, NOW(), NULL, NULL, 0, NULL, NOW(), NOW());
 
 -- 예시 메시지 2개 + 미리보기 갱신
 INSERT INTO chat_message (id, chat_room_id, sender_id, content, type, created_at, updated_at)
@@ -229,26 +231,32 @@ pm.environment.set('accessTokenB', issueAccessToken(pm.environment.get('memberBI
 - **다음 페이지**: 가장 오래된 `messageId`를 `cursor`로 전달 → `...?cursor=1&size=30` (그 id보다 과거만 조회).
 - `size`는 `1~100`으로 보정됩니다.
 
-### 시나리오 R-4. 단계 동의 (상호 동의 → 단계 상승)
+### 시나리오 R-4. 단계 진행 (유효 메시지 누적, 이슈 #79)
 
-상호 동의 모델이므로 **양쪽이 모두 동의**해야 방 단계가 오릅니다. 동의는 "현재 단계의 **다음 단계**"에 대한
-것이고 단조 증가만 허용하므로(되돌리기 없음), 같은 단계에 두 번 동의하는 재요청만 `409`로 막힙니다.
+별도 동의 API는 없습니다. 단계는 **유효 메시지 누적 수**로 오릅니다 — 양방향 최소(`min(A, B)`)가 임계값
+(`10/20/30/40/50`)을 넘으면 `progressStatus`가 한 칸씩 오릅니다(STEP_1~COMPLETED).
 
-1. **A 동의**: `POST {{baseUrl}}/api/chat/rooms/{{roomId}}/progress/agree` — A 토큰
-   - 기대 `200`, 방은 아직 `MATCHED`(A만 동의, 대기). 응답 `progressStatus: "MATCHED"`.
-2. **재동의(이미 동의)**: B 동의 전에 A가 다시 동의 → `409 PROGRESS_ALREADY_AGREED`.
-   - A는 이미 다음 단계(`PHOTO_REVEAL_STEP_1`)에 동의한 상태라, 같은 단계 재동의는 도메인이 거부합니다.
-3. **B 동의**: 같은 요청 — B 토큰
-   - 기대 `200`, 양쪽 동의가 모이며 방 단계 상승 → `progressStatus: "PHOTO_REVEAL_STEP_1"`.
-   - 이때 STOMP 구독자에게 단계 변경이 브로드캐스트됩니다(시나리오 3-5에서 확인).
-4. **단계 상승 후 재동의는 200**: 3에서 단계가 오른 뒤 A가 다시 동의하면, 이는 *그 다음* 단계
-   (`PHOTO_REVEAL_STEP_2`)에 대한 **최초 동의**이므로 `409`가 아니라 `200`입니다(다시 B 동의를 기다리는 대기 상태).
+**유효 메시지 조건**(모두 충족해야 카운트): `TEXT`(`IMAGE`/`SYSTEM` 제외) · `trim` 후 **4글자 이상** · 직전 유효
+카운트 발신자와 **다른 발신자**(교대 발화) · 같은 발신자 **2초 디바운스**. (길이 미달 등은 메시지 전송은 되지만
+카운트만 제외됩니다.)
+
+검증(STOMP `SEND`로 송신, §3-3):
+
+1. A·B가 **교대로** 유효 메시지를 주고받으며 각자 누적을 쌓습니다(A 1건 → B 1건 → … ). 같은 사람이 연속으로
+   보내면 1건만 카운트되고, 2초 안에 또 보내도 카운트되지 않습니다.
+2. 양쪽이 각각 **10건**에 도달하면(`min=10`) 방 단계가 `MATCHED → PHOTO_REVEAL_STEP_1`로 오르고, 그 순간
+   `/topic/rooms/{roomId}` 구독자에게 단계 변경이 브로드캐스트됩니다(시나리오 3-5).
+3. 이후 20/30/40/50에서 각각 STEP_2/STEP_3/STEP_4/COMPLETED로 오릅니다. 단계·누적은 **되돌아가지 않습니다**.
+4. 단계를 확인하려면 `GET {{baseUrl}}/api/chat/rooms/{{roomId}}`의 `progressStatus`를 보거나, DB
+   `SELECT progress_status FROM chat_room WHERE id = 1;` / `SELECT valid_message_count FROM chat_room_member;`로 확인합니다.
+
+> ⚠️ **2초 디바운스 때문에 손으로 빠르게 보내면 카운트가 띄엄띄엄 쌓입니다.** 임계값(10건)까지 채우려면 A·B가
+> 번갈아 2초 간격 이상으로 충분히 주고받아야 합니다. 자동화된 종단 검증은 `ChatRevealProgressIntegrationTest`가
+> 고정 Clock으로 대신 수행합니다.
 
 ```json
-// 3단계(B 동의) 성공 응답 — B의 unreadCount는 B가 아직 안 읽은 'A가 보낸 메시지' 수.
-// 시드 직후 B가 R-4만 단독 실행하면 A의 메시지(id=1) 1건이 미열람이라 unreadCount = 1.
-// E2E 순서에서 B가 먼저 읽음 처리(3-4)를 했다면 0.
-{ "timestamp": "...", "data": { "roomId": 1, "roomStatus": "ACTIVE", "progressStatus": "PHOTO_REVEAL_STEP_1", "lastMessageId": 2, "unreadCount": 1 } }
+// 단계가 STEP_1로 오른 뒤 GET /api/chat/rooms/1 응답
+{ "timestamp": "...", "data": { "roomId": 1, "roomStatus": "ACTIVE", "progressStatus": "PHOTO_REVEAL_STEP_1", "lastMessageId": 2, "unreadCount": 0 } }
 ```
 
 ### 시나리오 R-5. 채팅방 나가기 (비대칭 종료)
@@ -271,7 +279,6 @@ pm.environment.set('accessTokenB', issueAccessToken(pm.environment.get('memberBI
 |----|----|----|
 | 비참여자 접근 | 403 | `CHAT_403_NOT_PARTICIPANT` |
 | 방 없음 / 내가 나간 방 조회 | 404 | `CHAT_404_ROOM_NOT_FOUND` (상대가 나가 종료된 방은 남은 사람에게 계속 노출) |
-| 이미 동의한 단계 재동의 / 마지막 단계 | 409 | `CHAT_409_PROGRESS_ALREADY_AGREED` |
 | 토큰 없음/만료/위조 | 401 | `JWT_401_UNAUTHORIZED` / `JWT_401_EXPIRED` / `JWT_401_INVALID` |
 
 ---
@@ -377,13 +384,14 @@ content-type:application/json
 - **커서 조작 차단 확인**: `{"lastReadMessageId": 999999999}`처럼 그 방에 없는 id를 보내면 `/user/queue/errors`로
   `CHAT_400_INVALID_MESSAGE` 통지가 오고 읽음 위치는 바뀌지 않습니다.
 
-### 3-5. 단계 변경 브로드캐스트 (REST 동의 → STOMP 푸시)
+### 3-5. 단계 변경 브로드캐스트 (유효 메시지 누적 → STOMP 푸시)
 
-A·B가 `/topic/rooms/1`을 구독한 상태에서 시나리오 **R-4**(양쪽 단계 동의)를 수행하면, 단계 상승 시 같은 토픽으로
-단계 변경 이벤트가 푸시됩니다. 메시지 응답과는 `eventType`으로 구분합니다.
+A·B가 `/topic/rooms/1`을 구독한 상태에서 시나리오 **R-4**(유효 메시지 누적)를 수행해 양방향 최소 누적이 임계값
+(10/20/…)을 넘으면, 단계가 오르는 그 송신 트랜잭션 직후 같은 토픽으로 단계 변경 이벤트가 푸시됩니다. 메시지
+응답과는 `eventType`으로 구분합니다.
 
 ```json
-// /topic/rooms/1 수신 본문 (B가 동의해 단계가 오른 직후)
+// /topic/rooms/1 수신 본문 (min 누적이 10에 도달해 단계가 오른 직후)
 { "eventType": "PROGRESS_CHANGED", "roomId": 1, "progressStatus": "PHOTO_REVEAL_STEP_1" }
 ```
 
@@ -407,7 +415,7 @@ A·B가 `/topic/rooms/1`을 구독한 상태에서 시나리오 **R-4**(양쪽 �
 2. **R-1/R-2/R-3** 조회로 초기 상태 확인.
 3. WebSocket 탭 2개로 **A·B 연결(3-1) → 구독(3-2)**.
 4. **A 송신(3-3)** → B 수신 확인 → **B 읽음(3-4)**.
-5. **R-4** 단계 동의(A→B) 진행하며 **3-5** 단계 브로드캐스트 수신 확인.
+5. **R-4** 유효 메시지를 A·B 교대로 누적하며 **3-5** 단계 브로드캐스트 수신 확인.
 6. 오류 케이스(3-6, R 오류표) 점검.
 7. 마지막에 **R-5 나가기**로 종료 동작 확인 → 재시작하려면 ② 시드 재실행.
 
@@ -495,8 +503,8 @@ b.readReceived();
 // → 이후 B로 GET /api/chat/rooms/1 호출 시 unreadCount가 0으로 줄어듦
 ```
 
-- 단계 변경 확인: A·B 콘솔이 `/topic/rooms/1`을 구독한 상태에서 REST로 양쪽 `progress/agree`(R-4)를 호출하면
-  `{"eventType":"PROGRESS_CHANGED",...}`가 양쪽 `RECV`로 찍힙니다.
+- 단계 변경 확인: A·B 콘솔이 `/topic/rooms/1`을 구독한 상태에서 유효 메시지를 교대로 누적해(R-4) 양방향 최소가
+  임계값을 넘기면 `{"eventType":"PROGRESS_CHANGED",...}`가 양쪽 `RECV`로 찍힙니다.
 
 ## 부록 B. 빠른 참조 — STOMP 프레임 모음
 
