@@ -2,7 +2,6 @@ package com.blursome.blursome.chat.controller;
 
 import com.blursome.blursome.chat.dto.request.ChatMessageSendRequest;
 import com.blursome.blursome.chat.dto.request.ChatReadRequest;
-import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
 import com.blursome.blursome.chat.dto.response.ChatReadReceiptResponse;
 import com.blursome.blursome.chat.service.ChatMessageService;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
@@ -38,7 +37,10 @@ public class ChatStompController {
   private final SimpMessagingTemplate messagingTemplate;
 
   /**
-   * {@code /app/rooms/{roomId}/send} — 메시지를 저장한 뒤 {@code /topic/rooms/{roomId}} 구독자에게 브로드캐스트한다.
+   * {@code /app/rooms/{roomId}/send} — 메시지를 저장한다. {@code /topic/rooms/{roomId}} 브로드캐스트는 저장
+   * 트랜잭션 커밋 이후 {@code ChatMessageBroadcastListener}가 수행한다(이슈 #85). 컨트롤러가 커밋 후 직접
+   * 보내던 기존 방식은 단계 상승 SYSTEM 메시지·{@code PROGRESS_CHANGED}를 내보내는 {@code AFTER_COMMIT}
+   * 리스너보다 늦게 실행돼 전송 순서가 역전됐다 — 모든 브로드캐스트를 커밋 이후 이벤트로 통일한다.
    */
   @MessageMapping("/rooms/{roomId}/send")
   public void send(
@@ -46,8 +48,7 @@ public class ChatStompController {
       @Valid @Payload ChatMessageSendRequest request,
       Principal principal
   ) {
-    ChatMessageResponse response = chatMessageService.send(roomId, memberId(principal), request);
-    messagingTemplate.convertAndSend("/topic/rooms/" + roomId, response);
+    chatMessageService.send(roomId, memberId(principal), request);
   }
 
   /**

@@ -6,7 +6,9 @@ import com.blursome.blursome.chat.domain.ChatMessageType;
 import com.blursome.blursome.chat.domain.ChatRoom;
 import com.blursome.blursome.chat.domain.ChatRoomMember;
 import com.blursome.blursome.chat.domain.ChatRoomProgressStatus;
+import com.blursome.blursome.chat.domain.ChatMessage;
 import com.blursome.blursome.chat.dto.request.ChatMessageSendRequest;
+import com.blursome.blursome.chat.repository.ChatMessageRepository;
 import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
 import com.blursome.blursome.chat.repository.ChatRoomRepository;
 import com.blursome.blursome.chat.service.ChatMessageService;
@@ -17,6 +19,7 @@ import com.blursome.blursome.support.TestcontainersConfiguration;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,6 +29,7 @@ import org.mockito.BDDMockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
@@ -56,6 +60,9 @@ class ChatRevealProgressIntegrationTest {
   @Autowired
   private ChatRoomMemberRepository chatRoomMemberRepository;
 
+  @Autowired
+  private ChatMessageRepository chatMessageRepository;
+
   @MockitoBean
   private Clock clock;
 
@@ -82,6 +89,12 @@ class ChatRevealProgressIntegrationTest {
     assertThat(reloadProgress(f.roomId())).isEqualTo(ChatRoomProgressStatus.PHOTO_REVEAL_STEP_1);
     assertThat(reloadCount(f.aMembershipId())).isEqualTo(10);
     assertThat(reloadCount(f.bMembershipId())).isEqualTo(10);
+
+    // 단계 상승이 타임라인에 SYSTEM 메시지로 기록된다(이슈 #85): STEP_1 도달 한 번 → 안내 메시지 1건.
+    List<ChatMessage> systemMessages = systemMessagesOf(f.roomId());
+    assertThat(systemMessages).hasSize(1);
+    assertThat(systemMessages.get(0).getSender()).isNull();
+    assertThat(systemMessages.get(0).getContent()).isEqualTo("서로의 첫 번째 사진이 공개되었어요.");
   }
 
   @Test
@@ -118,6 +131,13 @@ class ChatRevealProgressIntegrationTest {
 
   private int reloadCount(Long membershipId) {
     return chatRoomMemberRepository.findById(membershipId).orElseThrow().getValidMessageCount();
+  }
+
+  /** 방의 SYSTEM 메시지만 추려 반환한다(단계 상승 안내 메시지 검증용). */
+  private List<ChatMessage> systemMessagesOf(Long roomId) {
+    return chatMessageRepository.findHistory(roomId, null, PageRequest.ofSize(100)).stream()
+        .filter(message -> message.getType() == ChatMessageType.SYSTEM)
+        .toList();
   }
 
   private Fixture persistRoom() {

@@ -1,13 +1,29 @@
 package com.blursome.blursome.chat.domain;
 
 public enum ChatRoomProgressStatus {
-  MATCHED,
-  PHOTO_REVEAL_STEP_1,
-  PHOTO_REVEAL_STEP_2,
-  PHOTO_REVEAL_STEP_3,
-  PHOTO_REVEAL_STEP_4,
+  MATCHED(null),
+  PHOTO_REVEAL_STEP_1("서로의 첫 번째 사진이 공개되었어요."),
+  PHOTO_REVEAL_STEP_2("서로의 두 번째 사진이 공개되었어요."),
+  PHOTO_REVEAL_STEP_3("서로의 세 번째 사진이 공개되었어요."),
+  PHOTO_REVEAL_STEP_4("서로의 네 번째 사진이 공개되었어요."),
   // 마지막 사진 공개 후 마무리
-  COMPLETED;
+  COMPLETED("서로의 모든 사진이 공개되었어요.");
+
+  /**
+   * 이 단계에 도달했을 때 채팅 타임라인에 남길 SYSTEM 메시지 문구. 단계 상승은 항상 {@code PHOTO_REVEAL_STEP_1}
+   * 이상으로만 일어나므로 그 단계들은 항상 문구를 가지며, 시작 단계({@code MATCHED})는 안내할 공개가 없어 null이다.
+   * 단계 → 문구 매핑은 단계 의미를 소유한 이 enum에 캡슐화한다(이슈 #85).
+   */
+  private final String revealSystemMessage;
+
+  ChatRoomProgressStatus(String revealSystemMessage) {
+    this.revealSystemMessage = revealSystemMessage;
+  }
+
+  /** 이 단계 도달 시 남길 SYSTEM 메시지 문구. 안내할 공개가 없는 {@code MATCHED}는 null. */
+  public String revealSystemMessage() {
+    return revealSystemMessage;
+  }
 
   /**
    * 이 단계가 {@code other} 단계 이상(같거나 더 진행됨)인지 여부.

@@ -18,6 +18,8 @@ import com.blursome.blursome.feed.dto.request.PresignedUrlRequest;
 import com.blursome.blursome.feed.dto.request.PresignedUrlRequest.ImageRequest;
 import com.blursome.blursome.feed.dto.response.FeedImageResponse;
 import com.blursome.blursome.feed.dto.response.PresignedUrlResponse;
+import com.blursome.blursome.feed.dto.response.RevealedFeedImagesResponse;
+import com.blursome.blursome.feed.dto.response.RevealedFeedImagesResponse.Role;
 import com.blursome.blursome.feed.repository.FeedImageRepository;
 import com.blursome.blursome.feed.repository.FeedRepository;
 import com.blursome.blursome.global.exception.BaseException;
@@ -333,7 +335,7 @@ class FeedImageServiceTest {
     given(storageService.toPublicVariantUrl(anyString()))
         .willAnswer(invocation -> "https://cdn/" + invocation.getArgument(0));
 
-    var response = feedImageService.issueRevealedImages(MEMBER_ID, 2);
+    var response = feedImageService.issueRevealedImages(MEMBER_ID, 2, Role.PARTNER);
 
     assertThat(response.images())
         .extracting(image -> image.displayOrder())
@@ -341,6 +343,10 @@ class FeedImageServiceTest {
     assertThat(response.images())
         .extracting(image -> image.revealed())
         .containsExactly(true, true, false);
+    // 전달한 role(PARTNER)이 모든 사진에 그대로 표기된다.
+    assertThat(response.images())
+        .extracting(image -> image.role())
+        .containsOnly(Role.PARTNER);
     assertThat(response.images())
         .extracting(image -> image.imageUrl())
         .containsExactly(
@@ -365,7 +371,7 @@ class FeedImageServiceTest {
         .willAnswer(invocation -> "https://original/" + invocation.getArgument(0));
 
     // COMPLETED(5)인데 사진은 3장 → 3장 전부 공개.
-    var response = feedImageService.issueRevealedImages(MEMBER_ID, 5);
+    var response = feedImageService.issueRevealedImages(MEMBER_ID, 5, Role.ME);
 
     assertThat(response.images())
         .extracting(image -> image.revealed())
@@ -385,7 +391,7 @@ class FeedImageServiceTest {
     given(storageService.toPublicVariantUrl(anyString()))
         .willAnswer(invocation -> "https://cdn/" + invocation.getArgument(0));
 
-    var response = feedImageService.issueRevealedImages(MEMBER_ID, 0);
+    var response = feedImageService.issueRevealedImages(MEMBER_ID, 0, Role.ME);
 
     assertThat(response.images())
         .extracting(image -> image.revealed())
@@ -410,7 +416,7 @@ class FeedImageServiceTest {
     given(storageService.toPublicVariantUrl(anyString()))
         .willAnswer(invocation -> "https://cdn/" + invocation.getArgument(0));
 
-    var response = feedImageService.issueRevealedImages(MEMBER_ID, 1);
+    var response = feedImageService.issueRevealedImages(MEMBER_ID, 1, Role.PARTNER);
 
     // 공개된 1번 원본은 블러본 상태(PROCESSING)와 무관하게 제공되고, 미공개 중 READY인 2번만 블러본으로 남는다.
     assertThat(response.images())
@@ -426,7 +432,7 @@ class FeedImageServiceTest {
   void issueRevealedImages_emptyWhenNoFeed() {
     given(feedRepository.findByMemberId(MEMBER_ID)).willReturn(Optional.empty());
 
-    var response = feedImageService.issueRevealedImages(MEMBER_ID, 3);
+    var response = feedImageService.issueRevealedImages(MEMBER_ID, 3, Role.PARTNER);
 
     assertThat(response.images()).isEmpty();
     verify(storageService, never()).presignOriginalDownload(anyString());
