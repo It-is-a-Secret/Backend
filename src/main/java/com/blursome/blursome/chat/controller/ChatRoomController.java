@@ -60,9 +60,11 @@ public class ChatRoomController {
         DataResponse.ok(chatRoomService.getMessageHistory(roomId, memberId, cursor, size)));
   }
 
-  @Operation(summary = "단계별 상대 사진 조회",
-      description = "방의 현재 진행 단계가 정하는 공개 장수만큼 상대 원본이 displayOrder 순서대로 단기 Presigned GET으로 "
-          + "공개되고, 나머지는 블러본으로 내려온다. 참여 중인 방이어야 하며 참여자가 아니면 403, 방이 없거나 내가 나갔으면 404.")
+  @Operation(summary = "단계별 양쪽 사진 조회",
+      description = "ACTIVE 상태의 참여 중인 방에서만 200. 방의 현재 진행 단계가 정하는 공개 장수만큼 본인(ME)·상대(PARTNER) "
+          + "원본이 각각 displayOrder 순서대로 단기 Presigned GET으로 공개되고, 나머지는 블러본으로 내려온다. 각 사진은 role로 "
+          + "소유자를 구분한다. 참여자가 아니면 403, 방이 없거나 내가 나갔으면 404, 방이 차단/신고/종료(비ACTIVE) 상태면 원본을 "
+          + "발급하지 않고 409(ROOM_CLOSED)를 반환한다.")
   @GetMapping("/{roomId}/revealed-images")
   public ResponseEntity<DataResponse<RevealedFeedImagesResponse>> getRevealedImages(
       @AuthenticationPrincipal Long memberId,

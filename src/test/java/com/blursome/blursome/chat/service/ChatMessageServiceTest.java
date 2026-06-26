@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import com.blursome.blursome.chat.domain.ChatMessage;
@@ -16,6 +17,7 @@ import com.blursome.blursome.chat.domain.ChatRoomMember;
 import com.blursome.blursome.chat.domain.ChatRoomProgressStatus;
 import com.blursome.blursome.chat.dto.request.ChatMessageSendRequest;
 import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
+import com.blursome.blursome.chat.event.ChatMessageBroadcastEvent;
 import com.blursome.blursome.chat.event.ChatProgressAdvancedEvent;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.repository.ChatMessageRepository;
@@ -97,7 +99,9 @@ class ChatMessageServiceTest {
     assertThat(response.senderId()).isEqualTo(SENDER_ID);
     assertThat(response.content()).isEqualTo("안녕하세요");
     verify(chatRoomRepository).advanceLastMessage(ROOM_ID, MESSAGE_ID);
-    verify(eventPublisher, never()).publishEvent(any());
+    // 트리거 메시지 브로드캐스트만 발행되고, 단계는 안 올라 PROGRESS_CHANGED는 없다.
+    verify(eventPublisher).publishEvent(any(ChatMessageBroadcastEvent.class));
+    verify(eventPublisher, never()).publishEvent(any(ChatProgressAdvancedEvent.class));
   }
 
   @Test
@@ -134,7 +138,7 @@ class ChatMessageServiceTest {
   // ---------- 사진 공개 단계 카운트(이슈 #79) ----------
 
   @Test
-  @DisplayName("유효 메시지로 양방향 min이 임계값에 도달하면 단계가 오르고 ChatProgressAdvancedEvent를 발행한다")
+  @DisplayName("임계값 도달 시 단계가 오르고, 트리거 메시지 → SYSTEM 안내 메시지 → PROGRESS_CHANGED 순으로 이벤트를 발행한다")
   void send_whenValidTextReachesThreshold_thenAdvancesAndPublishes() {
     // given — 상대는 이미 10, 나는 9. 내 유효 메시지 1건으로 min(10,10)=10 → STEP_1.
     ChatRoom room = activeRoom();
@@ -153,12 +157,37 @@ class ChatMessageServiceTest {
     // then
     assertThat(sender.getValidMessageCount()).isEqualTo(10);
     assertThat(room.getProgressStatus()).isEqualTo(ChatRoomProgressStatus.PHOTO_REVEAL_STEP_1);
-    ArgumentCaptor<ChatProgressAdvancedEvent> captor =
-        ArgumentCaptor.forClass(ChatProgressAdvancedEvent.class);
-    verify(eventPublisher).publishEvent(captor.capture());
-    assertThat(captor.getValue().roomId()).isEqualTo(ROOM_ID);
-    assertThat(captor.getValue().progressStatus())
-        .isEqualTo(ChatRoomProgressStatus.PHOTO_REVEAL_STEP_1);
+    // 트리거 메시지 + 단계 상승 SYSTEM 메시지 두 건이 저장된다.
+    verify(chatMessageRepository, times(2)).save(any(ChatMessage.class));
+
+    // 발행 순서가 곧 커밋 이후 전송 순서다: 트리거 브로드캐스트 → SYSTEM 브로드캐스트 → PROGRESS_CHANGED.
+    ArgumentCaptor<Object> eventCaptor = ArgumentCaptor.forClass(Object.class);
+    verify(eventPublisher, times(3)).publishEvent(eventCaptor.capture());
+    List<Object> events = eventCaptor.getAllValues();
+
+    List<ChatMessageBroadcastEvent> broadcasts = events.stream()
+        .filter(ChatMessageBroadcastEvent.class::isInstance)
+        .map(ChatMessageBroadcastEvent.class::cast)
+        .toList();
+    assertThat(broadcasts).hasSize(2);
+    // 1) 트리거 TEXT가 먼저 발행된다(발신자 본인).
+    assertThat(broadcasts.get(0).message().type()).isEqualTo(ChatMessageType.TEXT);
+    assertThat(broadcasts.get(0).message().senderId()).isEqualTo(SENDER_ID);
+    // 2) 그 다음 SYSTEM 안내 메시지(발신자 없음).
+    assertThat(broadcasts.get(1).message().type()).isEqualTo(ChatMessageType.SYSTEM);
+    assertThat(broadcasts.get(1).message().senderId()).isNull();
+    assertThat(broadcasts.get(1).message().content()).isEqualTo("서로의 첫 번째 사진이 공개되었어요.");
+    // SYSTEM 브로드캐스트는 트리거 메시지 다음에 발행된다.
+    assertThat(events.indexOf(broadcasts.get(1))).isGreaterThan(events.indexOf(broadcasts.get(0)));
+
+    ChatProgressAdvancedEvent progress = events.stream()
+        .filter(ChatProgressAdvancedEvent.class::isInstance)
+        .map(ChatProgressAdvancedEvent.class::cast)
+        .findFirst().orElseThrow();
+    assertThat(progress.roomId()).isEqualTo(ROOM_ID);
+    assertThat(progress.progressStatus()).isEqualTo(ChatRoomProgressStatus.PHOTO_REVEAL_STEP_1);
+    // PROGRESS_CHANGED는 SYSTEM 브로드캐스트 뒤에 발행된다.
+    assertThat(events.indexOf(progress)).isGreaterThan(events.indexOf(broadcasts.get(1)));
   }
 
   @Test
@@ -198,7 +227,7 @@ class ChatMessageServiceTest {
 
     assertThat(sender.getValidMessageCount()).isZero();
     verify(chatRoomMemberRepository, never()).findAllByRoomId(any());
-    verify(eventPublisher, never()).publishEvent(any());
+    verify(eventPublisher, never()).publishEvent(any(ChatProgressAdvancedEvent.class));
   }
 
   // ---------- markAsRead ----------
@@ -258,7 +287,9 @@ class ChatMessageServiceTest {
 
     assertThat(sender.getValidMessageCount()).isZero();
     verify(chatRoomMemberRepository, never()).findAllByRoomId(any());
-    verify(eventPublisher, never()).publishEvent(any());
+    // 트리거 메시지 브로드캐스트만 발행되고 단계 상승 이벤트는 없다.
+    verify(eventPublisher).publishEvent(any(ChatMessageBroadcastEvent.class));
+    verify(eventPublisher, never()).publishEvent(any(ChatProgressAdvancedEvent.class));
   }
 
   private void givenSavedMessage() {

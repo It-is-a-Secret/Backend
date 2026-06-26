@@ -12,6 +12,7 @@ import com.blursome.blursome.chat.repository.RoomPartnerInfo;
 import com.blursome.blursome.feed.dto.response.RevealedFeedImagesResponse;
 import com.blursome.blursome.feed.service.FeedImageService;
 import com.blursome.blursome.global.exception.BaseException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -190,26 +191,33 @@ public class ChatRoomService {
   }
 
   /**
-   * 채팅 단계에 따라 상대의 사진을 조회한다(설계 §3·§4, ④-b). 방의 현재 {@code progressStatus}가 정하는 공개
-   * 장수 N만큼 상대 원본이 {@code displayOrder} 순서대로 단기 Presigned GET으로 공개되고, 나머지는 블러본으로
-   * 내려온다. 공개 장수 산출은 chat 도메인(enum)이 소유하고, 원본/블러본 key·버킷·URL 발급은 feed 도메인이
-   * 전담한다 — chat은 N(장수)만 넘기고 feed 내부 구조를 모른다(chat→feed 단방향, Service→Service).
+   * 채팅 단계에 따라 양쪽(본인·상대)의 사진을 조회한다(설계 §3·§4, ④-b, 이슈 #85). 방의 현재 {@code progressStatus}가
+   * 정하는 공개 장수 N만큼 각자의 원본이 {@code displayOrder} 순서대로 단기 Presigned GET으로 공개되고, 나머지는
+   * 블러본으로 내려온다. 각 사진은 {@code role}({@code ME}/{@code PARTNER})로 소유자를 구분한다. 공개 장수 산출은
+   * chat 도메인(enum)이 소유하고, 원본/블러본 key·버킷·URL 발급은 feed 도메인이 전담한다 — chat은 N(장수)만 넘기고
+   * feed 내부 구조를 모른다(chat→feed 단방향, Service→Service).
    *
    * <p>참여자 검증은 {@link ChatRoomMembershipReader#getVisibleMembership}로 처리한다(방 없음/내가 나감 →
-   * 404, 비참여자 → 403). 다만 <b>원본 공개는 일반 메시지 이력 조회보다 민감</b>하므로, 메시지 이력과 달리 종료
-   * ({@code CLOSED})된 방에서는 더 발급하지 않는다 — 상대가 나가면 남은 참여자도 새 원본 Presigned GET을 받지
-   * 못하고 {@code ROOM_CLOSED}(409)로 막힌다("참여자 검증 후 발급" 정책). 쓰기 락은 필요 없어(드문 조회, URL은
-   * 5분 만료) 비관적 락 대신 활성 여부만 명시 검증한다. 공개 대상은 1:1 방의 상대 회원이다.
+   * 404, 비참여자 → 403). 다만 <b>원본 공개는 일반 메시지 이력 조회보다 민감</b>하므로 {@code ACTIVE} 방에서만
+   * 발급한다 — 차단({@code BLOCKED})·신고({@code REPORTED})·종료({@code CLOSED}) 상태에서는 원본 Presigned GET을
+   * 발급하지 않고 기존 계약대로 {@code ROOM_CLOSED}(409)로 막는다(이슈 #85). 쓰기 락은 필요 없어(드문 조회, URL은
+   * 5분 만료) 비관적 락 대신 활성 여부만 명시 검증한다.
    */
   public RevealedFeedImagesResponse getRevealedImages(Long roomId, Long memberId) {
     ChatRoomMember membership = membershipReader.getVisibleMembership(roomId, memberId);
     ChatRoom room = membership.getChatRoom();
+    // BLOCKED/REPORTED/CLOSED: 원본 공개는 ACTIVE 방으로 한정한다(원본 Presigned 미발급).
     if (!room.isActive()) {
       throw BaseException.from(ChatErrorCode.ROOM_CLOSED);
     }
     int revealCount = room.getProgressStatus().revealedOriginalCount();
     ChatRoomMember partner = findOtherMembership(roomId, membership);
-    return feedImageService.issueRevealedImages(partner.getMember().getId(), revealCount);
+    List<RevealedFeedImagesResponse.Image> images = new ArrayList<>();
+    images.addAll(feedImageService.issueRevealedImages(
+        memberId, revealCount, RevealedFeedImagesResponse.Role.ME).images());
+    images.addAll(feedImageService.issueRevealedImages(
+        partner.getMember().getId(), revealCount, RevealedFeedImagesResponse.Role.PARTNER).images());
+    return new RevealedFeedImagesResponse(images);
   }
 
   /**

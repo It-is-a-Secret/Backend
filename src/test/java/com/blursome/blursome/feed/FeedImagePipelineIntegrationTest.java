@@ -298,9 +298,11 @@ class FeedImagePipelineIntegrationTest {
     // 소유자(A)가 나가면 1:1 방은 종료된다.
     chatRoomService.leaveRoom(roomId, ownerId);
 
+    // 원본 공개는 ACTIVE 방으로 한정 — 비활성(CLOSED)은 원본 미발급 + 기존 계약대로 409.
     assertThatThrownBy(() -> chatRoomService.getRevealedImages(roomId, viewerId))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", ChatErrorCode.ROOM_CLOSED.getCode());
+    verify(s3Presigner, never()).presignGetObject(any(GetObjectPresignRequest.class));
   }
 
   // ---------- helpers ----------

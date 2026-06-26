@@ -135,20 +135,24 @@ class ChatRoomControllerTest {
   }
 
   @Test
-  @DisplayName("단계별 사진 조회 시 200과 사진 배열(공개 여부·URL)을 반환한다")
+  @DisplayName("단계별 사진 조회 시 200과 사진 배열(소유자 role·공개 여부·URL)을 반환한다")
   void handleGetRevealedImages() throws Exception {
     given(chatRoomService.getRevealedImages(ROOM_ID, MEMBER_ID)).willReturn(
         new RevealedFeedImagesResponse(List.of(
-            new RevealedFeedImagesResponse.Image(1, true, "https://original/1"),
-            new RevealedFeedImagesResponse.Image(2, false, "https://cdn/2"))));
+            new RevealedFeedImagesResponse.Image(
+                RevealedFeedImagesResponse.Role.ME, 1, true, "https://original/me/1"),
+            new RevealedFeedImagesResponse.Image(
+                RevealedFeedImagesResponse.Role.PARTNER, 1, false, "https://cdn/partner/1"))));
 
     mockMvc.perform(get("/api/chat/rooms/{roomId}/revealed-images", ROOM_ID))
         .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.images[0].role").value("ME"))
         .andExpect(jsonPath("$.data.images[0].displayOrder").value(1))
         .andExpect(jsonPath("$.data.images[0].revealed").value(true))
-        .andExpect(jsonPath("$.data.images[0].imageUrl").value("https://original/1"))
+        .andExpect(jsonPath("$.data.images[0].imageUrl").value("https://original/me/1"))
+        .andExpect(jsonPath("$.data.images[1].role").value("PARTNER"))
         .andExpect(jsonPath("$.data.images[1].revealed").value(false))
-        .andExpect(jsonPath("$.data.images[1].imageUrl").value("https://cdn/2"));
+        .andExpect(jsonPath("$.data.images[1].imageUrl").value("https://cdn/partner/1"));
   }
 
   @Test
@@ -163,8 +167,8 @@ class ChatRoomControllerTest {
   }
 
   @Test
-  @DisplayName("종료된 방의 사진 조회 시 409와 ROOM_CLOSED를 반환한다")
-  void handleGetRevealedImagesRoomClosed() throws Exception {
+  @DisplayName("차단/신고/종료로 비활성인 방의 사진 조회 시 409와 ROOM_CLOSED를 반환한다")
+  void handleGetRevealedImagesRoomNotActive() throws Exception {
     given(chatRoomService.getRevealedImages(ROOM_ID, MEMBER_ID))
         .willThrow(BaseException.from(ChatErrorCode.ROOM_CLOSED));
 

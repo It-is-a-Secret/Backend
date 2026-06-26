@@ -178,12 +178,14 @@ public class FeedImageService {
    * 노출 방지). 공개 피드 조회의 전부-READY 게이트(§4-a)와 같은 취지지만, 여기서는 공개된 원본까지 함께 막지
    * 않도록 미공개 사진에만 READY를 요구한다. (설계: {@code FEED_IMAGE_BLUR_PIPELINE.md} §3·§4)
    *
-   * @param memberId 사진을 공개할 대상 회원 id(채팅 상대)
+   * @param memberId 사진을 공개할 대상 회원 id(채팅 본인 또는 상대)
    * @param revealCount 공개할 원본 장수 N(0~5). 음수는 0으로 취급한다.
-   * @return 사진별 공개 여부와 URL을 {@code displayOrder} 순서로 담은 응답
+   * @param role 공개 대상이 요청자 본인({@code ME})인지 상대({@code PARTNER})인지(이슈 #85). 응답 사진에 그대로 표기한다.
+   * @return 사진별 소유자 관점·공개 여부와 URL을 {@code displayOrder} 순서로 담은 응답
    */
   @Transactional(readOnly = true)
-  public RevealedFeedImagesResponse issueRevealedImages(Long memberId, int revealCount) {
+  public RevealedFeedImagesResponse issueRevealedImages(
+      Long memberId, int revealCount, RevealedFeedImagesResponse.Role role) {
     List<FeedImage> images = feedRepository.findByMemberId(memberId)
         .map(feed -> feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(feed.getId()))
         .orElseGet(List::of);
@@ -195,11 +197,11 @@ public class FeedImageService {
       if (i < revealable) {
         // 공개된 원본: originals 객체는 블러본 생성 상태와 무관하게 존재하므로 항상 Presigned GET으로 제공한다.
         result.add(RevealedFeedImagesResponse.Image.revealed(
-            image, storageService.presignOriginalDownload(image.getOriginalKey())));
+            role, image, storageService.presignOriginalDownload(image.getOriginalKey())));
       } else if (image.isReady()) {
         // 미공개 사진은 블러본으로 제공하되, 블러본이 확인된(READY) 경우만 노출해 깨진 URL을 막는다.
         result.add(RevealedFeedImagesResponse.Image.blurred(
-            image, storageService.toPublicVariantUrl(image.getVariantKey())));
+            role, image, storageService.toPublicVariantUrl(image.getVariantKey())));
       }
       // 미공개 + 블러본 미생성(PROCESSING/FAILED)은 깨진 블러본 노출을 막기 위해 응답에서 제외한다.
     }

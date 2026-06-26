@@ -351,9 +351,9 @@ class ChatRoomServiceTest {
   // ---------- getRevealedImages ----------
 
   @Test
-  @DisplayName("단계별 사진 조회: 방의 진행 단계가 정하는 공개 장수를 상대 회원 id로 feed 서비스에 위임한다")
-  void getRevealedImages_delegatesPartnerAndRevealCountToFeed() {
-    // given — 방은 STEP_2(공개 장수 2), 상대 회원 id는 OTHER_ID
+  @DisplayName("단계별 사진 조회: 공개 장수만큼 본인(ME)·상대(PARTNER) 사진을 각각 feed 서비스에 위임해 한 목록으로 합친다")
+  void getRevealedImages_delegatesBothSidesAndMergesWithRole() {
+    // given — 방은 STEP_2(공개 장수 2), 본인 id는 MEMBER_ID, 상대 id는 OTHER_ID
     ChatRoom room = activeRoom(ROOM_ID);
     ReflectionTestUtils.setField(room, "progressStatus", ChatRoomProgressStatus.PHOTO_REVEAL_STEP_2);
     ChatRoomMember me = membership(MY_ROW_ID, room);
@@ -361,33 +361,38 @@ class ChatRoomServiceTest {
     ReflectionTestUtils.setField(other.getMember(), "id", OTHER_ID);
     givenVisibleMembership(room, me);
     given(chatRoomMemberRepository.findAllByRoomId(ROOM_ID)).willReturn(List.of(me, other));
-    RevealedFeedImagesResponse expected = new RevealedFeedImagesResponse(List.of(
-        new RevealedFeedImagesResponse.Image(1, true, "https://original/1"),
-        new RevealedFeedImagesResponse.Image(2, true, "https://original/2")));
-    given(feedImageService.issueRevealedImages(OTHER_ID, 2)).willReturn(expected);
+    RevealedFeedImagesResponse.Image mine = new RevealedFeedImagesResponse.Image(
+        RevealedFeedImagesResponse.Role.ME, 1, true, "https://original/me/1");
+    RevealedFeedImagesResponse.Image theirs = new RevealedFeedImagesResponse.Image(
+        RevealedFeedImagesResponse.Role.PARTNER, 1, true, "https://original/partner/1");
+    given(feedImageService.issueRevealedImages(MEMBER_ID, 2, RevealedFeedImagesResponse.Role.ME))
+        .willReturn(new RevealedFeedImagesResponse(List.of(mine)));
+    given(feedImageService.issueRevealedImages(OTHER_ID, 2, RevealedFeedImagesResponse.Role.PARTNER))
+        .willReturn(new RevealedFeedImagesResponse(List.of(theirs)));
 
     // when
     RevealedFeedImagesResponse result = chatRoomService.getRevealedImages(ROOM_ID, MEMBER_ID);
 
-    // then — 상대 회원 id와 공개 장수 2로 feed 서비스에 위임하고 그 결과를 그대로 반환한다.
-    assertThat(result).isSameAs(expected);
-    verify(feedImageService).issueRevealedImages(OTHER_ID, 2);
+    // then — 본인·상대 각각 공개 장수 2로 위임하고 두 결과를 ME, PARTNER 순서로 합친다.
+    assertThat(result.images()).containsExactly(mine, theirs);
+    verify(feedImageService).issueRevealedImages(MEMBER_ID, 2, RevealedFeedImagesResponse.Role.ME);
+    verify(feedImageService).issueRevealedImages(OTHER_ID, 2, RevealedFeedImagesResponse.Role.PARTNER);
   }
 
   @Test
-  @DisplayName("단계별 사진 조회: 상대가 나가 종료(CLOSED)된 방이면 ROOM_CLOSED로 막고 feed 서비스를 호출하지 않는다")
-  void getRevealedImages_whenRoomClosed_thenThrowsAndDoesNotDelegate() {
+  @DisplayName("단계별 사진 조회: 차단/신고/종료로 비활성인 방이면 ROOM_CLOSED로 막고 feed 서비스를 호출하지 않는다")
+  void getRevealedImages_whenRoomNotActive_thenThrowsAndDoesNotDelegate() {
     // given — 상대가 먼저 나가 방은 CLOSED지만 내 leftAt은 null이라 조회 가시성은 통과
     ChatRoom closed = activeRoom(ROOM_ID);
     closed.close();
     ChatRoomMember me = membership(MY_ROW_ID, closed);
     givenVisibleMembership(closed, me);
 
-    // when & then
+    // when & then — 원본 공개는 ACTIVE 방으로 한정, 비활성은 기존 계약대로 409.
     assertThatThrownBy(() -> chatRoomService.getRevealedImages(ROOM_ID, MEMBER_ID))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", ChatErrorCode.ROOM_CLOSED.getCode());
-    verify(feedImageService, never()).issueRevealedImages(anyLong(), anyInt());
+    verify(feedImageService, never()).issueRevealedImages(anyLong(), anyInt(), any());
   }
 
   @Test
@@ -399,7 +404,7 @@ class ChatRoomServiceTest {
     assertThatThrownBy(() -> chatRoomService.getRevealedImages(ROOM_ID, MEMBER_ID))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", ChatErrorCode.NOT_PARTICIPANT.getCode());
-    verify(feedImageService, never()).issueRevealedImages(anyLong(), anyInt());
+    verify(feedImageService, never()).issueRevealedImages(anyLong(), anyInt(), any());
   }
 
   // ---------- fixtures ----------

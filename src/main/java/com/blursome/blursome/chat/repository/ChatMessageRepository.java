@@ -25,8 +25,9 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessage, Long> 
 
   /**
    * 내가 나가지 않은 방들의 안읽음 메시지 수를 한 번의 집계 쿼리로 계산한다(목록 조회 N+1 회피, 설계 §7-4).
-   * 안읽음 = 내 {@code lastReadMessageId} 이후의 메시지 중 내가 보낸 것이 아닌 메시지(SYSTEM 포함).
-   * 안읽음이 0인 방은 결과에 포함되지 않으므로, 호출 측에서 기본값 0으로 처리한다.
+   * 안읽음 = 내 {@code lastReadMessageId} 이후의 메시지 중 내가 보낸 것이 아닌 메시지(SYSTEM 제외, 이슈 #85).
+   * SYSTEM(sender=null) 안내 메시지는 타임라인에는 남기되 안읽음 배지에는 포함하지 않으므로 {@code sender}가
+   * 있는 메시지만 센다. 안읽음이 0인 방은 결과에 포함되지 않으므로, 호출 측에서 기본값 0으로 처리한다.
    *
    * <p>목록 가시성과 동일하게 방 상태(ACTIVE/CLOSED)로 거르지 않고 내 {@code leftAt IS NULL}만 본다(§7-6 비대칭 종료).
    * 상대가 먼저 나가 종료된 방도 남은 사람의 목록에 남으므로, 그 방의 안읽음 수도 단건 조회({@link #countUnreadInRoom})와
@@ -37,19 +38,19 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessage, Long> 
       + "where crm.member.id = :memberId and crm.leftAt is null "
       + "and m.chatRoom = crm.chatRoom "
       + "and (crm.lastReadMessageId is null or m.id > crm.lastReadMessageId) "
-      + "and (m.sender is null or m.sender.id <> :memberId) "
+      + "and m.sender is not null and m.sender.id <> :memberId "
       + "group by m.chatRoom.id")
   List<RoomUnreadCount> countUnreadByRoom(@Param("memberId") Long memberId);
 
   /**
    * 단건 방의 안읽음 메시지 수를 센다(목록의 배치 집계 {@link #countUnreadByRoom}와 동일 기준).
-   * 안읽음 = 내 {@code lastReadMessageId} 이후의 메시지 중 내가 보낸 것이 아닌 메시지(SYSTEM 포함).
+   * 안읽음 = 내 {@code lastReadMessageId} 이후의 메시지 중 내가 보낸 것이 아닌 메시지(SYSTEM 제외, 이슈 #85).
    * 참여자 검증은 호출 측에서 선행하므로 여기서는 방 상태를 다시 보지 않는다.
    */
   @Query("select count(m.id) from ChatMessage m "
       + "where m.chatRoom.id = :roomId "
       + "and (:lastReadMessageId is null or m.id > :lastReadMessageId) "
-      + "and (m.sender is null or m.sender.id <> :memberId)")
+      + "and m.sender is not null and m.sender.id <> :memberId")
   long countUnreadInRoom(@Param("roomId") Long roomId,
       @Param("lastReadMessageId") Long lastReadMessageId,
       @Param("memberId") Long memberId);
