@@ -34,13 +34,18 @@ public class ChatRoomMembershipReader {
    * <p>방이 종료(CLOSED)됐더라도 내가 직접 나가지 않았으면 계속 노출한다(설계 §7-6). 1:1에서 상대가 먼저 나가면 방은
    * {@code CLOSED}가 되지만 남은 참여자는 목록·단건·이력을 그대로 조회할 수 있어야 하므로, 조회 가시성은 방 상태가 아니라
    * "내가 나갔는지({@code leftAt})"로만 판별한다. 쓰기 차단은 {@link #getWritableMembership}가 따로 담당한다.
+   *
+   * <p>차단 비노출(이슈 #77)도 여기서 함께 막는다 — 내가 상대를 차단한 방은 <b>차단자인 나에게만</b> 숨기되
+   * (단방향 비노출), 차단 사실을 직접 노출하지 않도록 차단 전용 코드가 아닌 일반 {@code ROOM_NOT_FOUND}(404, 내가
+   * 나간 방과 동일한 중립 응답)로 가린다. 피차단자에게는 방을 숨기지 않으므로 이 필터를 적용하지 않는다.
    */
   public ChatRoomMember getVisibleMembership(Long roomId, Long memberId) {
     // 조회는 락이 필요 없다 — 방 존재만 확인하고(비참여자에게 존재 노출 방지) 내 leftAt으로만 가시성을 판별한다.
     chatRoomRepository.findById(roomId)
         .orElseThrow(() -> BaseException.from(ChatErrorCode.ROOM_NOT_FOUND));
     ChatRoomMember membership = findMembershipOrThrow(roomId, memberId);
-    if (membership.hasLeft()) {
+    if (membership.hasLeft()
+        || chatRoomMemberRepository.existsViewerBlockInRoom(roomId, memberId)) {
       throw BaseException.from(ChatErrorCode.ROOM_NOT_FOUND);
     }
     return membership;

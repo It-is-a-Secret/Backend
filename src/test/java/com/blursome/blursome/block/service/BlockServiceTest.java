@@ -9,6 +9,7 @@ import static org.mockito.Mockito.verify;
 import com.blursome.blursome.block.domain.Block;
 import com.blursome.blursome.block.exception.BlockErrorCode;
 import com.blursome.blursome.block.repository.BlockRepository;
+import com.blursome.blursome.chat.service.ChatRoomService;
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.OAuthProvider;
@@ -29,6 +30,8 @@ class BlockServiceTest {
   private BlockRepository blockRepository;
   @Mock
   private MemberRepository memberRepository;
+  @Mock
+  private ChatRoomService chatRoomService;
 
   @InjectMocks
   private BlockService blockService;
@@ -90,5 +93,50 @@ class BlockServiceTest {
     blockService.unblock(1L, 2L);
 
     verify(blockRepository).deleteByBlockerIdAndBlockedId(1L, 2L);
+  }
+
+  @Test
+  @DisplayName("차단 시 진행 중 방 동결을 채팅 서비스에 위임한다(#77)")
+  void block_freezesRoom() {
+    given(memberRepository.existsById(2L)).willReturn(true);
+    given(blockRepository.existsByBlockerIdAndBlockedId(1L, 2L)).willReturn(false);
+    given(memberRepository.getReferenceById(1L)).willReturn(member(1L));
+    given(memberRepository.getReferenceById(2L)).willReturn(member(2L));
+
+    blockService.block(1L, 2L);
+
+    verify(chatRoomService).freezeRoomOnBlock(1L, 2L);
+  }
+
+  @Test
+  @DisplayName("이미 차단한 상태여도 방 동결은 멱등하게 다시 위임한다(#77)")
+  void block_alreadyBlocked_stillFreezesRoom() {
+    given(memberRepository.existsById(2L)).willReturn(true);
+    given(blockRepository.existsByBlockerIdAndBlockedId(1L, 2L)).willReturn(true);
+
+    blockService.block(1L, 2L);
+
+    verify(blockRepository, never()).save(any());
+    verify(chatRoomService).freezeRoomOnBlock(1L, 2L);
+  }
+
+  @Test
+  @DisplayName("해제 후 양방향 차단이 모두 풀렸으면 방을 복구한다(#77)")
+  void unblock_restoresRoomWhenNoBlockRemains() {
+    given(blockRepository.existsBlockBetween(1L, 2L)).willReturn(false);
+
+    blockService.unblock(1L, 2L);
+
+    verify(chatRoomService).restoreRoomOnUnblock(1L, 2L);
+  }
+
+  @Test
+  @DisplayName("해제 후 반대 방향 차단이 남아 있으면 방을 복구하지 않는다(#77)")
+  void unblock_keepsRoomFrozenWhenReverseBlockRemains() {
+    given(blockRepository.existsBlockBetween(1L, 2L)).willReturn(true);
+
+    blockService.unblock(1L, 2L);
+
+    verify(chatRoomService, never()).restoreRoomOnUnblock(any(), any());
   }
 }

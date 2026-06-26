@@ -71,6 +71,23 @@ class BlockRepositoryTest {
   }
 
   @Test
+  @DisplayName("양방향 차단 존재 조회는 어느 방향 차단이든 true다(#77)")
+  void existsBlockBetween_isBidirectional() {
+    Member a = persistMember("a");
+    Member b = persistMember("b");
+    Member c = persistMember("c");
+    blockRepository.save(Block.of(a, b)); // a→b 단방향
+    em.flush();
+    em.clear();
+
+    // 어느 방향으로 물어도 a↔b 사이엔 차단 존재
+    assertThat(blockRepository.existsBlockBetween(a.getId(), b.getId())).isTrue();
+    assertThat(blockRepository.existsBlockBetween(b.getId(), a.getId())).isTrue();
+    // 차단이 없는 쌍은 false
+    assertThat(blockRepository.existsBlockBetween(a.getId(), c.getId())).isFalse();
+  }
+
+  @Test
   @DisplayName("동일 (blocker, blocked) 중복 차단은 uk_block_pair 위반으로 막힌다")
   void duplicatePair_violatesUnique() {
     Member a = persistMember("a");

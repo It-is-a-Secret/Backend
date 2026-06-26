@@ -19,7 +19,9 @@ public enum ChatErrorCode implements ErrorCode {
       "CHAT_400_INVALID_ROOM_PARTICIPANTS"),
   ROOM_CREATION_CONFLICT(HttpStatus.CONFLICT,
       "채팅방 개설이 동시에 처리되었습니다. 잠시 후 다시 시도해주세요.",
-      "CHAT_409_ROOM_CREATION_CONFLICT");
+      "CHAT_409_ROOM_CREATION_CONFLICT"),
+  BLOCKED_PARTICIPANT(HttpStatus.CONFLICT, "차단 관계인 회원과는 채팅방을 개설할 수 없습니다.",
+      "CHAT_409_BLOCKED_PARTICIPANT");
 
   private final HttpStatus httpStatus;
   private final String message;

@@ -9,10 +9,12 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
+import com.blursome.blursome.block.repository.BlockRepository;
 import com.blursome.blursome.chat.domain.ChatMessageType;
 import com.blursome.blursome.chat.domain.ChatRoom;
 import com.blursome.blursome.chat.domain.ChatRoomMember;
 import com.blursome.blursome.chat.domain.ChatRoomProgressStatus;
+import com.blursome.blursome.chat.domain.ChatRoomStatus;
 import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
 import com.blursome.blursome.chat.dto.response.ChatRoomSummaryResponse;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
@@ -66,6 +68,9 @@ class ChatRoomServiceTest {
 
   @Mock
   private FeedImageService feedImageService;
+
+  @Mock
+  private BlockRepository blockRepository;
 
   @InjectMocks
   private ChatRoomService chatRoomService;
@@ -156,6 +161,63 @@ class ChatRoomServiceTest {
     assertThatThrownBy(() -> chatRoomService.openRoom(MEMBER_ID, OTHER_ID))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", ChatErrorCode.ROOM_CREATION_CONFLICT.getCode());
+  }
+
+  @Test
+  @DisplayName("차단 관계면 새 방을 열지 않고 BLOCKED_PARTICIPANT 예외가 발생한다(#77)")
+  void openRoom_whenBlocked_thenThrowsBlockedParticipant() {
+    // given
+    given(blockRepository.existsBlockBetween(MEMBER_ID, OTHER_ID)).willReturn(true);
+
+    // when & then
+    assertThatThrownBy(() -> chatRoomService.openRoom(MEMBER_ID, OTHER_ID))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", ChatErrorCode.BLOCKED_PARTICIPANT.getCode());
+    verify(chatRoomMemberRepository, never()).findActiveRoomBetween(anyLong(), anyLong());
+    verify(chatRoomCreator, never()).create(anyLong(), anyLong());
+  }
+
+  // ---------- freeze / restore (#77) ----------
+
+  @Test
+  @DisplayName("차단 동결: 진행 중 ACTIVE 방을 BLOCKED로 전환한다")
+  void freezeRoomOnBlock_whenActiveRoom_thenBlocked() {
+    // given
+    ChatRoom room = activeRoom(ROOM_ID);
+    given(chatRoomMemberRepository.findActiveOrBlockedRoomBetween(MEMBER_ID, OTHER_ID))
+        .willReturn(Optional.of(room));
+
+    // when
+    chatRoomService.freezeRoomOnBlock(MEMBER_ID, OTHER_ID);
+
+    // then — CLOSED/REPORTED가 아닌 BLOCKED로 동결됐는지 직접 검증한다
+    assertThat(ReflectionTestUtils.getField(room, "roomStatus")).isEqualTo(ChatRoomStatus.BLOCKED);
+  }
+
+  @Test
+  @DisplayName("차단 동결: 동결할 방이 없으면 멱등하게 무시한다")
+  void freezeRoomOnBlock_whenNoRoom_thenNoOp() {
+    given(chatRoomMemberRepository.findActiveOrBlockedRoomBetween(MEMBER_ID, OTHER_ID))
+        .willReturn(Optional.empty());
+
+    chatRoomService.freezeRoomOnBlock(MEMBER_ID, OTHER_ID);
+    // 예외 없이 통과하면 성공(no-op)
+  }
+
+  @Test
+  @DisplayName("차단 해제 복구: 동결된 BLOCKED 방을 ACTIVE로 되살린다")
+  void restoreRoomOnUnblock_whenBlockedRoom_thenActive() {
+    // given
+    ChatRoom room = activeRoom(ROOM_ID);
+    room.markBlocked();
+    given(chatRoomMemberRepository.findActiveOrBlockedRoomBetween(MEMBER_ID, OTHER_ID))
+        .willReturn(Optional.of(room));
+
+    // when
+    chatRoomService.restoreRoomOnUnblock(MEMBER_ID, OTHER_ID);
+
+    // then
+    assertThat(room.isActive()).isTrue();
   }
 
   // ---------- getMyRooms ----------

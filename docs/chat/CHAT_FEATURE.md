@@ -124,7 +124,7 @@ BlurSome의 채팅(Chat) 도메인 전체 로직을 정의합니다. WebSocket +
 
 ## 3. 상태 머신
 
-### 3-1. ChatRoomStatus (✅ 확정 / 일부 후순위)
+### 3-1. ChatRoomStatus (✅ 확정)
 
 ```
             createOnMatched()
@@ -133,17 +133,30 @@ BlurSome의 채팅(Chat) 도메인 전체 로직을 정의합니다. WebSocket +
               ┌────────┐  한쪽 퇴장 / 대화 종료   ┌────────┐
               │ ACTIVE │ ───────────────────────▶│ CLOSED │
               └────────┘                          └────────┘
-                  │
-                  │ (후순위)
-                  ├── 차단 ─────▶ BLOCKED
-                  └── 신고 ─────▶ REPORTED
+               │  ▲  │
+       차단(#77)│  │  └─ 신고 누적(#75) ─▶ ┌──────────┐
+               │  │                        │ REPORTED │
+               │  │차단 해제                └──────────┘
+               ▼  │(양방향 모두 해제 시)    (운영자 검토 대기, 비가역)
+              ┌─────────┐
+              │ BLOCKED │   (가역 동결)
+              └─────────┘
 ```
 
 - `ACTIVE → CLOSED`: 한 명이 "채팅방 나가기"를 하거나(`leave()`), 명시적으로 대화를 종료할 때.
 - ✅ **`CLOSED`는 종료(terminal) 상태** — 재입장 불가. 다시 `ACTIVE`로 되돌리지 않는다. 다시 대화하려면 새 매칭으로 새 방을 개설한다.
 - ✅ **앱 종료 / 연결 끊김은 상태 변화가 아니다** — 상대 접속 상태(presence)를 제공하지 않으므로, 단순 연결 종료는 DB를 건드리지 않고 재연결 시 그대로
   대화를 이어간다.
-- `BLOCKED`/`REPORTED`는 후순위.
+- ✅ **`BLOCKED`(차단 동결, #77)** — 차단 발생 시 진행 중 `ACTIVE` 방을 `markBlocked()`로 동결한다(`ACTIVE`에서만 전이). `BLOCKED`는
+  `isActive()=false`라 **양쪽 송신·원본 공개·단계 진행이 멈춘다**. 비노출은 **차단자에게만**(단방향) 적용해 차단자 목록·이력에서 방이 사라지고
+  (`existsViewerBlockInRoom` 필터, 중립 `ROOM_NOT_FOUND` 404), 피차단자는 방 목록·단건·이력 조회와 STOMP 구독이 가능하되 송신만
+  `ROOM_CLOSED`(409, 중립)로 막힌다 — 차단 사실을 직접 노출하지 않는다. 차단자는 STOMP 구독도 조회 가시성 규칙에 따라
+  `ROOM_NOT_FOUND`로 차단된다. **가역**: 양방향 차단이 모두 해제되면 `unblockToActive()`로 `BLOCKED → ACTIVE` 복구. 한쪽만 해제하면 동결
+  유지. 종료(`CLOSED`)는 비가역이라 차단 해제로 되살리지 않는다. `openRoom`은 A→B 또는 B→A 차단 관계가 하나라도 존재하면 신규 채팅방
+  개설을 `BLOCKED_PARTICIPANT`로 차단한다.
+- ✅ **`REPORTED`(신고 동결, #75)** — 신고 누적(고유 신고자 3명)으로 `ACTIVE → REPORTED`. 송신·조회 차단(운영자 검토 대기, 비가역).
+  신고 누적에 따른 `REPORTED` 전이는 `ACTIVE` 상태의 채팅방에서만 발생한다. `BLOCKED`는 차단으로 인한 가역 동결 상태이며, 신고 누적에
+  의해 `REPORTED`로 전이되지 않는다.
 
 ### 3-2. ChatRoomProgressStatus — 유효 메시지 누적 진행 (✅ 이슈 #79)
 

@@ -1,5 +1,6 @@
 package com.blursome.blursome.chat.service;
 
+import com.blursome.blursome.block.repository.BlockRepository;
 import com.blursome.blursome.chat.domain.ChatRoom;
 import com.blursome.blursome.chat.domain.ChatRoomMember;
 import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
@@ -34,6 +35,7 @@ public class ChatRoomService {
   private final ChatRoomCreator chatRoomCreator;
   private final ChatRoomMembershipReader membershipReader;
   private final FeedImageService feedImageService;
+  private final BlockRepository blockRepository;
 
   /**
    * 매칭된 두 회원의 1:1 방을 개설한다. 이미 두 회원 사이에 {@code ACTIVE} 방이 있으면 그 방을 반환하고(중복 방지), 없을 때만 새로 만든다. 과거에
@@ -42,6 +44,11 @@ public class ChatRoomService {
    */
   public ChatRoom openRoom(Long memberAId, Long memberBId) {
     validateDistinctMembers(memberAId, memberBId);
+    // 신규 채팅 시작 차단(이슈 #77). 탐색 후보 질의가 이미 차단/피차단을 양방향 제외하지만, 매칭이 직접 개설을
+    // 호출하는 경로를 방어한다 — 어느 방향 차단이든 새 방을 열지 않는다(기존 ACTIVE 방은 동결되어 따로 막힘).
+    if (blockRepository.existsBlockBetween(memberAId, memberBId)) {
+      throw BaseException.from(ChatErrorCode.BLOCKED_PARTICIPANT);
+    }
     return chatRoomMemberRepository.findActiveRoomBetween(memberAId, memberBId)
         .orElseGet(() -> createRoom(memberAId, memberBId));
   }
@@ -156,6 +163,30 @@ public class ChatRoomService {
     ChatRoomMember membership = membershipReader.getVisibleMembership(roomId, memberId);
     membership.leave();
     room.close();
+  }
+
+  /**
+   * 차단 발생 시 두 회원 사이 진행 중 방을 동결한다(이슈 #77). 차단 도메인({@code BlockService})이 차단 등록
+   * 직후 호출하는 진입점이다(Service → Service). ACTIVE 방이 있으면 {@code BLOCKED}로 전환해 양쪽 송신·원본
+   * 공개·단계 진행을 멈춘다. 동결할 방이 없거나(과거 종료/미개설) 이미 동결된 방은 멱등하게 무시한다. 클래스 기본값
+   * ({@code readOnly = true})을 덮어 쓰기 트랜잭션으로 연다.
+   */
+  @Transactional
+  public void freezeRoomOnBlock(Long memberAId, Long memberBId) {
+    chatRoomMemberRepository.findActiveOrBlockedRoomBetween(memberAId, memberBId)
+        .ifPresent(ChatRoom::markBlocked);
+  }
+
+  /**
+   * 차단이 모두 해제됐을 때 동결된 방을 복구한다(이슈 #77, BLOCKED → ACTIVE). 차단 도메인이 <b>양방향 차단이
+   * 모두 사라진 것을 확인한 뒤에만</b> 호출한다 — 반대 방향 차단이 남아 있으면 호출하지 않으므로 여기서는 잔존
+   * 차단을 다시 검사하지 않는다. 동결 방이 없거나 이미 ACTIVE면 멱등하게 무시하고, 종료(CLOSED)된 방은
+   * {@code unblockToActive}가 되살리지 않는다(비가역).
+   */
+  @Transactional
+  public void restoreRoomOnUnblock(Long memberAId, Long memberBId) {
+    chatRoomMemberRepository.findActiveOrBlockedRoomBetween(memberAId, memberBId)
+        .ifPresent(ChatRoom::unblockToActive);
   }
 
   /**
