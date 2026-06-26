@@ -19,8 +19,9 @@ import lombok.NoArgsConstructor;
 import org.hibernate.annotations.Check;
 
 /**
- * 차단 한 건. {@code blocker}가 {@code blocked}를 차단한 단방향 행이며, 노출 차단은 양방향으로 적용한다
- * (탐색·채팅에서 viewer↔상대 어느 방향 차단이든 제외). 차단은 변경 없이 생성·삭제만 한다(해제 시 복구).
+ * 차단 한 건. {@code blocker}가 {@code blocked}를 차단한 단방향 행이다. 탐색 후보는 양방향으로 제외하고,
+ * 채팅 v1은 차단자에게만 목록·이력을 숨기되 기존 방 송신은 양쪽 모두 막는다(#77). 차단은 변경 없이 생성·삭제만
+ * 한다(해제 시 복구).
  *
  * <p>{@code UNIQUE(blocker_id, blocked_id)}로 중복 차단을, {@code CHECK(blocker_id <> blocked_id)}로
  * 자기 차단을 막는다(앱 레이어 검증 + DB 백스톱).

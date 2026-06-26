@@ -103,6 +103,30 @@ public class ChatRoom extends BaseEntity {
     }
   }
 
+  /**
+   * 차단으로 방을 동결({@code BLOCKED})한다(ACTIVE → BLOCKED, 멱등, 이슈 #77). {@code BLOCKED}는
+   * {@link #isActive()}가 아니므로 양쪽 참여자의 송신·원본 공개가 막히고 유효 메시지 카운트·사진 공개 단계도
+   * 진행되지 않는다. 차단은 해제 가능하므로 페어 키({@code activePairKey})는 비우지 않는다 —
+   * {@link #close()}와 달리 동결은 가역이라 해제 시 같은 방을 ACTIVE로 되살린다. 이미 종료(CLOSED)/신고
+   * (REPORTED)된 방은 그대로 둔다.
+   */
+  public void markBlocked() {
+    if (this.roomStatus == ChatRoomStatus.ACTIVE) {
+      this.roomStatus = ChatRoomStatus.BLOCKED;
+    }
+  }
+
+  /**
+   * 차단 해제로 동결을 푼다(BLOCKED → ACTIVE, 멱등, 이슈 #77). 양방향 차단이 모두 해제됐을 때만 호출된다
+   * (호출 측이 잔존 차단 부재를 보장). 동결({@code BLOCKED})이 아닌 방은 그대로 둔다 — 특히 종료(CLOSED)는
+   * 비가역(terminal)이라 되살리지 않으며, 신고(REPORTED) 동결도 차단 해제로 풀지 않는다.
+   */
+  public void unblockToActive() {
+    if (this.roomStatus == ChatRoomStatus.BLOCKED) {
+      this.roomStatus = ChatRoomStatus.ACTIVE;
+    }
+  }
+
   public boolean isActive() {
     return this.roomStatus == ChatRoomStatus.ACTIVE;
   }

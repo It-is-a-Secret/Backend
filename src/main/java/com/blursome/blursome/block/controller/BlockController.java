@@ -24,8 +24,9 @@ public class BlockController {
   private final BlockService blockService;
 
   @Operation(summary = "차단 등록",
-      description = "대상 회원을 차단한다. 차단 시 탐색·노출에서 양방향으로 제외된다. 자기 차단은 400, "
-          + "대상이 없으면 404. 이미 차단했으면 멱등하게 204.")
+      description = "대상 회원을 차단한다. 탐색 후보에서는 양방향 제외되고, 채팅 v1에서는 차단자에게만 "
+          + "목록·이력이 숨겨지며 기존 방 송신은 양쪽 모두 막힌다. 자기 차단은 400, 대상이 없으면 404. "
+          + "이미 차단했으면 멱등하게 204.")
   @PostMapping
   public ResponseEntity<Void> block(
       @AuthenticationPrincipal Long memberId,
