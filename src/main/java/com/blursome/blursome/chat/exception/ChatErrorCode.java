@@ -20,8 +20,13 @@ public enum ChatErrorCode implements ErrorCode {
   ROOM_CREATION_CONFLICT(HttpStatus.CONFLICT,
       "채팅방 개설이 동시에 처리되었습니다. 잠시 후 다시 시도해주세요.",
       "CHAT_409_ROOM_CREATION_CONFLICT"),
-  BLOCKED_PARTICIPANT(HttpStatus.CONFLICT, "차단 관계인 회원과는 채팅방을 개설할 수 없습니다.",
-      "CHAT_409_BLOCKED_PARTICIPANT");
+  BLOCKED_PARTICIPANT(HttpStatus.CONFLICT, "차단된 상대입니다.",
+      "CHAT_409_BLOCKED_PARTICIPANT"),
+  // 이슈 #87: 이미 종료(CLOSED)된 관계로 새 대화를 시작하려는 경우. CLOSED는 A-B 관계의 영구 종료라 재시작 불가.
+  RELATIONSHIP_CLOSED(HttpStatus.CONFLICT, "종료된 상대입니다.", "CHAT_409_RELATIONSHIP_CLOSED"),
+  // 이슈 #87: 신고 누적으로 검토 중(REPORTED)인 관계로 새 대화를 시작하려는 경우(운영자 검토 대기).
+  RELATIONSHIP_UNDER_REVIEW(HttpStatus.CONFLICT, "검토 중인 대상입니다.",
+      "CHAT_409_RELATIONSHIP_UNDER_REVIEW");
 
   private final HttpStatus httpStatus;
   private final String message;

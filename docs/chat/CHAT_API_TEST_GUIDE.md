@@ -13,7 +13,7 @@ BlurSome 채팅 기능(REST 조회·나가기 + WebSocket/STOMP 실시간 송수
 | 단계 | 내용 |
 |----|----|
 | ① 서버 실행 | `local` 프로파일, `http://localhost:8080` |
-| ② 데이터 시드 | 회원 2명 + ACTIVE 방 1개 + 참여행 2개 (방 개설 REST가 없어 DB로 준비) |
+| ② 데이터 시드 | 회원 2명 + ACTIVE 방 1개 + 참여행 2개 (피드 게이트 없이 빠르게 준비하려고 DB로 시드) |
 | ③ 토큰 발급 | Postman Pre-request 스크립트로 AccessToken 직접 생성(로컬) 또는 카카오 콜백 |
 | ④ REST 테스트 | 방 목록/단건/이력 조회, 나가기 |
 | ⑤ STOMP 테스트 | `/ws` 연결 → 구독 → 송신/읽음 수신, 단계 변경 브로드캐스트, 에러 케이스 |
@@ -41,8 +41,10 @@ BlurSome 채팅 기능(REST 조회·나가기 + WebSocket/STOMP 실시간 송수
 | 송신 | `/app/rooms/{roomId}/send` | 메시지 전송 `{ "type": "TEXT", "content": "..." }` |
 | 송신 | `/app/rooms/{roomId}/read` | 읽음 위치 갱신 `{ "lastReadMessageId": 10 }` |
 
-> ⚠️ **방 개설은 REST로 노출되지 않습니다.** 방은 매칭 도메인이 `ChatRoomService.openRoom`으로 만들기 때문에,
-> 테스트용 방은 아래 ②에서 DB에 직접 시드합니다.
+> ℹ️ **방 개설 경로**: 이슈 #87로 피드를 통한 대화 시작이 `POST /api/discovery/feeds/{feedId}/chat`(디스커버리 도메인)로
+> 노출됩니다 — 첫 접촉이면 방 생성 + 첫 메시지를 한 트랜잭션으로 처리합니다. 다만 이 엔드포인트는 공개 게이트(양쪽 피드
+> 사진 5장 전부 READY·이성·활성)를 요구하므로, 채팅 REST/STOMP만 빠르게 점검하려면 아래 ②처럼 방을 DB에 직접 시드하는 편이
+> 간단합니다(게이트 충족 피드 5장 시드가 불필요). 대화 시작 분기(첫 접촉/이미 채팅 중/종료·검토·차단 거절) 자체는 디스커버리 가이드를 참고하세요.
 
 ---
 
@@ -72,7 +74,7 @@ SPRING_PROFILES_ACTIVE=local ./gradlew bootRun
 ### 1-2. 테스트 데이터 시드 (DB)
 
 회원 2명(1001=A, 1002=B), 두 회원의 **ACTIVE** 방 1개(roomId=1), 참여행 2개, 예시 메시지 2개를 넣습니다.
-`active_pair_key`는 두 회원 id를 오름차순 결합한 `1001-1002` 형식이어야 합니다(ACTIVE 방 중복 방지 유니크 키).
+`pair_key`는 두 회원 id를 오름차순 결합한 `1001-1002` 형식이어야 합니다(페어당 방 1개를 보장하는 유니크 키, 이슈 #87).
 
 ```sql
 -- 회원 2명 (NOT NULL: provider, provider_id, name, role, activity_status, registration_status, created_at, updated_at)
@@ -82,7 +84,7 @@ VALUES
   (1002, 'KAKAO', 'test-b', '테스트B', 'b@test.com', 'USER', 'ACTIVE', 'COMPLETED', NOW(), NOW());
 
 -- ACTIVE 방 1개
-INSERT INTO chat_room (id, room_status, progress_status, last_message_id, active_pair_key, created_at, updated_at)
+INSERT INTO chat_room (id, room_status, progress_status, last_message_id, pair_key, created_at, updated_at)
 VALUES (1, 'ACTIVE', 'MATCHED', NULL, '1001-1002', NOW(), NOW());
 
 -- 참여행 2개 (leftAt = NULL, 유효 메시지 누적 0에서 시작)

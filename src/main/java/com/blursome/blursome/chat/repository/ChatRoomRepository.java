@@ -25,6 +25,13 @@ public interface ChatRoomRepository extends JpaRepository<ChatRoom, Long> {
   Optional<ChatRoom> findByIdForUpdate(@Param("roomId") Long roomId);
 
   /**
+   * 두 회원의 페어 키로 방을 상태 무관하게 단건 조회한다(이슈 #87). CLOSED가 관계의 영구 종료가 되면서 페어당 방이
+   * 영구히 하나로 보장되므로(유니크 제약, {@code close()}가 키를 비우지 않음), 대화 시작 시 이 단건의 {@code roomStatus}로
+   * 분기한다(없음→첫 접촉 / ACTIVE→이미 채팅 중 / CLOSED·REPORTED·BLOCKED→거절). 키는 {@link ChatRoom#pairKey}로 만든다.
+   */
+  Optional<ChatRoom> findByPairKey(String pairKey);
+
+  /**
    * 미리보기용 {@code lastMessageId}를 더 큰 값일 때만 원자적으로 전진시킨다(설계 §8).
    * 동시 송신 시 각 트랜잭션이 같은 방을 읽고 갱신하면 더 작은 id가 큰 id를 덮어써 미리보기가 과거로 되돌아갈 수 있다.
    * 메시지 id는 단조 증가(IDENTITY)하므로, {@code WHERE last_message_id < :messageId} 조건부 UPDATE 한 방으로
