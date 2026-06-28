@@ -106,17 +106,4 @@ public interface ChatRoomMemberRepository extends JpaRepository<ChatRoomMember, 
       + "where crm.chatRoom.id in :roomIds and crm.member.id <> :memberId")
   List<RoomPartnerInfo> findPartnerInfos(@Param("roomIds") Collection<Long> roomIds,
       @Param("memberId") Long memberId);
-
-  /**
-   * 두 회원이 모두 참여 중인 {@code ACTIVE} 방을 조회한다(중복 방 생성 방지용, 설계 §7-1).
-   * 같은 방에 두 회원이 모두 속해 있고 방이 활성일 때만 매칭된다.
-   */
-  @Query("select r from ChatRoom r "
-      + "join ChatRoomMember crm on crm.chatRoom = r "
-      + "where r.roomStatus = com.blursome.blursome.chat.domain.ChatRoomStatus.ACTIVE "
-      + "and crm.member.id in (:memberAId, :memberBId) "
-      + "group by r "
-      + "having count(distinct crm.member.id) = 2")
-  Optional<ChatRoom> findActiveRoomBetween(@Param("memberAId") Long memberAId,
-      @Param("memberBId") Long memberBId);
 }

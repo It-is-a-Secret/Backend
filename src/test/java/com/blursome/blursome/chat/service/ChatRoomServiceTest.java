@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -15,6 +17,7 @@ import com.blursome.blursome.chat.domain.ChatRoom;
 import com.blursome.blursome.chat.domain.ChatRoomMember;
 import com.blursome.blursome.chat.domain.ChatRoomProgressStatus;
 import com.blursome.blursome.chat.domain.ChatRoomStatus;
+import com.blursome.blursome.chat.dto.request.ChatMessageSendRequest;
 import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
 import com.blursome.blursome.chat.dto.response.ChatRoomSummaryResponse;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
@@ -50,6 +53,8 @@ class ChatRoomServiceTest {
   private static final Long LAST_MESSAGE_ID = 99L;
   private static final Long PARTNER_READ_ID = 90L;
   private static final String PARTNER_NICKNAME = "상대닉";
+  private static final ChatMessageSendRequest FIRST_MESSAGE =
+      new ChatMessageSendRequest(ChatMessageType.TEXT, "첫 메시지");
 
   @Mock
   private ChatRoomMemberRepository chatRoomMemberRepository;
@@ -78,42 +83,75 @@ class ChatRoomServiceTest {
   // ---------- openRoom ----------
 
   @Test
-  @DisplayName("두 회원 사이 ACTIVE 방이 있으면 새로 만들지 않고 그 방을 반환한다")
-  void openRoom_whenActiveRoomExists_thenReturnsExisting() {
+  @DisplayName("두 회원 사이 ACTIVE 방이 있으면 새로 만들지 않고 created=false·메시지 없이 그 방을 반환한다")
+  void openRoom_whenActiveRoomExists_thenReturnsExistingNotCreated() {
     // given
-    ChatRoom existing = activeRoom(ROOM_ID);
-    given(chatRoomMemberRepository.findActiveRoomBetween(MEMBER_ID, OTHER_ID))
+    ChatRoom existing = roomWithStatus(ROOM_ID, ChatRoomStatus.ACTIVE);
+    given(chatRoomRepository.findByPairKey(pairKey()))
         .willReturn(Optional.of(existing));
 
     // when
-    ChatRoom result = chatRoomService.openRoom(MEMBER_ID, OTHER_ID);
+    RoomOpenResult result = chatRoomService.openRoom(MEMBER_ID, OTHER_ID, FIRST_MESSAGE);
 
     // then
-    assertThat(result).isSameAs(existing);
-    verify(chatRoomCreator, never()).create(anyLong(), anyLong());
+    assertThat(result.room()).isSameAs(existing);
+    assertThat(result.created()).isFalse();
+    assertThat(result.firstMessage()).isNull();
+    verify(chatRoomCreator, never()).createWithFirstMessage(anyLong(), anyLong(), any());
   }
 
   @Test
-  @DisplayName("ACTIVE 방이 없으면 새 방을 개설한다")
-  void openRoom_whenNoActiveRoom_thenCreatesNew() {
+  @DisplayName("기존 방이 없으면(첫 접촉) 방+첫 메시지를 한 단위로 만들고 created=true·firstMessage를 반환한다")
+  void openRoom_whenNoRoom_thenCreatesRoomWithFirstMessage() {
     // given
-    ChatRoom created = activeRoom(ROOM_ID);
-    given(chatRoomMemberRepository.findActiveRoomBetween(MEMBER_ID, OTHER_ID))
-        .willReturn(Optional.empty());
-    given(chatRoomCreator.create(MEMBER_ID, OTHER_ID)).willReturn(created);
+    ChatRoom created = roomWithStatus(ROOM_ID, ChatRoomStatus.ACTIVE);
+    ChatMessageResponse firstMessage = sampleMessage();
+    given(chatRoomRepository.findByPairKey(pairKey())).willReturn(Optional.empty());
+    given(chatRoomCreator.createWithFirstMessage(eq(MEMBER_ID), eq(OTHER_ID), any()))
+        .willReturn(new RoomOpenResult(created, true, firstMessage));
 
     // when
-    ChatRoom result = chatRoomService.openRoom(MEMBER_ID, OTHER_ID);
+    RoomOpenResult result = chatRoomService.openRoom(MEMBER_ID, OTHER_ID, FIRST_MESSAGE);
 
     // then
-    assertThat(result).isSameAs(created);
+    assertThat(result.room()).isSameAs(created);
+    assertThat(result.created()).isTrue();
+    assertThat(result.firstMessage()).isSameAs(firstMessage);
+  }
+
+  @Test
+  @DisplayName("기존 방이 CLOSED면 RELATIONSHIP_CLOSED 예외가 발생한다(관계 영구 종료, #87)")
+  void openRoom_whenClosed_thenThrowsRelationshipClosed() {
+    // given
+    given(chatRoomRepository.findByPairKey(pairKey()))
+        .willReturn(Optional.of(roomWithStatus(ROOM_ID, ChatRoomStatus.CLOSED)));
+
+    // when & then
+    assertThatThrownBy(() -> chatRoomService.openRoom(MEMBER_ID, OTHER_ID, FIRST_MESSAGE))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", ChatErrorCode.RELATIONSHIP_CLOSED.getCode());
+    verify(chatRoomCreator, never()).createWithFirstMessage(anyLong(), anyLong(), any());
+  }
+
+  @Test
+  @DisplayName("기존 방이 REPORTED면 RELATIONSHIP_UNDER_REVIEW 예외가 발생한다(#87)")
+  void openRoom_whenReported_thenThrowsUnderReview() {
+    // given
+    given(chatRoomRepository.findByPairKey(pairKey()))
+        .willReturn(Optional.of(roomWithStatus(ROOM_ID, ChatRoomStatus.REPORTED)));
+
+    // when & then
+    assertThatThrownBy(() -> chatRoomService.openRoom(MEMBER_ID, OTHER_ID, FIRST_MESSAGE))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", ChatErrorCode.RELATIONSHIP_UNDER_REVIEW.getCode());
+    verify(chatRoomCreator, never()).createWithFirstMessage(anyLong(), anyLong(), any());
   }
 
   @Test
   @DisplayName("동일 회원으로 방 개설 시 CANNOT_OPEN_SELF_ROOM 예외가 발생한다")
   void openRoom_whenSameMember_thenThrowsCannotOpenSelf() {
     // when & then
-    assertThatThrownBy(() -> chatRoomService.openRoom(MEMBER_ID, MEMBER_ID))
+    assertThatThrownBy(() -> chatRoomService.openRoom(MEMBER_ID, MEMBER_ID, FIRST_MESSAGE))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", ChatErrorCode.CANNOT_OPEN_SELF_ROOM.getCode());
   }
@@ -122,43 +160,43 @@ class ChatRoomServiceTest {
   @DisplayName("참여자 id가 null이면 INVALID_ROOM_PARTICIPANTS 예외가 발생한다")
   void openRoom_whenNullMember_thenThrowsInvalidParticipants() {
     // when & then
-    assertThatThrownBy(() -> chatRoomService.openRoom(null, OTHER_ID))
+    assertThatThrownBy(() -> chatRoomService.openRoom(null, OTHER_ID, FIRST_MESSAGE))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", ChatErrorCode.INVALID_ROOM_PARTICIPANTS.getCode());
   }
 
   @Test
-  @DisplayName("동시 개설 경합에서 지면 재조회로 상대가 만든 방을 반환한다")
-  void openRoom_whenConflict_thenReturnsRoomFromRetry() {
+  @DisplayName("동시 첫 접촉 경합에서 지면 재조회로 상대가 만든 ACTIVE 방을 created=false·메시지 없이 흡수한다")
+  void openRoom_whenConflict_thenAbsorbsWinnerRoom() {
     // given
-    ChatRoom winner = activeRoom(ROOM_ID);
-    given(chatRoomMemberRepository.findActiveRoomBetween(MEMBER_ID, OTHER_ID))
-        .willReturn(Optional.empty());
-    given(chatRoomCreator.create(MEMBER_ID, OTHER_ID))
-        .willThrow(new DataIntegrityViolationException("uk_chat_room_active_pair"));
-    given(chatRoomCreator.findActiveRoomInNewTx(MEMBER_ID, OTHER_ID))
+    ChatRoom winner = roomWithStatus(ROOM_ID, ChatRoomStatus.ACTIVE);
+    given(chatRoomRepository.findByPairKey(pairKey())).willReturn(Optional.empty());
+    given(chatRoomCreator.createWithFirstMessage(eq(MEMBER_ID), eq(OTHER_ID), any()))
+        .willThrow(new DataIntegrityViolationException("uk_chat_room_pair"));
+    given(chatRoomCreator.findRoomInNewTx(MEMBER_ID, OTHER_ID))
         .willReturn(Optional.of(winner));
 
     // when
-    ChatRoom result = chatRoomService.openRoom(MEMBER_ID, OTHER_ID);
+    RoomOpenResult result = chatRoomService.openRoom(MEMBER_ID, OTHER_ID, FIRST_MESSAGE);
 
     // then
-    assertThat(result).isSameAs(winner);
+    assertThat(result.room()).isSameAs(winner);
+    assertThat(result.created()).isFalse();
+    assertThat(result.firstMessage()).isNull();
   }
 
   @Test
   @DisplayName("경합 후에도 방이 보이지 않으면 ROOM_CREATION_CONFLICT 예외가 발생한다")
   void openRoom_whenConflictAndStillMissing_thenThrowsConflict() {
     // given
-    given(chatRoomMemberRepository.findActiveRoomBetween(MEMBER_ID, OTHER_ID))
-        .willReturn(Optional.empty());
-    given(chatRoomCreator.create(MEMBER_ID, OTHER_ID))
-        .willThrow(new DataIntegrityViolationException("uk_chat_room_active_pair"));
-    given(chatRoomCreator.findActiveRoomInNewTx(MEMBER_ID, OTHER_ID))
+    given(chatRoomRepository.findByPairKey(pairKey())).willReturn(Optional.empty());
+    given(chatRoomCreator.createWithFirstMessage(eq(MEMBER_ID), eq(OTHER_ID), any()))
+        .willThrow(new DataIntegrityViolationException("uk_chat_room_pair"));
+    given(chatRoomCreator.findRoomInNewTx(MEMBER_ID, OTHER_ID))
         .willReturn(Optional.empty());
 
     // when & then
-    assertThatThrownBy(() -> chatRoomService.openRoom(MEMBER_ID, OTHER_ID))
+    assertThatThrownBy(() -> chatRoomService.openRoom(MEMBER_ID, OTHER_ID, FIRST_MESSAGE))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", ChatErrorCode.ROOM_CREATION_CONFLICT.getCode());
   }
@@ -170,11 +208,11 @@ class ChatRoomServiceTest {
     given(blockRepository.existsBlockBetween(MEMBER_ID, OTHER_ID)).willReturn(true);
 
     // when & then
-    assertThatThrownBy(() -> chatRoomService.openRoom(MEMBER_ID, OTHER_ID))
+    assertThatThrownBy(() -> chatRoomService.openRoom(MEMBER_ID, OTHER_ID, FIRST_MESSAGE))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", ChatErrorCode.BLOCKED_PARTICIPANT.getCode());
-    verify(chatRoomMemberRepository, never()).findActiveRoomBetween(anyLong(), anyLong());
-    verify(chatRoomCreator, never()).create(anyLong(), anyLong());
+    verify(chatRoomRepository, never()).findByPairKey(anyString());
+    verify(chatRoomCreator, never()).createWithFirstMessage(anyLong(), anyLong(), any());
   }
 
   // ---------- freeze / restore (#77) ----------
@@ -444,6 +482,20 @@ class ChatRoomServiceTest {
     ChatRoom room = ChatRoom.createOnMatched(MEMBER_ID, OTHER_ID);
     ReflectionTestUtils.setField(room, "id", id);
     return room;
+  }
+
+  private ChatRoom roomWithStatus(Long id, ChatRoomStatus status) {
+    ChatRoom room = activeRoom(id);
+    ReflectionTestUtils.setField(room, "roomStatus", status);
+    return room;
+  }
+
+  private String pairKey() {
+    return ChatRoom.pairKey(MEMBER_ID, OTHER_ID);
+  }
+
+  private ChatMessageResponse sampleMessage() {
+    return new ChatMessageResponse(1L, ROOM_ID, MEMBER_ID, ChatMessageType.TEXT, "첫 메시지", null);
   }
 
   private ChatRoomMember membership(Long rowId, ChatRoom room) {

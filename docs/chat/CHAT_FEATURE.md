@@ -27,7 +27,7 @@ BlurSome의 채팅(Chat) 도메인 전체 로직을 정의합니다. WebSocket +
 | 항목              | 결정                                 | 영향                                                       |
 |-----------------|------------------------------------|----------------------------------------------------------|
 | 참여 구조           | **1:1 고정(2명)**                     | 방당 `ChatRoomMember` 정확히 2행, 상대방 조회 단순                    |
-| 재입장             | **불가** — 나가면 방 종료(`CLOSED`), 재개 없음 | 다시 대화하려면 새 매칭 → 새 방 개설                                   |
+| 재입장             | **불가** — 나가면 방 종료(`CLOSED`), 재개 없음 | `CLOSED`는 **A-B 관계의 영구 종료**(이슈 #87) — 같은 페어는 다시 방을 열 수 없다 |
 | 접속 상태(presence) | **미제공** — 상대 온라인 여부를 표시하지 않음       | `lastActiveAt` 등 활동 시각 필드를 두지 않음. 앱 종료/연결 끊김은 DB에 기록 안 함 |
 | 단계 진행           | **유효 메시지 누적 수**(양방향 AND)            | 별도 동의 버튼 없음. `ChatRoomMember.validMessageCount`로 각자 누적, `min(A,B)`가 임계값(10/20/30/40/50)을 넘으면 단계 상승(이슈 #79) |
 
@@ -68,16 +68,17 @@ BlurSome의 채팅(Chat) 도메인 전체 로직을 정의합니다. WebSocket +
 | `roomStatus`            | `ChatRoomStatus`, `nullable=false`, len 20         | 방 활성/종료 상태                                              |
 | `progressStatus`        | `ChatRoomProgressStatus`, `nullable=false`, len 30 | 사진 공개 단계                                                |
 | `lastMessageId`         | `Long`, nullable                                   | **미리보기 비정규화** — 마지막 메시지 id. FK 아님(무결성 미보장), 메시지 저장 시 갱신 |
-| `activePairKey`         | `String`, nullable, **unique** `uk_chat_room_active_pair`, len 40 | 두 참여 회원 id를 정렬한 키(`min-max`). ACTIVE 동안만 값 보유, 종료 시 `null`. 유니크 제약으로 **회원 쌍당 ACTIVE 방 1개**를 DB 레벨에서 보장(동시 개설 방지). 유니크 인덱스는 다중 `null`을 허용하므로 같은 페어의 CLOSED 방은 여러 개 가능 |
+| `pairKey`               | `String`, nullable, **unique** `uk_chat_room_pair`, len 40 | 두 참여 회원 id를 정렬한 키(`min-max`). 방 생성 시 한 번 채워지고 **이후 비워지지 않는다**(이슈 #87). 유니크 제약으로 **회원 쌍당 방 1개**를 DB 레벨에서 영구 보장한다 — `CLOSED`가 관계의 영구 종료가 되면서 종료된 페어도 새 방을 열 수 없다. 페어당 방이 단건이라 대화 시작 시 `findByPairKey`로 상태 무관 조회해 분기한다 |
 | `createdAt`/`updatedAt` | `BaseEntity`                                       | 감사 필드                                                   |
 
-- 팩토리: `ChatRoom.createOnMatched(memberAId, memberBId)` → `ACTIVE` / `MATCHED` / `lastMessageId=null` / `activePairKey=min-max`
-- `close()`는 `roomStatus=CLOSED`로 바꾸며 `activePairKey=null`로 비워 같은 페어의 새 방 개설을 허용한다.
+- 팩토리: `ChatRoom.createOnMatched(memberAId, memberBId)` → `ACTIVE` / `MATCHED` / `lastMessageId=null` / `pairKey=min-max`
+- `close()`는 `roomStatus=CLOSED`로만 바꾼다. **`pairKey`를 비우지 않는다**(이슈 #87) — CLOSED는 A-B 관계의 영구 종료(terminal)라 같은 페어는 새 방을 열 수 없다.
 
 > ⚠️ **스키마/마이그레이션 주의 — 유니크 제약 누락 금지**
-> `uk_chat_room_active_pair (active_pair_key)` 유니크 제약은 동시 개설 시 ACTIVE 방 중복 생성을 막는 **유일한 최종 방어선**이다(서비스 계층 선조회만으로는 경합을 막지 못함).
+> `uk_chat_room_pair (pair_key)` 유니크 제약은 동시 개설 시 같은 페어 방 중복 생성을 막는 **유일한 최종 방어선**이다(서비스 계층 선조회만으로는 경합을 막지 못함).
 > - 운영(`prod`)은 **런칭 전 개발 단계라 현재 `spring.jpa.hibernate.ddl-auto: update`로 배포한다**(엔티티 변경을 그대로 반영). `update`는 **컬럼·테이블·인덱스 추가만** 반영하고 삭제·타입 변경은 반영하지 않으므로, 런칭(운영 데이터 적재) 전 반드시 `validate`로 되돌리고 스키마를 마이그레이션 도구로 관리해야 한다(`src/main/resources/application-prod.yml` 주석, `docs/architecture/AWS_DEPLOYMENT.md §6.5`).
-> - 기존 테이블에 **유니크/일반 제약을 사후 추가**하는 것은 `update`가 보장하지 않을 수 있으므로, 배포 후 실제 인덱스 생성 여부를 직접 확인한다. 누락되면 동시 매칭에서 같은 페어의 ACTIVE 방이 중복 생성될 수 있고, `CHAT_409_ROOM_CREATION_CONFLICT` 방어도 무력화된다.
+> - 기존 테이블에 **유니크/일반 제약을 사후 추가**하는 것은 `update`가 보장하지 않을 수 있으므로, 배포 후 실제 인덱스 생성 여부를 직접 확인한다. 누락되면 동시 개설에서 같은 페어 방이 중복 생성될 수 있고, `CHAT_409_ROOM_CREATION_CONFLICT` 방어도 무력화된다.
+> - **컬럼 리네임 주의(이슈 #87, `active_pair_key` → `pair_key`)**: `ddl-auto: update`는 컬럼 리네임을 **추가로만** 처리해 옛 `active_pair_key` 컬럼과 옛 유니크 제약이 그대로 남고 새 `pair_key`·`uk_chat_room_pair`가 추가된다. 런칭 전 빈 DB에서는 무해하나, 데이터가 있으면 새 컬럼이 비어 동작이 깨지므로 마이그레이션으로 처리한다.
 > - **NOT NULL 컬럼 추가 시(이슈 #79 `validMessageCount`)**: 기존 행이 있는 테이블에 NOT NULL 컬럼을 더하면 기본값이 없을 때 DDL이 실패할 수 있다. 엔티티에 `@ColumnDefault("0")`을 줘 DDL에 `DEFAULT 0`이 생성되도록 했으니(`ChatRoomMember.validMessageCount`), `update` 배포 시 기존 참여 행도 0으로 채워진다.
 
 ### ChatRoomMember (`chat_room_member`)
@@ -144,7 +145,7 @@ BlurSome의 채팅(Chat) 도메인 전체 로직을 정의합니다. WebSocket +
 ```
 
 - `ACTIVE → CLOSED`: 한 명이 "채팅방 나가기"를 하거나(`leave()`), 명시적으로 대화를 종료할 때.
-- ✅ **`CLOSED`는 종료(terminal) 상태** — 재입장 불가. 다시 `ACTIVE`로 되돌리지 않는다. 다시 대화하려면 새 매칭으로 새 방을 개설한다.
+- ✅ **`CLOSED`는 종료(terminal) 상태** — 재입장 불가. 다시 `ACTIVE`로 되돌리지 않는다. 이슈 #87로 `CLOSED`는 **A-B 관계의 영구 종료**를 뜻한다 — `close()`가 `pairKey`를 비우지 않아 같은 페어는 새 방을 열 수 없다(대화 시작 시 `RELATIONSHIP_CLOSED` 409).
 - ✅ **앱 종료 / 연결 끊김은 상태 변화가 아니다** — 상대 접속 상태(presence)를 제공하지 않으므로, 단순 연결 종료는 DB를 건드리지 않고 재연결 시 그대로
   대화를 이어간다.
 - ✅ **`BLOCKED`(차단 동결, #77)** — 차단 발생 시 진행 중 `ACTIVE` 방을 `markBlocked()`로 동결한다(`ACTIVE`에서만 전이). `BLOCKED`는
@@ -326,24 +327,31 @@ com.blursome.chat
 ### 7-1. 매칭 → 방 개설 (🧩)
 
 ```
-[매칭 결과: memberA, memberB]
-        │
-        ▼
-ChatRoomService.openRoom(a, b)        @Transactional
-    ├─ 활성 방 선조회(findActiveRoomBetween) → 있으면 그 방 반환
-    └─ 없으면 createRoom:
-        ├─ ChatRoom.createOnMatched(a, b)         → saveAndFlush (ACTIVE / MATCHED / activePairKey)
-        ├─ ChatRoomMember.join(room, a)           → save
-        └─ ChatRoomMember.join(room, b)           → save
-        │
-        ▼
-   room 반환 (양쪽에 푸시/알림은 Notification 도메인과 조율)
+[대화 시작: viewer가 target feedId로]            [매칭 결과: memberA, memberB]
+        │                                               │
+        ▼                                               ▼
+DiscoveryService(ChatStartService).startChat            ChatRoomService.openRoom(a, b)
+    ├─ feedId→회원 해석 / 자기자신 차단                    └─ (매칭 도메인 진입점, 동일)
+    ├─ 게이트 재검증(내 피드·이성·대상 피드 5장 READY·활성)
+    ├─ Block 테이블 우선 검사 → BLOCKED_PARTICIPANT
+    └─ chatRoomService.openRoom(viewer, target)        @Transactional
+            ├─ findByPairKey(min-max) → 상태 무관 단건 조회
+            │     ├─ ACTIVE   → (room, created=false)  "이미 채팅 중", 메시지 미전송
+            │     ├─ CLOSED   → RELATIONSHIP_CLOSED (409)
+            │     ├─ REPORTED → RELATIONSHIP_UNDER_REVIEW (409)
+            │     └─ BLOCKED  → BLOCKED_PARTICIPANT (409, 방어적)
+            └─ 없으면(첫 접촉) createWithFirstMessage  @REQUIRES_NEW (방+첫 메시지 원자적)
+                    ├─ ChatRoom.createOnMatched(a, b)  → saveAndFlush (ACTIVE / MATCHED / pairKey)
+                    ├─ ChatRoomMember.join(room, a/b)  → save
+                    ├─ chatMessageService.send(첫 메시지)  → 같은 트랜잭션에 합류(REQUIRED)
+                    └─ (room, created=true, firstMessage)
 ```
 
-- ✅ **중복 방 생성 방지 (서비스 + DB 이중 방어)**: 두 회원 사이에 `ACTIVE` 방이 이미 있으면 새로 만들지 않고 그 방을 반환한다.
-  과거에 나가서 `CLOSED`된 방만 있는 경우에는 **새 방을 개설**한다. → `ChatRoomService.openRoom`에서 활성 방을 먼저 조회해 분기.
-- ✅ **동시 매칭 경합**: 선조회-후생성은 원자적이지 않아 동시 요청 시 중복이 생길 수 있으므로, `chat_room.active_pair_key` **유니크 제약**으로 최종 방어한다.
-  경합에서 진 쪽은 `saveAndFlush`에서 제약 위반(`DataIntegrityViolationException`) → `CHAT_409_ROOM_CREATION_CONFLICT`로 변환되며, 재시도 시 선조회가 이미 만들어진 방을 반환한다.
+- ✅ **대화 시작 API(이슈 #87)**: `POST /api/discovery/feeds/{feedId}/chat`. feedId→회원 해석·게이트 재검증은 디스커버리 유스케이스(`ChatStartService`)가 맡고(직접 입력이 탐색 필터를 우회하지 못하게), 방 개설·관계 분기는 `openRoom`이 맡는다. 첫 접촉이면 방 생성 + 첫 메시지를 한 트랜잭션으로 처리하고 `created=true`, 이미 ACTIVE면 메시지 없이 기존 방으로 안내(`created=false`) — 둘 다 200.
+- ✅ **방+첫 메시지 원자성(이슈 #87)**: 첫 접촉의 방 생성과 첫 메시지 전송은 `ChatRoomCreator.createWithFirstMessage`의 **하나의 REQUIRES_NEW 트랜잭션**에서 처리된다(`send`는 REQUIRED로 합류). 첫 메시지 전송이 실패하면 방까지 함께 롤백돼 "첫 접촉인데 빈 방만 생성"되는 비원자 상태가 생기지 않는다. REQUIRES_NEW로 격리돼 있어 유니크 위반 시 이 단위만 롤백되고 호출 측은 경합 복구(재조회 흡수)를 이어갈 수 있다.
+- ✅ **관계 단건 분기 (서비스 + DB 이중 방어)**: 페어당 방이 영구히 하나이므로(`pairKey` 유니크) `findByPairKey`로 상태 무관 단건을 조회해 분기한다. ACTIVE는 "이미 채팅 중", CLOSED/REPORTED/BLOCKED는 각 도메인 예외로 막고, 없으면 첫 접촉으로 새로 만든다.
+- ✅ **동시 첫 접촉 경합**: 선조회-후생성은 원자적이지 않으므로 `chat_room.pair_key` **유니크 제약**으로 최종 방어한다.
+  경합에서 진 쪽은 `saveAndFlush`에서 제약 위반(`DataIntegrityViolationException`) → 새 트랜잭션(`findRoomInNewTx`)으로 상대가 만든 ACTIVE 방을 재조회해 `created=false`로 흡수한다(첫 메시지 중복 전송 없음). 재조회도 실패하면 `CHAT_409_ROOM_CREATION_CONFLICT`.
 - ✅ **조회는 내가 나갔는지로만 판별**: 1:1 방에서 한쪽이 나가면 방은 `CLOSED`가 되지만 상대의 `leftAt`은 `null`로 남는다. 목록/단건/이력 조회의 참여자 검증은 방 상태(`ACTIVE`/`CLOSED`)가 아니라 **`leftAt IS NULL`만** 확인한다 — 상대가 먼저 나가 방이 종료돼도 남은 사람은 계속 조회할 수 있고(상대 나간 것 확인 후 본인이 나가기), 내가 나간 방만 목록에서 즉시 사라진다. 송신·읽음 같은 **쓰기**는 별도로 `roomStatus = ACTIVE`까지 확인해 종료된 방을 `ROOM_CLOSED`로 막는다.
 
 ### 7-2. 연결 & 구독
@@ -512,6 +520,12 @@ ChatRoomService.openRoom(a, b)        @Transactional
 | `CHAT_400_CANNOT_OPEN_SELF_ROOM`   | 동일 회원으로 방 개설 시도 | 400  |
 | `CHAT_400_INVALID_ROOM_PARTICIPANTS` | 참여자 정보 오류(null 등) | 400  |
 | `CHAT_409_ROOM_CREATION_CONFLICT`  | 동시 매칭으로 방 개설 경합 | 409  |
+| `CHAT_409_BLOCKED_PARTICIPANT`     | 차단 관계와 대화 시작 시도(#77·#87) | 409  |
+| `CHAT_409_RELATIONSHIP_CLOSED`     | 종료된 관계로 대화 시작 시도(#87) | 409  |
+| `CHAT_409_RELATIONSHIP_UNDER_REVIEW` | 검토 중(REPORTED)인 관계로 대화 시작 시도(#87) | 409  |
+| `DISCOVERY_404_CHAT_START_TARGET_NOT_FOUND` | 대화 시작 대상 피드 없음(#87) | 404  |
+| `DISCOVERY_403_CHAT_START_PROFILE_INCOMPLETE` | 내 피드 5장 미완성(#87) | 403  |
+| `DISCOVERY_409_CHAT_START_NOT_ELIGIBLE` | 대상이 시작 조건 미충족(이성 아님·비공개·비활성, #87) | 409  |
 
 ---
 
@@ -522,7 +536,7 @@ ChatRoomService.openRoom(a, b)        @Transactional
 | # | 항목            | 결정                                                               |
 |---|---------------|------------------------------------------------------------------|
 | 1 | WebSocket 의존성 | ✅ `spring-boot-starter-websocket` 추가 완료(`build.gradle.kts`)      |
-| 2 | 중복 방 생성       | ✅ `ACTIVE` 방 중복 금지, `CLOSED` 이후 새 방 허용 (서비스 계층)                  |
+| 2 | 중복 방 생성       | ✅ 페어당 방 1개(`pair_key` 유니크). 이슈 #87로 `CLOSED`는 관계 영구 종료라 **재개설 불가**(서비스 + DB 이중 방어) |
 | 3 | 읽음 처리 채널      | ✅ WebSocket 우선                                                   |
 | 4 | 안읽음 카운트       | ✅ 초기 DB count → 트래픽 증가 시 Redis 전환                                |
 | 5 | 사진 단계 연계      | ✅ Chat은 단계만 관리, 단계 상승은 유효 메시지 누적(#79), 원본 공개는 feed 도메인(#53)        |
