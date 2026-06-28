@@ -96,6 +96,15 @@ public interface ChatRoomMemberRepository extends JpaRepository<ChatRoomMember, 
       @Param("memberId") Long memberId);
 
   /**
+   * 방에서 나를 제외한 다른 참여자들의 회원 id를 조회한다(이슈 #88, 새 메시지 개인 알림 팬아웃 대상). 1:1 방이라
+   * 보통 상대 1명이며, 발신자 본인은 제외하므로 자기 메시지로 자기 개인 큐가 울리지 않는다. {@code member_id}
+   * 컬럼만 투영해 가볍게 조회한다({@code chat_room_id} 선두 유니크 인덱스를 탄다).
+   */
+  @Query("select crm.member.id from ChatRoomMember crm "
+      + "where crm.chatRoom.id = :roomId and crm.member.id <> :memberId")
+  List<Long> findOtherMemberIds(@Param("roomId") Long roomId, @Param("memberId") Long memberId);
+
+  /**
    * 주어진 방들에서 나를 제외한 상대 참여자 정보(닉네임 + 읽음 커서)를 한 번에 조회한다(목록 조회 N+1 회피).
    * 1:1 방이므로 방당 한 행이며, 읽음 커서로 "내가 보낸 메시지를 상대가 어디까지 읽었는지"(읽음 표시)를 계산한다.
    * 상대가 아직 아무것도 읽지 않았으면 {@code lastReadMessageId}가, 온보딩 전이면 {@code partnerNickname}이 null일 수 있다.

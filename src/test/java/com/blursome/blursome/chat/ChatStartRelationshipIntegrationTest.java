@@ -6,6 +6,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.blursome.blursome.chat.domain.ChatMessageType;
 import com.blursome.blursome.chat.domain.ChatRoomStatus;
 import com.blursome.blursome.chat.dto.request.ChatMessageSendRequest;
+import com.blursome.blursome.chat.dto.response.ChatRoomNotificationType;
+import com.blursome.blursome.chat.event.ChatRoomNotificationEvent;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.repository.ChatMessageRepository;
 import com.blursome.blursome.chat.repository.ChatRoomRepository;
@@ -16,6 +18,7 @@ import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.OAuthProvider;
 import com.blursome.blursome.member.repository.MemberRepository;
 import com.blursome.blursome.support.TestcontainersConfiguration;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -23,6 +26,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.event.ApplicationEvents;
+import org.springframework.test.context.event.RecordApplicationEvents;
 import org.springframework.test.util.ReflectionTestUtils;
 
 /**
@@ -35,6 +40,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 @SpringBootTest
 @ActiveProfiles("test")
 @Import(TestcontainersConfiguration.class)
+@RecordApplicationEvents
 class ChatStartRelationshipIntegrationTest {
 
   private static final AtomicLong SEQ = new AtomicLong();
@@ -89,6 +95,36 @@ class ChatStartRelationshipIntegrationTest {
     assertThatThrownBy(() -> chatRoomService.openRoom(b.getId(), a.getId(), text("재시도")))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", ChatErrorCode.RELATIONSHIP_CLOSED.getCode());
+  }
+
+  @Test
+  @DisplayName("첫 접촉으로 방을 만들면 상대 개인 큐 대상 NEW_ROOM 알림을 1건 발행하고, 재호출(ACTIVE 흡수)에선 추가 발행하지 않는다")
+  void openRoom_firstContact_publishesNewRoomNotificationToPartner(ApplicationEvents events) {
+    Member a = saveMember("a");
+    Member b = saveMember("b");
+
+    RoomOpenResult first = chatRoomService.openRoom(a.getId(), b.getId(), text("첫 메시지"));
+
+    // 개설자(a)가 아니라 수신자(b)의 개인 큐로, 개설자 정보·첫 메시지 미리보기를 실어 NEW_ROOM이 발행된다.
+    List<ChatRoomNotificationEvent> newRoomEvents = newRoomNotifications(events);
+    assertThat(newRoomEvents).hasSize(1);
+    ChatRoomNotificationEvent event = newRoomEvents.get(0);
+    assertThat(event.targetMemberId()).isEqualTo(b.getId());
+    assertThat(event.notification().roomId()).isEqualTo(first.room().getId());
+    assertThat(event.notification().partnerId()).isEqualTo(a.getId());
+    assertThat(event.notification().partnerNickname()).isEqualTo(a.getNickName());
+    assertThat(event.notification().message().messageId())
+        .isEqualTo(first.firstMessage().messageId());
+
+    // 같은 페어 재호출은 ACTIVE 방을 메시지 없이 흡수하므로 새 NEW_ROOM이 더 생기지 않는다.
+    chatRoomService.openRoom(a.getId(), b.getId(), text("두 번째 시도"));
+    assertThat(newRoomNotifications(events)).hasSize(1);
+  }
+
+  private List<ChatRoomNotificationEvent> newRoomNotifications(ApplicationEvents events) {
+    return events.stream(ChatRoomNotificationEvent.class)
+        .filter(e -> e.notification().type() == ChatRoomNotificationType.NEW_ROOM)
+        .toList();
   }
 
   private ChatMessageSendRequest text(String content) {

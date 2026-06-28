@@ -37,6 +37,7 @@ BlurSome 채팅 기능(REST 조회·나가기 + WebSocket/STOMP 실시간 송수
 | 방향 | Destination | 설명 |
 |----|----|----|
 | 구독 | `/topic/rooms/{roomId}` | 메시지·단계 변경 브로드캐스트 수신(참여자만) |
+| 구독 | `/user/queue/rooms` | 유저 단위 알림(#88) — 방 미구독 상태에서도 `NEW_ROOM`/`NEW_MESSAGE` 수신. 접속 시 한 번만 구독 |
 | 구독 | `/user/queue/errors` | 내 개인 오류 통지 수신 |
 | 송신 | `/app/rooms/{roomId}/send` | 메시지 전송 `{ "type": "TEXT", "content": "..." }` |
 | 송신 | `/app/rooms/{roomId}/read` | 읽음 위치 갱신 `{ "lastReadMessageId": 10 }` |
@@ -327,12 +328,20 @@ Authorization:Bearer {{accessTokenA}}
 
 ### 3-2. 구독 (SUBSCRIBE)
 
-개인 오류 큐와 방 토픽을 구독합니다(서로 다른 `id` 사용).
+개인 오류 큐, 개인 알림 큐, 방 토픽을 구독합니다(서로 다른 `id` 사용).
 
 ```
 SUBSCRIBE
 id:sub-errors
 destination:/user/queue/errors
+
+^@
+```
+
+```
+SUBSCRIBE
+id:sub-rooms
+destination:/user/queue/rooms
 
 ^@
 ```
@@ -348,6 +357,34 @@ destination:/topic/rooms/1
 - A와 B 두 세션 모두 `/topic/rooms/1`을 구독합니다.
 - **비참여자 구독 차단 확인**: 시드 방에 속하지 않은 회원 토큰으로 `/topic/rooms/1`을 구독하면, 연결은 유지된 채
   `/user/queue/errors`로 `CHAT_403_NOT_PARTICIPANT` 통지가 오고 구독은 성립하지 않습니다.
+- **개인 알림 큐(#88)**: `/user/queue/rooms`는 방 id가 없는 회원 개인 큐라 접속 시 한 번만 구독하면 됩니다. `/user/**`는
+  Spring이 세션 principal(=memberId)로 라우팅하므로 **타인 큐를 구독해도 자기 큐로만 받습니다**(원천적으로 타인 알림 수신 불가,
+  별도 검증 불필요). 같은 계정으로 두 세션을 열면 두 세션 모두 같은 알림을 받습니다(다중 디바이스).
+
+### 3-2-1. 유저 단위 알림 — 방 미구독 수신 (NEW_ROOM / NEW_MESSAGE, #88)
+
+방 토픽(`/topic/rooms/{roomId}`)을 **구독하지 않은** 상태에서도 개인 큐로 새 대화·새 메시지를 받는지 확인합니다.
+
+- **NEW_MESSAGE**: B가 `/topic/rooms/1`을 **구독하지 않고** `/user/queue/rooms`만 구독한 상태에서, A가
+  `/app/rooms/1/send`로 메시지를 보내면 → B의 `/user/queue/rooms`로 `NEW_MESSAGE`가 도착합니다(발신자 A 본인은 받지 않음).
+
+  ```json
+  // /user/queue/rooms 수신 본문
+  { "type": "NEW_MESSAGE", "roomId": 1, "partnerId": 1001, "partnerNickname": null,
+    "message": { "messageId": 12, "roomId": 1, "senderId": 1001, "type": "TEXT", "content": "안녕", "createdAt": "2026-06-19T12:01:00" } }
+  ```
+
+- **NEW_ROOM**: 첫 접촉으로 새 방이 개설되면(피드로 1:1 대화 시작, #87) 수신자(상대)의 `/user/queue/rooms`로
+  `NEW_ROOM`이 도착합니다. 수신자는 그 방을 구독한 적이 없어도 방 목록에 새 항목을 즉시 띄울 수 있습니다.
+
+  ```json
+  // /user/queue/rooms 수신 본문 (partnerNickname=개설자 닉네임, message=첫 메시지)
+  { "type": "NEW_ROOM", "roomId": 9, "partnerId": 1001, "partnerNickname": "철수",
+    "message": { "messageId": 30, "roomId": 9, "senderId": 1001, "type": "TEXT", "content": "안녕하세요", "createdAt": "2026-06-19T12:05:00" } }
+  ```
+
+- **멱등 처리 주의**: 첫 접촉 시 같은 첫 메시지에 대해 `NEW_ROOM`과 `NEW_MESSAGE`가 모두 도착할 수 있습니다.
+  클라이언트는 `(roomId, message.messageId)` 기준으로 **덮어쓰기**(set)로 처리하고 안읽음을 blind increment 하지 마세요.
 
 ### 3-3. 메시지 송신/수신 (SEND → 브로드캐스트)
 
@@ -465,6 +502,8 @@ function connect(token, label) {
   });
   client.onConnect = () => {
     client.subscribe('/user/queue/errors', (m) => console.error(label, 'ERROR:', m.body));
+    // 개인 알림 큐(#88) — 방을 구독하지 않아도 NEW_ROOM/NEW_MESSAGE를 받는다(접속 시 한 번만).
+    client.subscribe('/user/queue/rooms', (m) => console.log(label, 'NOTIFY:', m.body));
     client.subscribe('/topic/rooms/1', (m) => {
       const body = JSON.parse(m.body);
       if (body.messageId != null) lastReceivedId = body.messageId; // 메시지면 id 기억
@@ -523,6 +562,13 @@ Authorization:Bearer <AT>
 SUBSCRIBE
 id:sub-errors
 destination:/user/queue/errors
+
+^@
+
+# 구독 (개인 알림 — 방 미구독 수신, #88)
+SUBSCRIBE
+id:sub-rooms
+destination:/user/queue/rooms
 
 ^@
 
