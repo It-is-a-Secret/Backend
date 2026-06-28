@@ -386,6 +386,36 @@ destination:/topic/rooms/1
 - **멱등 처리 주의**: 첫 접촉 시 같은 첫 메시지에 대해 `NEW_ROOM`과 `NEW_MESSAGE`가 모두 도착할 수 있습니다.
   클라이언트는 `(roomId, message.messageId)` 기준으로 **덮어쓰기**(set)로 처리하고 안읽음을 blind increment 하지 마세요.
 
+#### 수동 검증 절차 (STOMP 테스터 + Postman)
+
+> 도구: `docs/chat/blursome-stomp-tester.html`(A·B 두 세션) + Postman(REST). 테스터는 연결 시 `/user/queue/rooms`를
+> 자동 구독하므로, **수신 측은 방 토픽을 구독하지 않아도** 개인 알림이 `recv` 로그로 찍힙니다.
+
+**NEW_MESSAGE (기존 방, 수신자 방 미구독)**
+1. 테스터에서 A·B 두 세션을 각자 토큰으로 **연결**(B는 방 구독 버튼을 누르지 않아도 됨 — 개인 큐는 연결 시 자동 구독).
+2. A 세션에서 기존 ACTIVE 방으로 메시지 **송신**(`/app/rooms/{roomId}/send`).
+3. **기대**: B의 `[/user/queue/rooms]` 로그에 `type=NEW_MESSAGE` 도착(발신자 A 본인 큐로는 오지 않음).
+
+**NEW_ROOM (첫 접촉 — Postman으로 방 개설)**
+1. 테스터에서 **수신자(피드 주인) B**를 연결해 둔다(개인 큐 자동 구독 상태).
+2. Postman으로 **개설자 A** 토큰을 써서 첫 접촉을 발생시킨다:
+   ```
+   POST {{baseUrl}}/api/discovery/feeds/{feedId}/chat
+   Authorization: Bearer {{accessTokenA}}
+   Content-Type: application/json
+
+   { "message": "안녕하세요, 첫 메시지예요" }
+   ```
+   - `feedId`는 **B 소유의 공개·활성 피드** id. 게이트 충족 필요: A의 피드 5장 READY, A·B 이성, 대상 피드 공개·활성, 차단 없음
+     (미충족 시 403/409 — 본 알림 검증 전에 먼저 통과시킬 것).
+3. **기대**: B의 `[/user/queue/rooms]` 로그에 `type=NEW_ROOM` 도착(`partnerNickname`=A 닉네임, `message`=첫 메시지).
+   같은 첫 메시지에 대해 `NEW_MESSAGE`도 함께 올 수 있다(멱등 — 위 주의 참고).
+
+**격리 확인(타인 큐 차단)**: 제3자 C를 테스터로 연결해 두고 위 A→B 송신/개설을 반복하면, **C의 `/user/queue/rooms`로는 아무것도
+오지 않는다**(`/user/**`는 세션 principal로만 라우팅).
+
+**다중 세션**: 같은 B 계정으로 테스터 탭을 2개 열어 둘 다 연결하면, 한 번의 송신/개설에 **두 탭 모두** 개인 알림을 받는다.
+
 ### 3-3. 메시지 송신/수신 (SEND → 브로드캐스트)
 
 A 세션에서 전송:
