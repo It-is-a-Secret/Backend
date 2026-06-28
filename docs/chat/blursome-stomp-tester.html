@@ -252,12 +252,18 @@
       log(s, "err", "[/user/queue/errors] " + m.body);
     }, { id: "sub-errors-" + s.key });
 
+    // 개인 알림 큐(이슈 #88) — 방을 구독하지 않아도 NEW_ROOM/NEW_MESSAGE를 받는다.
+    // 접속 시 한 번만 구독하면 어떤 방이든 새 대화·새 메시지 신호가 이 큐로 들어온다.
+    s.client.subscribe("/user/queue/rooms", (m) => {
+      log(s, "recv", "[/user/queue/rooms] " + m.body);
+    }, { id: "sub-rooms-" + s.key });
+
     // 방 토픽
     s.client.subscribe("/topic/rooms/" + roomId, (m) => {
       log(s, "recv", "[/topic/rooms/" + roomId + "] " + m.body);
     }, { id: "sub-room-" + s.key });
 
-    log(s, "sys", "구독 완료: /topic/rooms/" + roomId + " , /user/queue/errors");
+    log(s, "sys", "구독 완료: /topic/rooms/" + roomId + " , /user/queue/rooms , /user/queue/errors");
   }
 
   function send(s) {

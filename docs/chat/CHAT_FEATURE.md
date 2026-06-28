@@ -234,7 +234,11 @@ com.blursome.chat
 │   └── response/                        # ✅ ChatRoomSummaryResponse, ChatMessageResponse, ChatProgressChangedResponse
 ├── event/
 │   ├── ChatProgressAdvancedEvent.java   # ✅ 단계 상승 도메인 이벤트
-│   └── ChatProgressEventListener.java   # ✅ AFTER_COMMIT 구독 → /topic 브로드캐스트
+│   ├── ChatProgressEventListener.java   # ✅ AFTER_COMMIT 구독 → /topic 브로드캐스트
+│   ├── ChatMessageBroadcastEvent.java   # ✅ 메시지 브로드캐스트 도메인 이벤트(#85)
+│   ├── ChatMessageBroadcastListener.java# ✅ AFTER_COMMIT 구독 → /topic/rooms/{roomId}
+│   ├── ChatRoomNotificationEvent.java   # ✅ 유저 단위 알림 도메인 이벤트(#88)
+│   └── ChatRoomNotificationListener.java# ✅ AFTER_COMMIT 구독 → /user/queue/rooms
 ├── config/
 │   ├── WebSocketConfig.java             # ✅ STOMP 엔드포인트/브로커 설정
 │   └── StompAuthChannelInterceptor.java # ✅ CONNECT 인증 + SUBSCRIBE 참여자 검증
@@ -281,6 +285,7 @@ com.blursome.chat
 | 구독    | `/topic/rooms/{roomId}`    | ✅ 해당 방의 메시지·단계 변경 브로드캐스트 수신(구독 시 참여자 검증)        |
 | 송신    | `/app/rooms/{roomId}/send` | ✅ 메시지 전송 → 서버가 저장 후 `/topic/rooms/{roomId}`로 발행 |
 | 송신    | `/app/rooms/{roomId}/read` | ✅ 읽음 위치 갱신 (WebSocket 우선)                     |
+| 개인 알림 | `/user/queue/rooms`        | ✅ 유저 단위 알림(#88) — 방 미구독 상태에서도 `NEW_ROOM`/`NEW_MESSAGE` 수신. 접속 시 한 번만 구독 |
 | 개인 알림 | `/user/queue/errors`       | ✅ 검증 실패 등 발신자 개인 응답(해당 세션 한정)                  |
 
 ### 6-3. 핸드셰이크 인증 (JWT, ✅ 구현)
@@ -306,7 +311,23 @@ com.blursome.chat
   "content": "안녕하세요",
   "createdAt": "2026-06-04T12:00:00"
 }
+
+// 서버 → 개인 큐 : /user/queue/rooms (이슈 #88, 방 미구독 상태에서도 수신)
+// type=NEW_ROOM: 첫 접촉으로 개설된 방. type=NEW_MESSAGE: 기존 방의 새 메시지.
+// partnerId/partnerNickname은 수신자 기준 상대(개설자/발신자). NEW_MESSAGE는 partnerNickname=null 가능.
+{
+  "type": "NEW_ROOM",
+  "roomId": 7,
+  "partnerId": 3001,
+  "partnerNickname": "상대닉네임",
+  "message": { "messageId": 1024, "roomId": 7, "senderId": 3001, "type": "TEXT", "content": "안녕하세요", "createdAt": "2026-06-04T12:00:00" }
+}
 ```
+
+> **멱등 신호 계약(#88)**: `/user/queue/rooms`의 알림은 `(roomId, message.messageId)` 기준으로 **덮어쓰기** 처리한다(증분 금지).
+> STOMP 재전송, 그리고 첫 접촉 시 같은 첫 메시지에 대해 `NEW_ROOM`과 `NEW_MESSAGE`가 모두 도착하는 중복에도 안읽음이 이중
+> 계산되지 않도록, 클라이언트는 마지막 메시지·안읽음을 이 신호로 set(또는 목록 재조회)하고 blind increment 하지 않는다. 발행은 방
+> 토픽과 동일하게 커밋 이후(`@TransactionalEventListener(AFTER_COMMIT)`) 이뤄지며, 오프라인 보관은 없다(미접속 시 버려지고 다음 접속 시 방 목록 조회로 동기화).
 
 ### 6-5. 브로커 확장 전략 (✅ 단계별 확정)
 

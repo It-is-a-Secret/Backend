@@ -8,8 +8,10 @@ import com.blursome.blursome.chat.domain.ChatRoomMember;
 import com.blursome.blursome.chat.domain.ChatRoomProgressStatus;
 import com.blursome.blursome.chat.dto.request.ChatMessageSendRequest;
 import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
+import com.blursome.blursome.chat.dto.response.ChatRoomNotificationResponse;
 import com.blursome.blursome.chat.event.ChatMessageBroadcastEvent;
 import com.blursome.blursome.chat.event.ChatProgressAdvancedEvent;
+import com.blursome.blursome.chat.event.ChatRoomNotificationEvent;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.repository.ChatMessageRepository;
 import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
@@ -66,8 +68,27 @@ public class ChatMessageService {
     chatRoomRepository.advanceLastMessage(roomId, message.getId());
     ChatMessageResponse response = ChatMessageResponse.from(message);
     eventPublisher.publishEvent(new ChatMessageBroadcastEvent(roomId, response));
+    publishNewMessageNotifications(roomId, senderId, response);
     applyRevealProgress(membership, message);
     return response;
+  }
+
+  /**
+   * 방 토픽 브로드캐스트와 별개로, 발신자를 뺀 나머지 참여자의 개인 큐로 {@code NEW_MESSAGE}를 팬아웃한다
+   * (이슈 #88). 수신자가 그 방을 구독 중이 아니어도(방 목록 등 다른 화면) 방 목록·안읽음 배지를 즉시 갱신할 수
+   * 있게 하는 신호다. 발신자 본인은 제외해 자기 메시지로 자기 개인 큐가 울리지 않는다. 1:1 방이라 보통 상대 1명에게
+   * 발행되며, 전송은 방 토픽과 동일하게 커밋 이후({@link com.blursome.blursome.chat.event.ChatRoomNotificationListener})
+   * 수행된다.
+   *
+   * <p>단계 상승 {@code SYSTEM} 안내 메시지는 트리거 메시지 직후에 같은 방에 기록되며, 수신자는 이 트리거
+   * 메시지의 {@code NEW_MESSAGE}로 이미 목록이 갱신되므로 별도 팬아웃하지 않는다(중복 알림 방지).
+   */
+  private void publishNewMessageNotifications(
+      Long roomId, Long senderId, ChatMessageResponse message) {
+    for (Long recipientId : chatRoomMemberRepository.findOtherMemberIds(roomId, senderId)) {
+      eventPublisher.publishEvent(new ChatRoomNotificationEvent(
+          recipientId, ChatRoomNotificationResponse.newMessage(roomId, senderId, message)));
+    }
   }
 
   /**

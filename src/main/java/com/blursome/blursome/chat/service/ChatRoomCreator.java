@@ -4,12 +4,15 @@ import com.blursome.blursome.chat.domain.ChatRoom;
 import com.blursome.blursome.chat.domain.ChatRoomMember;
 import com.blursome.blursome.chat.dto.request.ChatMessageSendRequest;
 import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
+import com.blursome.blursome.chat.dto.response.ChatRoomNotificationResponse;
+import com.blursome.blursome.chat.event.ChatRoomNotificationEvent;
 import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
 import com.blursome.blursome.chat.repository.ChatRoomRepository;
 import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.service.MemberService;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -27,6 +30,7 @@ class ChatRoomCreator {
   private final ChatRoomMemberRepository chatRoomMemberRepository;
   private final MemberService memberService;
   private final ChatMessageService chatMessageService;
+  private final ApplicationEventPublisher eventPublisher;
 
   /**
    * 새 방·두 참여자·개설자({@code initiatorId})의 첫 메시지를 <b>하나의 트랜잭션</b>으로 저장한다(이슈 #87).
@@ -47,6 +51,14 @@ class ChatRoomCreator {
     // 같은 (REQUIRES_NEW) 트랜잭션에서 첫 메시지를 보낸다 — send는 REQUIRED라 이 트랜잭션에 합류하므로 방·메시지가
     // 원자적으로 커밋된다. 방금 flush된 방 행을 send가 비관적 락으로 잡아 진행도 카운트까지 일관 처리한다.
     ChatMessageResponse sent = chatMessageService.send(room.getId(), initiatorId, firstMessage);
+    // 수신자(상대)는 이 방을 구독한 적이 없으므로 방 토픽으로는 첫 메시지가 닿지 않는다. 개인 큐로 NEW_ROOM을
+    // 발행해(커밋 이후 전송) 상대가 방 목록에 새 대화 항목을 즉시 띄우게 한다(이슈 #88). 새 방 항목 렌더용으로
+    // 개설자 닉네임을 함께 싣는다. send()가 발행하는 NEW_MESSAGE도 상대에게 가지만, 둘 다 messageId 기준 멱등
+    // 신호라 클라이언트가 덮어쓰기로 처리한다.
+    eventPublisher.publishEvent(new ChatRoomNotificationEvent(
+        partnerId,
+        ChatRoomNotificationResponse.newRoom(
+            room.getId(), initiatorId, initiator.getNickName(), sent)));
     return new RoomOpenResult(room, true, sent);
   }
 

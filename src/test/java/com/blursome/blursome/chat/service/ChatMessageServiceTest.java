@@ -17,8 +17,10 @@ import com.blursome.blursome.chat.domain.ChatRoomMember;
 import com.blursome.blursome.chat.domain.ChatRoomProgressStatus;
 import com.blursome.blursome.chat.dto.request.ChatMessageSendRequest;
 import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
+import com.blursome.blursome.chat.dto.response.ChatRoomNotificationType;
 import com.blursome.blursome.chat.event.ChatMessageBroadcastEvent;
 import com.blursome.blursome.chat.event.ChatProgressAdvancedEvent;
+import com.blursome.blursome.chat.event.ChatRoomNotificationEvent;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.repository.ChatMessageRepository;
 import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
@@ -133,6 +135,49 @@ class ChatMessageServiceTest {
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", ChatErrorCode.ROOM_CLOSED.getCode());
     verify(chatMessageRepository, never()).save(any());
+  }
+
+  // ---------- 새 메시지 개인 알림 팬아웃(이슈 #88) ----------
+
+  @Test
+  @DisplayName("새 메시지는 발신자를 제외한 다른 참여자 개인 큐로 NEW_MESSAGE 알림을 팬아웃한다")
+  void send_whenText_thenFansOutNewMessageNotificationToOthers() {
+    // given — 짧은 텍스트라 단계 카운트 경로엔 진입하지 않고(findAllByRoomId 미호출) 알림 팬아웃만 검증한다.
+    given(membershipReader.getWritableMembership(ROOM_ID, SENDER_ID))
+        .willReturn(membership(SENDER_ID, 1L, activeRoom()));
+    givenSavedMessage();
+    given(chatRoomMemberRepository.findOtherMemberIds(ROOM_ID, SENDER_ID))
+        .willReturn(List.of(PARTNER_ID));
+
+    // when
+    chatMessageService.send(ROOM_ID, SENDER_ID, text("안녕"));
+
+    // then — 방 토픽 브로드캐스트 + 상대 개인 큐 NEW_MESSAGE 두 이벤트가 발행된다.
+    ArgumentCaptor<Object> captor = ArgumentCaptor.forClass(Object.class);
+    verify(eventPublisher, times(2)).publishEvent(captor.capture());
+    ChatRoomNotificationEvent notification = captor.getAllValues().stream()
+        .filter(ChatRoomNotificationEvent.class::isInstance)
+        .map(ChatRoomNotificationEvent.class::cast)
+        .findFirst().orElseThrow();
+    assertThat(notification.targetMemberId()).isEqualTo(PARTNER_ID);
+    assertThat(notification.notification().type()).isEqualTo(ChatRoomNotificationType.NEW_MESSAGE);
+    assertThat(notification.notification().roomId()).isEqualTo(ROOM_ID);
+    assertThat(notification.notification().partnerId()).isEqualTo(SENDER_ID);
+    assertThat(notification.notification().message().messageId()).isEqualTo(MESSAGE_ID);
+  }
+
+  @Test
+  @DisplayName("다른 참여자가 없으면(상대가 나간 방 등) NEW_MESSAGE 개인 알림은 발행하지 않는다")
+  void send_whenNoOtherParticipants_thenNoNotification() {
+    given(membershipReader.getWritableMembership(ROOM_ID, SENDER_ID))
+        .willReturn(membership(SENDER_ID, 1L, activeRoom()));
+    givenSavedMessage();
+    given(chatRoomMemberRepository.findOtherMemberIds(ROOM_ID, SENDER_ID)).willReturn(List.of());
+
+    chatMessageService.send(ROOM_ID, SENDER_ID, text("안녕"));
+
+    verify(eventPublisher, never()).publishEvent(any(ChatRoomNotificationEvent.class));
+    verify(eventPublisher).publishEvent(any(ChatMessageBroadcastEvent.class));
   }
 
   // ---------- 사진 공개 단계 카운트(이슈 #79) ----------
