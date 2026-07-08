@@ -13,10 +13,10 @@ spring:
 
   jpa:
     hibernate:
-      # 런칭 전 개발 단계: 엔티티 변경을 DB에 바로 반영하려고 update 사용.
-      # ⚠️ 런칭(운영 데이터 적재) 전 반드시 validate로 되돌릴 것 — update는 컬럼·테이블 추가만
-      #    반영하고 삭제·타입 변경은 안전하지 않다. (상세: docs/architecture/AWS_DEPLOYMENT.md §6.5)
-      ddl-auto: update
+      # ⚠️ 임시(테스트 배포 전용): DB 제약 변경이 많아 스키마를 1회 깨끗이 재생성하려고 create 사용.
+      #    create는 기동할 때마다 전 테이블 drop 후 재생성 → 데이터가 매번 초기화된다.
+      #    리셋 확인 후 반드시 update로 되돌릴 것. (원칙: docs/architecture/AWS_DEPLOYMENT.md §6.5)
+      ddl-auto: create
     show-sql: false
     open-in-view: false
 
