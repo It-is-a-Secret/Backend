@@ -118,6 +118,26 @@ class MemberServiceTest {
   }
 
   @Test
+  @DisplayName("정지(SUSPENDED) 회원이 로그인하면 MEMBER_SUSPENDED로 차단하고 재활성화하지 않는다")
+  void findOrCreateByOAuth_whenMemberSuspended_thenThrowsAndKeepsSuspended() {
+    // given
+    Member suspended = Member.createOAuthMember(
+        OAuthProvider.KAKAO, "kakao-1", "old-name", "old@example.com", "old-img");
+    suspended.suspend();
+    given(memberRepository.findByProviderAndProviderId(OAuthProvider.KAKAO, "kakao-1"))
+        .willReturn(Optional.of(suspended));
+    OAuthUserInfo userInfo = new OAuthUserInfo(
+        OAuthProvider.KAKAO, "kakao-1", "old@example.com", "new-name", "new-img");
+
+    // when & then
+    assertThatThrownBy(() -> memberService.findOrCreateByOAuth(userInfo))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", MemberErrorCode.MEMBER_SUSPENDED.getCode());
+    assertThat(suspended.isSuspended()).isTrue();
+    verify(memberRepository, never()).saveAndFlush(any(Member.class));
+  }
+
+  @Test
   @DisplayName("존재하지 않는 회원 조회 시 MEMBER_NOT_FOUND 예외가 발생한다")
   void findActiveMember_whenMemberNotFound_thenThrows() {
     // given

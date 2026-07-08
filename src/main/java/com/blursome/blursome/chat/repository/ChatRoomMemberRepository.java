@@ -22,8 +22,37 @@ public interface ChatRoomMemberRepository extends JpaRepository<ChatRoomMember, 
   @Query("select crm from ChatRoomMember crm "
       + "join fetch crm.chatRoom r "
       + "where crm.member.id = :memberId and crm.leftAt is null "
+      + "and not exists (select 1 from ChatRoomMember other, Block b "
+      + "where other.chatRoom = r and other.member.id <> :memberId "
+      + "and b.blocker.id = :memberId and b.blocked.id = other.member.id) "
       + "order by r.lastMessageId desc")
   List<ChatRoomMember> findActiveMembershipsWithRoom(@Param("memberId") Long memberId);
+
+  /**
+   * 조회자({@code memberId})가 같은 방의 상대를 차단했는지 조회한다(이슈 #77, 단방향 비노출). 차단은
+   * <b>차단자에게만</b> 비노출이므로, 차단자 방향({@code blocker = 조회자})만 본다 — 피차단자는 방을 계속 보되
+   * 송신만 막힌다. {@link #findActiveMembershipsWithRoom}의 목록 필터와 동일 기준을 단건 가시성에 적용한다.
+   */
+  @Query("select count(b) > 0 from ChatRoomMember other, Block b "
+      + "where other.chatRoom.id = :roomId and other.member.id <> :memberId "
+      + "and b.blocker.id = :memberId and b.blocked.id = other.member.id")
+  boolean existsViewerBlockInRoom(@Param("roomId") Long roomId,
+      @Param("memberId") Long memberId);
+
+  /**
+   * 두 회원이 모두 참여 중인 동결 가능/해제 가능 방(=ACTIVE 또는 BLOCKED)을 조회한다(이슈 #77). 차단 동결
+   * ({@code markBlocked})·해제 복구({@code unblockToActive})가 같은 방을 찾아 상태를 전이하는 데 쓴다. 종료
+   * ({@code CLOSED})는 페어 키가 비워져 새 방 대상이고 비가역이므로 제외한다.
+   */
+  @Query("select r from ChatRoom r "
+      + "join ChatRoomMember crm on crm.chatRoom = r "
+      + "where r.roomStatus in (com.blursome.blursome.chat.domain.ChatRoomStatus.ACTIVE, "
+      + "com.blursome.blursome.chat.domain.ChatRoomStatus.BLOCKED) "
+      + "and crm.member.id in (:memberAId, :memberBId) "
+      + "group by r "
+      + "having count(distinct crm.member.id) = 2")
+  Optional<ChatRoom> findActiveOrBlockedRoomBetween(@Param("memberAId") Long memberAId,
+      @Param("memberBId") Long memberBId);
 
   /**
    * 방-회원 참여 행을 방 상태·{@code leftAt}와 무관하게 조회한다(권한 판별용).
@@ -35,8 +64,8 @@ public interface ChatRoomMemberRepository extends JpaRepository<ChatRoomMember, 
       @Param("memberId") Long memberId);
 
   /**
-   * 방의 모든 참여 행을 조회한다(1:1이므로 보통 2행). 단계 동의 시 양쪽 멤버의 동의 단계를 함께 비교해야 하므로,
-   * 본인 멤버십과 상대 멤버십을 한 번에 가져오는 데 쓴다(설계 §7-5).
+   * 방의 모든 참여 행을 조회한다(1:1이므로 보통 2행). 사진 공개 단계는 양쪽 멤버의 유효 메시지 누적의
+   * 최소값으로 판정하므로(이슈 #79), 본인 멤버십과 상대 멤버십을 한 번에 가져오는 데 쓴다(설계 §7-5).
    */
   @Query("select crm from ChatRoomMember crm where crm.chatRoom.id = :roomId")
   List<ChatRoomMember> findAllByRoomId(@Param("roomId") Long roomId);
@@ -67,6 +96,15 @@ public interface ChatRoomMemberRepository extends JpaRepository<ChatRoomMember, 
       @Param("memberId") Long memberId);
 
   /**
+   * 방에서 나를 제외한 다른 참여자들의 회원 id를 조회한다(이슈 #88, 새 메시지 개인 알림 팬아웃 대상). 1:1 방이라
+   * 보통 상대 1명이며, 발신자 본인은 제외하므로 자기 메시지로 자기 개인 큐가 울리지 않는다. {@code member_id}
+   * 컬럼만 투영해 가볍게 조회한다({@code chat_room_id} 선두 유니크 인덱스를 탄다).
+   */
+  @Query("select crm.member.id from ChatRoomMember crm "
+      + "where crm.chatRoom.id = :roomId and crm.member.id <> :memberId")
+  List<Long> findOtherMemberIds(@Param("roomId") Long roomId, @Param("memberId") Long memberId);
+
+  /**
    * 주어진 방들에서 나를 제외한 상대 참여자 정보(닉네임 + 읽음 커서)를 한 번에 조회한다(목록 조회 N+1 회피).
    * 1:1 방이므로 방당 한 행이며, 읽음 커서로 "내가 보낸 메시지를 상대가 어디까지 읽었는지"(읽음 표시)를 계산한다.
    * 상대가 아직 아무것도 읽지 않았으면 {@code lastReadMessageId}가, 온보딩 전이면 {@code partnerNickname}이 null일 수 있다.
@@ -77,17 +115,4 @@ public interface ChatRoomMemberRepository extends JpaRepository<ChatRoomMember, 
       + "where crm.chatRoom.id in :roomIds and crm.member.id <> :memberId")
   List<RoomPartnerInfo> findPartnerInfos(@Param("roomIds") Collection<Long> roomIds,
       @Param("memberId") Long memberId);
-
-  /**
-   * 두 회원이 모두 참여 중인 {@code ACTIVE} 방을 조회한다(중복 방 생성 방지용, 설계 §7-1).
-   * 같은 방에 두 회원이 모두 속해 있고 방이 활성일 때만 매칭된다.
-   */
-  @Query("select r from ChatRoom r "
-      + "join ChatRoomMember crm on crm.chatRoom = r "
-      + "where r.roomStatus = com.blursome.blursome.chat.domain.ChatRoomStatus.ACTIVE "
-      + "and crm.member.id in (:memberAId, :memberBId) "
-      + "group by r "
-      + "having count(distinct crm.member.id) = 2")
-  Optional<ChatRoom> findActiveRoomBetween(@Param("memberAId") Long memberAId,
-      @Param("memberBId") Long memberBId);
 }

@@ -17,6 +17,7 @@ import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
 import com.blursome.blursome.chat.dto.response.ChatRoomSummaryResponse;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.service.ChatRoomService;
+import com.blursome.blursome.feed.dto.response.RevealedFeedImagesResponse;
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.global.security.JwtAuthentication;
 import com.blursome.blursome.global.security.JwtAuthenticationEntryPoint;
@@ -134,25 +135,46 @@ class ChatRoomControllerTest {
   }
 
   @Test
-  @DisplayName("단계 동의 시 200과 갱신된 방 요약을 반환한다")
-  void handleAgreeProgress() throws Exception {
-    given(chatRoomService.agreeProgress(ROOM_ID, MEMBER_ID))
-        .willReturn(summary(ChatRoomProgressStatus.PHOTO_REVEAL_STEP_1));
+  @DisplayName("단계별 사진 조회 시 200과 사진 배열(소유자 role·공개 여부·URL)을 반환한다")
+  void handleGetRevealedImages() throws Exception {
+    given(chatRoomService.getRevealedImages(ROOM_ID, MEMBER_ID)).willReturn(
+        new RevealedFeedImagesResponse(List.of(
+            new RevealedFeedImagesResponse.Image(
+                RevealedFeedImagesResponse.Role.ME, 1, true, "https://original/me/1"),
+            new RevealedFeedImagesResponse.Image(
+                RevealedFeedImagesResponse.Role.PARTNER, 1, false, "https://cdn/partner/1"))));
 
-    mockMvc.perform(post("/api/chat/rooms/{roomId}/progress/agree", ROOM_ID))
+    mockMvc.perform(get("/api/chat/rooms/{roomId}/revealed-images", ROOM_ID))
         .andExpect(status().isOk())
-        .andExpect(jsonPath("$.data.progressStatus").value("PHOTO_REVEAL_STEP_1"));
+        .andExpect(jsonPath("$.data.images[0].role").value("ME"))
+        .andExpect(jsonPath("$.data.images[0].displayOrder").value(1))
+        .andExpect(jsonPath("$.data.images[0].revealed").value(true))
+        .andExpect(jsonPath("$.data.images[0].imageUrl").value("https://original/me/1"))
+        .andExpect(jsonPath("$.data.images[1].role").value("PARTNER"))
+        .andExpect(jsonPath("$.data.images[1].revealed").value(false))
+        .andExpect(jsonPath("$.data.images[1].imageUrl").value("https://cdn/partner/1"));
   }
 
   @Test
-  @DisplayName("이미 동의한 단계 재동의 시 409와 PROGRESS_ALREADY_AGREED를 반환한다")
-  void handleAgreeProgressAlreadyAgreed() throws Exception {
-    given(chatRoomService.agreeProgress(ROOM_ID, MEMBER_ID))
-        .willThrow(BaseException.from(ChatErrorCode.PROGRESS_ALREADY_AGREED));
+  @DisplayName("참여자가 아닌 방의 사진 조회 시 403과 NOT_PARTICIPANT를 반환한다")
+  void handleGetRevealedImagesNotParticipant() throws Exception {
+    given(chatRoomService.getRevealedImages(ROOM_ID, MEMBER_ID))
+        .willThrow(BaseException.from(ChatErrorCode.NOT_PARTICIPANT));
 
-    mockMvc.perform(post("/api/chat/rooms/{roomId}/progress/agree", ROOM_ID))
+    mockMvc.perform(get("/api/chat/rooms/{roomId}/revealed-images", ROOM_ID))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("CHAT_403_NOT_PARTICIPANT"));
+  }
+
+  @Test
+  @DisplayName("차단/신고/종료로 비활성인 방의 사진 조회 시 409와 ROOM_CLOSED를 반환한다")
+  void handleGetRevealedImagesRoomNotActive() throws Exception {
+    given(chatRoomService.getRevealedImages(ROOM_ID, MEMBER_ID))
+        .willThrow(BaseException.from(ChatErrorCode.ROOM_CLOSED));
+
+    mockMvc.perform(get("/api/chat/rooms/{roomId}/revealed-images", ROOM_ID))
         .andExpect(status().isConflict())
-        .andExpect(jsonPath("$.code").value("CHAT_409_PROGRESS_ALREADY_AGREED"));
+        .andExpect(jsonPath("$.code").value("CHAT_409_ROOM_CLOSED"));
   }
 
   @Test

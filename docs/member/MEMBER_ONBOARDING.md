@@ -41,17 +41,19 @@
 
 ## 2. 도메인 모델 변경/추가
 
-### 2-1. Member 확장 (온보딩 입력 필드)
+### 2-1. Member / Feed 역할 분리 (온보딩 입력 필드)
 
-기존 `Member`에 온보딩 프로필 필드를 추가한다. 모두 가입 완료 전 `null`이며 `completeOnboarding(...)`에서 세팅한다.
+온보딩 입력값은 두 엔티티로 나눠 저장한다. `Member`는 가입 정체성(`nickName`)만 받고, **공개 프로필(생년·학과·MBTI·성별)은 `Feed`가 단독 보유**한다. `Member`에는 이 4개 필드를 두지 않는다(중복 제거).
 
-| 필드 | 타입 / 제약 | 설명 |
+| 입력 필드 | 저장 위치 | 비고 |
 |---|---|---|
-| `birthYear` | `Integer`, nullable, col `birth_year` | 생년(예: 2001) |
-| `department` | `String`, nullable, len 50 | 학과 |
-| `mbti` | `Mbti`(enum, STRING), nullable, len 4 | MBTI 16유형 |
+| `nickName` | `Member.nickName` (+ `Feed.nickName` 복사) | 가입 정체성. 유니크. 피드에 비정규화 중복 |
+| `birthYear` | `Feed.birthYear` | `nullable=false`(피드는 온보딩 후에만 생성) |
+| `department` | `Feed.department` (`Department` enum, STRING) | `nullable=false`, len 50. 학과 정규화(이슈 #40) — 고정 enum 입력 |
+| `mbti` | `Feed.mbti` (`Mbti` enum, STRING) | **`nullable=true`**, len 4. **선택값**: 미입력(null)="모름"(#76) |
+| `gender` | `Feed.gender` (`Gender` = MALE/FEMALE) | `nullable=false`, len 10 |
 
-> **gender**: 기존 `Member.gender`(`Gender` = MALE/FEMALE) 필드를 온보딩에서 함께 수집한다. `completeOnboarding`의 시그니처는 `(nickName, birthYear, department, mbti, gender)`이다.
+> `completeOnboarding`의 시그니처는 `(nickName)`으로 축소됐고, 4개 공개 프로필 필드는 `FeedService.createFeed(member, gender, birthYear, department, mbti)`로 전달된다. 피드 상세는 [`docs/feed/FEED_DOMAIN.md`](../feed/FEED_DOMAIN.md).
 
 ### 2-2. InterestCategory (`interest_category`) — 🆕
 
@@ -120,13 +122,15 @@ CREATE TABLE `interest_category` (
         │
         ▼
  (3) POST /api/members/me/onboarding  { nickName, birthYear, department, mbti, gender, interests[] }
-        ├─ member.completeOnboarding(nickName, birthYear, department, mbti, gender)   (VERIFIED → COMPLETED)
+        ├─ member.completeOnboarding(nickName)   (VERIFIED → COMPLETED, 닉네임만 세팅)
         │     ├─ VERIFIED 아니면 409 SCHOOL_VERIFICATION_REQUIRED / 이미 완료면 409 ALREADY_ONBOARDED
         │     └─ nick_name 유니크 충돌 → 409 NICKNAME_DUPLICATED
-        └─ interests 저장(InterestCategory, distinct)
+        ├─ interests 저장(InterestCategory, distinct)
+        └─ Feed 생성(FeedService.createFeed(member, gender, birthYear, department, mbti))
+              — 공개 프로필을 Feed에 저장, 온보딩 트랜잭션과 원자적 처리
         │
         ▼
- [registrationStatus = COMPLETED → canUseService() = true]
+ [registrationStatus = COMPLETED → canUseService() = true, Feed 행 생성 완료]
 ```
 
 - (1)은 DB를 변경하지 않으므로 읽기 트랜잭션, (2)·(3)은 쓰기 트랜잭션.
@@ -149,7 +153,7 @@ CREATE TABLE `interest_category` (
 
 - `SendSchoolEmailCodeRequest`: `schoolEmail` `@NotBlank @Email`
 - `VerifySchoolEmailRequest`: `schoolEmail` `@NotBlank @Email`, `code` `@Pattern(\d{6})`
-- `OnboardingRequest`: `nickName` `@NotBlank @Size(max=30)`, `birthYear` `@NotNull @Min(1900) @Max(2100)`, `department` `@NotBlank @Size(max=50)`, `mbti` `@NotNull`, `gender` `@NotNull`, `interests` `@NotEmpty`
+- `OnboardingRequest`: `nickName` `@NotBlank @Size(max=30)`, `birthYear` `@NotNull @Min(1900) @Max(2100)`, `department` `@NotNull`(`Department` enum), `mbti` **선택값(검증 없음, null="모름" 허용, #76)**, `gender` `@NotNull`, `interests` `@NotEmpty`
 
 ---
 
@@ -166,7 +170,7 @@ com.blursome.member
 │   ├── MemberRepository.java                 # 기존 (flush로 유니크 검증)
 │   └── InterestCategoryRepository.java       # 🆕
 ├── domain/
-│   ├── Member.java                           # birthYear/department/mbti 추가, completeOnboarding 변경
+│   ├── Member.java                           # 공개 프로필 4필드는 Feed로 이관, completeOnboarding(nickName)으로 축소
 │   ├── Mbti.java                             # 🆕
 │   ├── InterestCategory.java                 # 🆕
 │   └── InterestCategoryType.java            # 🆕
@@ -220,6 +224,8 @@ com.blursome.member
 - **인증 시도 제한 / 발송 레이트리밋** — 무차별 코드 입력·메일 폭탄 방어.
 - **인정 도메인 확장** — 대학원/타 캠퍼스 도메인 추가 시 `SchoolEmailPolicy` 화이트리스트를 집합으로 확장.
 - **관심사 수정/재선택 API** — 온보딩 이후 관심사 변경(현재 `InterestCategoryRepository.deleteByMemberId` 보유, 노출 API 미정).
+- **피드 탐색 API** — 관심사 기반 피드 조회 구현. 설계는 [`docs/feed/FEED_DOMAIN.md`](../feed/FEED_DOMAIN.md) 참조.
+- **닉네임 변경 동기화** — 닉네임 변경 기능 도입 시 `Feed.updateNickName()` 연동 필요.
 
 ---
 

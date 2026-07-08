@@ -1,21 +1,23 @@
 package com.blursome.blursome.chat.service;
 
+import com.blursome.blursome.block.repository.BlockRepository;
 import com.blursome.blursome.chat.domain.ChatRoom;
 import com.blursome.blursome.chat.domain.ChatRoomMember;
-import com.blursome.blursome.chat.domain.ChatRoomProgressStatus;
+import com.blursome.blursome.chat.dto.request.ChatMessageSendRequest;
 import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
 import com.blursome.blursome.chat.dto.response.ChatRoomSummaryResponse;
-import com.blursome.blursome.chat.event.ChatProgressAdvancedEvent;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
 import com.blursome.blursome.chat.repository.ChatRoomRepository;
 import com.blursome.blursome.chat.repository.RoomPartnerInfo;
+import com.blursome.blursome.feed.dto.response.RevealedFeedImagesResponse;
+import com.blursome.blursome.feed.service.FeedImageService;
 import com.blursome.blursome.global.exception.BaseException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -34,17 +36,46 @@ public class ChatRoomService {
   private final ChatMessageService chatMessageService;
   private final ChatRoomCreator chatRoomCreator;
   private final ChatRoomMembershipReader membershipReader;
-  private final ApplicationEventPublisher eventPublisher;
+  private final FeedImageService feedImageService;
+  private final BlockRepository blockRepository;
 
   /**
-   * 매칭된 두 회원의 1:1 방을 개설한다. 이미 두 회원 사이에 {@code ACTIVE} 방이 있으면 그 방을 반환하고(중복 방지), 없을 때만 새로 만든다. 과거에
-   * 종료({@code CLOSED})된 방만 있으면 새 방을 개설한다. 실제 쓰기는 {@link ChatRoomCreator}의 독립 트랜잭션에서 일어나므로 이 메서드 자체는
-   * 읽기 전용으로 둔다.
+   * 두 회원의 1:1 방을 열고, 첫 접촉이면 개설자({@code initiatorId})의 첫 메시지까지 보낸다(이슈 #87). 페어당 방은
+   * 영구히 하나이므로(유니크 제약), 기존 방을 페어 키로 상태 무관하게 조회해 분기한다:
+   * <ul>
+   *   <li>방 없음(첫 접촉) → 새로 개설하고 첫 메시지를 보내 {@code created=true}로 반환한다(방·메시지는 한 트랜잭션).</li>
+   *   <li>{@code ACTIVE} → "이미 채팅 중"이므로 그 방을 {@code created=false}로 반환한다(메시지 미전송).</li>
+   *   <li>{@code CLOSED} → 관계 영구 종료라 {@link ChatErrorCode#RELATIONSHIP_CLOSED}.</li>
+   *   <li>{@code REPORTED} → 검토 대기라 {@link ChatErrorCode#RELATIONSHIP_UNDER_REVIEW}.</li>
+   *   <li>{@code BLOCKED} → 차단 동결이라 {@link ChatErrorCode#BLOCKED_PARTICIPANT}(방어적; Block 테이블 선검사가 보통 먼저 막음).</li>
+   * </ul>
+   * 실제 쓰기(방+첫 메시지)는 {@link ChatRoomCreator}의 독립 트랜잭션(REQUIRES_NEW)에서 원자적으로 일어나므로 이
+   * 메서드 자체는 읽기 전용으로 둔다.
    */
-  public ChatRoom openRoom(Long memberAId, Long memberBId) {
-    validateDistinctMembers(memberAId, memberBId);
-    return chatRoomMemberRepository.findActiveRoomBetween(memberAId, memberBId)
-        .orElseGet(() -> createRoom(memberAId, memberBId));
+  public RoomOpenResult openRoom(Long initiatorId, Long partnerId,
+      ChatMessageSendRequest firstMessage) {
+    validateDistinctMembers(initiatorId, partnerId);
+    // 신규 채팅 시작 차단(이슈 #77). 어느 방향 차단이든 새 방을 열지 않는다(기존 방은 동결되어 따로 막힘). 대화 시작
+    // 유스케이스가 Block 테이블을 먼저 검사하지만, 다른 호출 경로를 방어한다.
+    if (blockRepository.existsBlockBetween(initiatorId, partnerId)) {
+      throw BaseException.from(ChatErrorCode.BLOCKED_PARTICIPANT);
+    }
+    return chatRoomRepository.findByPairKey(ChatRoom.pairKey(initiatorId, partnerId))
+        .map(this::evaluateExisting)
+        .orElseGet(() -> createRoom(initiatorId, partnerId, firstMessage));
+  }
+
+  /**
+   * 페어에 이미 존재하는 방을 상태별로 평가한다(이슈 #87). ACTIVE만 "이미 채팅 중"으로 그대로 반환하고
+   * (메시지 미전송), CLOSED/REPORTED/BLOCKED는 각각의 도메인 예외로 막는다.
+   */
+  private RoomOpenResult evaluateExisting(ChatRoom room) {
+    return switch (room.getRoomStatus()) {
+      case ACTIVE -> RoomOpenResult.existing(room);
+      case CLOSED -> throw BaseException.from(ChatErrorCode.RELATIONSHIP_CLOSED);
+      case REPORTED -> throw BaseException.from(ChatErrorCode.RELATIONSHIP_UNDER_REVIEW);
+      case BLOCKED -> throw BaseException.from(ChatErrorCode.BLOCKED_PARTICIPANT);
+    };
   }
 
   /**
@@ -61,14 +92,19 @@ public class ChatRoomService {
   }
 
   /**
-   * 새 방을 만든다. 동시 개설 경합에서 지면(active_pair_key 유니크 제약 위반) 상대가 방금 커밋한 ACTIVE 방을 새 트랜잭션으로 재조회해 그대로
-   * 반환한다(완전 멱등). 위반인데도 방이 안 보이면 일시적 경합으로 보고 409로 변환.
+   * 첫 접촉으로 새 방과 첫 메시지를 만든다(이슈 #87). 방·첫 메시지 저장은 {@link ChatRoomCreator#createWithFirstMessage}의
+   * 독립 트랜잭션(REQUIRES_NEW)에서 원자적으로 처리된다. 동시 첫 접촉 경합에서 지면({@code pair_key} 유니크 제약 위반)
+   * 그 트랜잭션만 통째로 롤백되고(방·메시지 모두 없음), 상대가 방금 커밋한 방을 새 트랜잭션으로 재조회해 상태별로 평가한다 —
+   * 보통 상대가 만든 ACTIVE 방이 잡혀 {@code created=false}("이미 채팅 중")로 흡수되므로 첫 메시지가 중복 전송되지 않는다.
+   * 위반인데도 방이 안 보이면 일시적 경합으로 보고 409로 변환.
    */
-  private ChatRoom createRoom(Long memberAId, Long memberBId) {
+  private RoomOpenResult createRoom(Long initiatorId, Long partnerId,
+      ChatMessageSendRequest firstMessage) {
     try {
-      return chatRoomCreator.create(memberAId, memberBId);
+      return chatRoomCreator.createWithFirstMessage(initiatorId, partnerId, firstMessage);
     } catch (DataIntegrityViolationException e) {
-      return chatRoomCreator.findActiveRoomInNewTx(memberAId, memberBId)
+      return chatRoomCreator.findRoomInNewTx(initiatorId, partnerId)
+          .map(this::evaluateExisting)
           .orElseThrow(() -> BaseException.from(ChatErrorCode.ROOM_CREATION_CONFLICT));
     }
   }
@@ -140,43 +176,6 @@ public class ChatRoomService {
   }
 
   /**
-   * 다음 단계 공개에 동의한다(설계 §7-5). 동의 대상은 클라이언트 입력이 아니라 서버가 방의 현재 단계 다음으로 계산한다(§9). 내가 동의 단계를 올린 뒤 양쪽 동의가
-   * 모두 다음 단계 이상이면 방 단계가 한 칸 오른다. 이미 마지막 단계이거나 이미 그 단계에 동의했으면 {@code PROGRESS_ALREADY_AGREED}(409).
-   * 클래스 기본값({@code readOnly = true})을 덮어 쓰기 트랜잭션으로 연다.
-   *
-   * <p>단계가 실제로 오르면 {@link ChatProgressAdvancedEvent}를 발행한다. 상대 클라이언트에 대한 실시간
-   * {@code /topic/rooms/{roomId}} 브로드캐스트는 WebSocket 단계에서 이 이벤트를 구독하는 리스너가 담당한다(설계 §7-5).
-   */
-  @Transactional
-  public ChatRoomSummaryResponse agreeProgress(Long roomId, Long memberId) {
-    // 단계 동의는 방 상태를 바꾸는 쓰기다. 종료(CLOSED)된 방에서는 더 진행할 수 없으므로 쓰기 규칙으로 검증해
-    // 종료된 방 동의를 ROOM_CLOSED(409)로 막는다(조회 가시성은 종료된 방도 허용하므로 여기선 쓰기 규칙을 쓴다).
-    ChatRoomMember membership = membershipReader.getWritableMembership(roomId, memberId);
-    ChatRoom room = membership.getChatRoom();
-    if (room.getProgressStatus().isLast()) {
-      throw BaseException.from(ChatErrorCode.PROGRESS_ALREADY_AGREED);
-    }
-    ChatRoomProgressStatus target = room.getProgressStatus().next();
-    try {
-      membership.agreeProgress(target);
-    } catch (IllegalArgumentException e) {
-      // 동의는 단조 증가만 허용 — 이미 그 단계에 동의한 재요청은 도메인이 거부한다.
-      throw BaseException.from(ChatErrorCode.PROGRESS_ALREADY_AGREED);
-    }
-    ChatRoomMember other = findOtherMembership(roomId, membership);
-    boolean advanced = room.advanceProgressIfBothAgreed(membership, other);
-    if (advanced) {
-      eventPublisher.publishEvent(new ChatProgressAdvancedEvent(roomId, room.getProgressStatus()));
-    }
-    long unreadCount = chatMessageService.getUnreadCount(
-        roomId, membership.getLastReadMessageId(), memberId);
-    ChatMessageResponse lastMessage = chatMessageService.getLastMessage(room.getLastMessageId());
-    return ChatRoomSummaryResponse.of(
-        room, other.getMember().getNickName(), lastMessage, other.getLastReadMessageId(),
-        unreadCount);
-  }
-
-  /**
    * 채팅방을 나간다(영구, 설계 §7-6). 1:1이므로 한쪽 나가기는 방 종료({@code CLOSED})로 이어진다. 나가는 본인은 즉시 목록에서
    * 사라지고(자신의 {@code leftAt} 세팅) 이후 이력·송신이 모두 막힌다. 반면 남은 상대는 방이 종료돼도 직접 나갈 때까지는
    * 목록·이력을 계속 볼 수 있고(조회 가시성은 방 상태가 아니라 본인 {@code leftAt}으로만 판별), 송신만 {@code ROOM_CLOSED}로
@@ -194,6 +193,60 @@ public class ChatRoomService {
     ChatRoomMember membership = membershipReader.getVisibleMembership(roomId, memberId);
     membership.leave();
     room.close();
+  }
+
+  /**
+   * 차단 발생 시 두 회원 사이 진행 중 방을 동결한다(이슈 #77). 차단 도메인({@code BlockService})이 차단 등록
+   * 직후 호출하는 진입점이다(Service → Service). ACTIVE 방이 있으면 {@code BLOCKED}로 전환해 양쪽 송신·원본
+   * 공개·단계 진행을 멈춘다. 동결할 방이 없거나(과거 종료/미개설) 이미 동결된 방은 멱등하게 무시한다. 클래스 기본값
+   * ({@code readOnly = true})을 덮어 쓰기 트랜잭션으로 연다.
+   */
+  @Transactional
+  public void freezeRoomOnBlock(Long memberAId, Long memberBId) {
+    chatRoomMemberRepository.findActiveOrBlockedRoomBetween(memberAId, memberBId)
+        .ifPresent(ChatRoom::markBlocked);
+  }
+
+  /**
+   * 차단이 모두 해제됐을 때 동결된 방을 복구한다(이슈 #77, BLOCKED → ACTIVE). 차단 도메인이 <b>양방향 차단이
+   * 모두 사라진 것을 확인한 뒤에만</b> 호출한다 — 반대 방향 차단이 남아 있으면 호출하지 않으므로 여기서는 잔존
+   * 차단을 다시 검사하지 않는다. 동결 방이 없거나 이미 ACTIVE면 멱등하게 무시하고, 종료(CLOSED)된 방은
+   * {@code unblockToActive}가 되살리지 않는다(비가역).
+   */
+  @Transactional
+  public void restoreRoomOnUnblock(Long memberAId, Long memberBId) {
+    chatRoomMemberRepository.findActiveOrBlockedRoomBetween(memberAId, memberBId)
+        .ifPresent(ChatRoom::unblockToActive);
+  }
+
+  /**
+   * 채팅 단계에 따라 양쪽(본인·상대)의 사진을 조회한다(설계 §3·§4, ④-b, 이슈 #85). 방의 현재 {@code progressStatus}가
+   * 정하는 공개 장수 N만큼 각자의 원본이 {@code displayOrder} 순서대로 단기 Presigned GET으로 공개되고, 나머지는
+   * 블러본으로 내려온다. 각 사진은 {@code role}({@code ME}/{@code PARTNER})로 소유자를 구분한다. 공개 장수 산출은
+   * chat 도메인(enum)이 소유하고, 원본/블러본 key·버킷·URL 발급은 feed 도메인이 전담한다 — chat은 N(장수)만 넘기고
+   * feed 내부 구조를 모른다(chat→feed 단방향, Service→Service).
+   *
+   * <p>참여자 검증은 {@link ChatRoomMembershipReader#getVisibleMembership}로 처리한다(방 없음/내가 나감 →
+   * 404, 비참여자 → 403). 다만 <b>원본 공개는 일반 메시지 이력 조회보다 민감</b>하므로 {@code ACTIVE} 방에서만
+   * 발급한다 — 차단({@code BLOCKED})·신고({@code REPORTED})·종료({@code CLOSED}) 상태에서는 원본 Presigned GET을
+   * 발급하지 않고 기존 계약대로 {@code ROOM_CLOSED}(409)로 막는다(이슈 #85). 쓰기 락은 필요 없어(드문 조회, URL은
+   * 5분 만료) 비관적 락 대신 활성 여부만 명시 검증한다.
+   */
+  public RevealedFeedImagesResponse getRevealedImages(Long roomId, Long memberId) {
+    ChatRoomMember membership = membershipReader.getVisibleMembership(roomId, memberId);
+    ChatRoom room = membership.getChatRoom();
+    // BLOCKED/REPORTED/CLOSED: 원본 공개는 ACTIVE 방으로 한정한다(원본 Presigned 미발급).
+    if (!room.isActive()) {
+      throw BaseException.from(ChatErrorCode.ROOM_CLOSED);
+    }
+    int revealCount = room.getProgressStatus().revealedOriginalCount();
+    ChatRoomMember partner = findOtherMembership(roomId, membership);
+    List<RevealedFeedImagesResponse.Image> images = new ArrayList<>();
+    images.addAll(feedImageService.issueRevealedImages(
+        memberId, revealCount, RevealedFeedImagesResponse.Role.ME).images());
+    images.addAll(feedImageService.issueRevealedImages(
+        partner.getMember().getId(), revealCount, RevealedFeedImagesResponse.Role.PARTNER).images());
+    return new RevealedFeedImagesResponse(images);
   }
 
   /**

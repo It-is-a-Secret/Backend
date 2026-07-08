@@ -18,7 +18,7 @@ BlurSome의 채팅(Chat) 도메인 전체 로직을 정의합니다. WebSocket +
 ### 목표
 
 - 매칭된 두 회원이 실시간으로 대화한다.
-- 대화가 진행됨에 따라 **상호 동의**로 사진 공개 단계(`progressStatus`)를 올린다.
+- 대화가 진행됨에 따라 **유효 메시지 누적 수**(양방향)로 사진 공개 단계(`progressStatus`)를 올린다(이슈 #79).
 - 한쪽이 나가거나 대화가 종료되면 방을 `CLOSED` 처리한다. 단, **나간 사람만** 즉시 목록에서 사라지고, **남은 사람은**
   방이 종료돼도 직접 나갈 때까지 목록·이력을 그대로 볼 수 있다(송신만 막힘). → §7-6.
 
@@ -27,9 +27,9 @@ BlurSome의 채팅(Chat) 도메인 전체 로직을 정의합니다. WebSocket +
 | 항목              | 결정                                 | 영향                                                       |
 |-----------------|------------------------------------|----------------------------------------------------------|
 | 참여 구조           | **1:1 고정(2명)**                     | 방당 `ChatRoomMember` 정확히 2행, 상대방 조회 단순                    |
-| 재입장             | **불가** — 나가면 방 종료(`CLOSED`), 재개 없음 | 다시 대화하려면 새 매칭 → 새 방 개설                                   |
+| 재입장             | **불가** — 나가면 방 종료(`CLOSED`), 재개 없음 | `CLOSED`는 **A-B 관계의 영구 종료**(이슈 #87) — 같은 페어는 다시 방을 열 수 없다 |
 | 접속 상태(presence) | **미제공** — 상대 온라인 여부를 표시하지 않음       | `lastActiveAt` 등 활동 시각 필드를 두지 않음. 앱 종료/연결 끊김은 DB에 기록 안 함 |
-| 단계 진행           | **상호 동의** (양쪽 수락 필요)               | `ChatRoomMember.agreedProgressStatus` 컬럼으로 각자 동의 단계 보관   |
+| 단계 진행           | **유효 메시지 누적 수**(양방향 AND)            | 별도 동의 버튼 없음. `ChatRoomMember.validMessageCount`로 각자 누적, `min(A,B)`가 임계값(10/20/30/40/50)을 넘으면 단계 상승(이슈 #79) |
 
 ### 전제 / 선행 작업
 
@@ -68,21 +68,22 @@ BlurSome의 채팅(Chat) 도메인 전체 로직을 정의합니다. WebSocket +
 | `roomStatus`            | `ChatRoomStatus`, `nullable=false`, len 20         | 방 활성/종료 상태                                              |
 | `progressStatus`        | `ChatRoomProgressStatus`, `nullable=false`, len 30 | 사진 공개 단계                                                |
 | `lastMessageId`         | `Long`, nullable                                   | **미리보기 비정규화** — 마지막 메시지 id. FK 아님(무결성 미보장), 메시지 저장 시 갱신 |
-| `activePairKey`         | `String`, nullable, **unique** `uk_chat_room_active_pair`, len 40 | 두 참여 회원 id를 정렬한 키(`min-max`). ACTIVE 동안만 값 보유, 종료 시 `null`. 유니크 제약으로 **회원 쌍당 ACTIVE 방 1개**를 DB 레벨에서 보장(동시 개설 방지). 유니크 인덱스는 다중 `null`을 허용하므로 같은 페어의 CLOSED 방은 여러 개 가능 |
+| `pairKey`               | `String`, nullable, **unique** `uk_chat_room_pair`, len 40 | 두 참여 회원 id를 정렬한 키(`min-max`). 방 생성 시 한 번 채워지고 **이후 비워지지 않는다**(이슈 #87). 유니크 제약으로 **회원 쌍당 방 1개**를 DB 레벨에서 영구 보장한다 — `CLOSED`가 관계의 영구 종료가 되면서 종료된 페어도 새 방을 열 수 없다. 페어당 방이 단건이라 대화 시작 시 `findByPairKey`로 상태 무관 조회해 분기한다 |
 | `createdAt`/`updatedAt` | `BaseEntity`                                       | 감사 필드                                                   |
 
-- 팩토리: `ChatRoom.createOnMatched(memberAId, memberBId)` → `ACTIVE` / `MATCHED` / `lastMessageId=null` / `activePairKey=min-max`
-- `close()`는 `roomStatus=CLOSED`로 바꾸며 `activePairKey=null`로 비워 같은 페어의 새 방 개설을 허용한다.
+- 팩토리: `ChatRoom.createOnMatched(memberAId, memberBId)` → `ACTIVE` / `MATCHED` / `lastMessageId=null` / `pairKey=min-max`
+- `close()`는 `roomStatus=CLOSED`로만 바꾼다. **`pairKey`를 비우지 않는다**(이슈 #87) — CLOSED는 A-B 관계의 영구 종료(terminal)라 같은 페어는 새 방을 열 수 없다.
 
 > ⚠️ **스키마/마이그레이션 주의 — 유니크 제약 누락 금지**
-> `uk_chat_room_active_pair (active_pair_key)` 유니크 제약은 동시 개설 시 ACTIVE 방 중복 생성을 막는 **유일한 최종 방어선**이다(서비스 계층 선조회만으로는 경합을 막지 못함).
-> - 운영(`prod`)은 `spring.jpa.hibernate.ddl-auto: validate`라 **Hibernate가 제약을 생성하지 않는다**(컬럼/테이블 존재만 검증). 따라서 운영 스키마에는 이 유니크 제약을 **반드시 별도로 반영**해야 한다.
-> - 로컬(`local`)은 `ddl-auto: update`지만 기존 테이블에 유니크 제약을 사후 추가해주지 않을 수 있으므로, 검증 시 실제 인덱스 생성 여부를 확인한다.
-> - 제약이 누락되면 동시 매칭에서 같은 페어의 ACTIVE 방이 중복 생성될 수 있고, `CHAT_409_ROOM_CREATION_CONFLICT` 방어도 무력화된다.
+> `uk_chat_room_pair (pair_key)` 유니크 제약은 동시 개설 시 같은 페어 방 중복 생성을 막는 **유일한 최종 방어선**이다(서비스 계층 선조회만으로는 경합을 막지 못함).
+> - 운영(`prod`)은 **런칭 전 개발 단계라 현재 `spring.jpa.hibernate.ddl-auto: update`로 배포한다**(엔티티 변경을 그대로 반영). `update`는 **컬럼·테이블·인덱스 추가만** 반영하고 삭제·타입 변경은 반영하지 않으므로, 런칭(운영 데이터 적재) 전 반드시 `validate`로 되돌리고 스키마를 마이그레이션 도구로 관리해야 한다(`src/main/resources/application-prod.yml` 주석, `docs/architecture/AWS_DEPLOYMENT.md §6.5`).
+> - 기존 테이블에 **유니크/일반 제약을 사후 추가**하는 것은 `update`가 보장하지 않을 수 있으므로, 배포 후 실제 인덱스 생성 여부를 직접 확인한다. 누락되면 동시 개설에서 같은 페어 방이 중복 생성될 수 있고, `CHAT_409_ROOM_CREATION_CONFLICT` 방어도 무력화된다.
+> - **컬럼 리네임 주의(이슈 #87, `active_pair_key` → `pair_key`)**: `ddl-auto: update`는 컬럼 리네임을 **추가로만** 처리해 옛 `active_pair_key` 컬럼과 옛 유니크 제약이 그대로 남고 새 `pair_key`·`uk_chat_room_pair`가 추가된다. 런칭 전 빈 DB에서는 무해하나, 데이터가 있으면 새 컬럼이 비어 동작이 깨지므로 마이그레이션으로 처리한다.
+> - **NOT NULL 컬럼 추가 시(이슈 #79 `validMessageCount`)**: 기존 행이 있는 테이블에 NOT NULL 컬럼을 더하면 기본값이 없을 때 DDL이 실패할 수 있다. 엔티티에 `@ColumnDefault("0")`을 줘 DDL에 `DEFAULT 0`이 생성되도록 했으니(`ChatRoomMember.validMessageCount`), `update` 배포 시 기존 참여 행도 0으로 채워진다.
 
 ### ChatRoomMember (`chat_room_member`)
 
-방-회원 참여 관계. 읽음 위치와 단계 동의 상태를 멤버별로 보관한다.
+방-회원 참여 관계. 읽음 위치와 사진 공개용 유효 메시지 누적 수를 멤버별로 보관한다.
 
 | 필드                     | 타입 / 제약                                            | 설명                                   |
 |------------------------|----------------------------------------------------|--------------------------------------|
@@ -92,11 +93,11 @@ BlurSome의 채팅(Chat) 도메인 전체 로직을 정의합니다. WebSocket +
 | `joinedAt`             | `LocalDateTime`, `nullable=false`                  | 입장 시각. 재입장 시 갱신(그래서 `createdAt`과 별도) |
 | `leftAt`               | `LocalDateTime`, nullable                          | 퇴장 시각. `null`이면 현재 참여 중              |
 | `lastReadMessageId`    | `Long`, nullable                                   | 마지막으로 읽은 메시지 id → 안읽음 카운트 기준점        |
-| `agreedProgressStatus` | `ChatRoomProgressStatus`, `nullable=false`, len 30 | 이 멤버가 동의한 단계. 양쪽이 같으면 방 단계 상승        |
+| `validMessageCount`    | `int`, `nullable=false`, default 0                 | 사진 공개 단계 판정용 **누적 유효 송신 이벤트 수**(단조 증가, 사후 삭제로 되돌리지 않음, #79) |
+| `lastValidCountedAt`   | `LocalDateTime`, nullable                          | 마지막 유효 카운트 시각 → 발신자별 디바운스(2초) 판정    |
 | 유니크 제약                 | `uk_chat_room_member (chat_room_id, member_id)`    | 같은 방에 동일 회원 1행 보장 → 재입장은 행 재사용       |
 
-- 팩토리: `ChatRoomMember.join(room, member)` → `joinedAt=now`, `agreedProgressStatus=MATCHED`,
-  `leftAt=null`
+- 팩토리: `ChatRoomMember.join(room, member)` → `joinedAt=now`, `validMessageCount=0`, `leftAt=null`
 
 ### ChatMessage (`chat_message`)
 
@@ -124,7 +125,7 @@ BlurSome의 채팅(Chat) 도메인 전체 로직을 정의합니다. WebSocket +
 
 ## 3. 상태 머신
 
-### 3-1. ChatRoomStatus (✅ 확정 / 일부 후순위)
+### 3-1. ChatRoomStatus (✅ 확정)
 
 ```
             createOnMatched()
@@ -133,39 +134,58 @@ BlurSome의 채팅(Chat) 도메인 전체 로직을 정의합니다. WebSocket +
               ┌────────┐  한쪽 퇴장 / 대화 종료   ┌────────┐
               │ ACTIVE │ ───────────────────────▶│ CLOSED │
               └────────┘                          └────────┘
-                  │
-                  │ (후순위)
-                  ├── 차단 ─────▶ BLOCKED
-                  └── 신고 ─────▶ REPORTED
+               │  ▲  │
+       차단(#77)│  │  └─ 신고 누적(#75) ─▶ ┌──────────┐
+               │  │                        │ REPORTED │
+               │  │차단 해제                └──────────┘
+               ▼  │(양방향 모두 해제 시)    (운영자 검토 대기, 비가역)
+              ┌─────────┐
+              │ BLOCKED │   (가역 동결)
+              └─────────┘
 ```
 
 - `ACTIVE → CLOSED`: 한 명이 "채팅방 나가기"를 하거나(`leave()`), 명시적으로 대화를 종료할 때.
-- ✅ **`CLOSED`는 종료(terminal) 상태** — 재입장 불가. 다시 `ACTIVE`로 되돌리지 않는다. 다시 대화하려면 새 매칭으로 새 방을 개설한다.
+- ✅ **`CLOSED`는 종료(terminal) 상태** — 재입장 불가. 다시 `ACTIVE`로 되돌리지 않는다. 이슈 #87로 `CLOSED`는 **A-B 관계의 영구 종료**를 뜻한다 — `close()`가 `pairKey`를 비우지 않아 같은 페어는 새 방을 열 수 없다(대화 시작 시 `RELATIONSHIP_CLOSED` 409).
 - ✅ **앱 종료 / 연결 끊김은 상태 변화가 아니다** — 상대 접속 상태(presence)를 제공하지 않으므로, 단순 연결 종료는 DB를 건드리지 않고 재연결 시 그대로
   대화를 이어간다.
-- `BLOCKED`/`REPORTED`는 후순위.
+- ✅ **`BLOCKED`(차단 동결, #77)** — 차단 발생 시 진행 중 `ACTIVE` 방을 `markBlocked()`로 동결한다(`ACTIVE`에서만 전이). `BLOCKED`는
+  `isActive()=false`라 **양쪽 송신·원본 공개·단계 진행이 멈춘다**. 비노출은 **차단자에게만**(단방향) 적용해 차단자 목록·이력에서 방이 사라지고
+  (`existsViewerBlockInRoom` 필터, 중립 `ROOM_NOT_FOUND` 404), 피차단자는 방 목록·단건·이력 조회와 STOMP 구독이 가능하되 송신만
+  `ROOM_CLOSED`(409, 중립)로 막힌다 — 차단 사실을 직접 노출하지 않는다. 차단자는 STOMP 구독도 조회 가시성 규칙에 따라
+  `ROOM_NOT_FOUND`로 차단된다. **가역**: 양방향 차단이 모두 해제되면 `unblockToActive()`로 `BLOCKED → ACTIVE` 복구. 한쪽만 해제하면 동결
+  유지. 종료(`CLOSED`)는 비가역이라 차단 해제로 되살리지 않는다. `openRoom`은 A→B 또는 B→A 차단 관계가 하나라도 존재하면 신규 채팅방
+  개설을 `BLOCKED_PARTICIPANT`로 차단한다.
+- ✅ **`REPORTED`(신고 동결, #75)** — 신고 누적(고유 신고자 3명)으로 `ACTIVE → REPORTED`. 송신·조회 차단(운영자 검토 대기, 비가역).
+  신고 누적에 따른 `REPORTED` 전이는 `ACTIVE` 상태의 채팅방에서만 발생한다. `BLOCKED`는 차단으로 인한 가역 동결 상태이며, 신고 누적에
+  의해 `REPORTED`로 전이되지 않는다.
 
-### 3-2. ChatRoomProgressStatus — 상호 동의 진행 (✅ 확정 모델)
+### 3-2. ChatRoomProgressStatus — 유효 메시지 누적 진행 (✅ 이슈 #79)
 
-각 멤버는 자신의 `agreedProgressStatus`를 보유한다. **두 멤버의 동의 단계가 모두 다음 단계 이상**이 되면 방의 `progressStatus`가 한 단계
-오른다.
+> **모델 변경**: 단계 진행 트리거가 **상호 동의 버튼**에서 **유효 메시지 누적 수**로 바뀌었다(이슈 #79).
+> 별도 동의 API(`POST /progress/agree`)와 `agreedProgressStatus` 컬럼은 제거됐다.
+
+각 멤버는 자신의 `validMessageCount`(누적 유효 송신 이벤트 수)를 보유한다. **양방향 최소 누적**(`min(A, B)`)이
+임계값을 넘으면 방의 `progressStatus`가 오른다(양방향 AND, 누적 해석).
 
 ```
 방.progressStatus:  MATCHED ─▶ STEP_1 ─▶ STEP_2 ─▶ STEP_3 ─▶ STEP_4 ─▶ COMPLETED
+                       0        10        20        30        40        50   ← min(A,B) 임계값
 
-승급 규칙(다음 단계 N으로):
-   memberA.agreedProgressStatus >= N  AND  memberB.agreedProgressStatus >= N
-        └──────────────── 둘 다 만족하면 ───────────────┘
-                              ▼
-                  room.progressStatus = N
+승급 규칙:  room.progressStatus = ChatRevealPolicy.statusFor( min(A.validMessageCount, B.validMessageCount) )
 ```
 
-- 한쪽만 동의한 상태는 "대기" — 방 단계는 그대로.
-- 단계 비교는 enum 선언 순서(ordinal)를 이용한다. **따라서 enum 값 순서를 바꾸거나 중간 삽입하면 안 됨**(append만 허용).
-- ✅ **단계 비교 헬퍼(구현됨)**: `ChatRoomProgressStatus.isAtLeast(other)` / `next()` / `isLast()` — 서비스가 ordinal을 직접 다루지 않도록 한다.
-- ✅ **도메인 메서드(구현됨)**:
-    - `ChatRoomMember.agreeProgress(target)` : 본인 동의 단계 상승 — **되돌리기(취소) 비허용**(단조 증가, 후퇴 시 예외)
-    - `ChatRoom.advanceProgressIfBothAgreed(a, b)` : 양쪽 동의가 다음 단계 이상이면 한 단계 상승, 변경 여부(`boolean`) 반환
+**유효 메시지 판정**(`ChatRevealPolicy` + 도메인): `TEXT`만 인정(`IMAGE`/`SYSTEM`/삭제 제외), `trim` 후 4글자 이상,
+직전 유효 카운트 발신자와 다른 발신자(교대 발화), 발신자별 2초 디바운스. 길이는 **카운트 조건일 뿐 송신 거부 조건이 아니다**.
+
+- 카운트·단계 전이는 **메시지 저장 트랜잭션 안에서 증분**으로 처리하고 전체 메시지를 재계산하지 않는다. 송신 경로가
+  방 행을 비관적 락으로 잡아 방 단위로 직렬화하므로 동시 송신에도 안전하다.
+- 단계 비교는 enum 선언 순서(ordinal)를 이용한다. **enum 값 순서 변경·중간 삽입 금지**(append만 허용).
+- ✅ **단계 비교 헬퍼**: `ChatRoomProgressStatus.isAtLeast(other)` / `revealedOriginalCount()` / `isLast()`.
+- ✅ **도메인/정책 메서드**:
+    - `ChatRevealPolicy.statusFor(min)` / `isCountableContent(content)` : 임계값·길이·디바운스 정책의 단일 출처(전역 상수)
+    - `ChatRoomMember.isCountEligible(now, debounce)` / `countValidMessage(now)` : 발신자별 디바운스 판정·누적 증분
+    - `ChatRoom.isAlternatingSender(senderId)` / `recordValidSender(senderId)` : 교대 발화 판정·마지막 유효 발신자 기록
+    - `ChatRoom.advanceProgressTo(target)` : 단조 증가로만 단계 전진, 변경 여부(`boolean`) 반환
     - `ChatRoom.close()` : `roomStatus = CLOSED` (이미 종료면 멱등)
 
 ### 3-3. ChatRoomMember 생명주기 (나가기 = 종료, 재입장 불가)
@@ -192,7 +212,7 @@ join(room, member)   (leftAt = null)
 ```
 com.blursome.chat
 ├── controller/
-│   ├── ChatRoomController.java          # ✅ REST: 방 목록/단건/이력 조회, 단계 동의, 종료
+│   ├── ChatRoomController.java          # ✅ REST: 방 목록/단건/이력 조회, 단계별 사진 조회, 종료
 │   └── ChatStompController.java         # ✅ @MessageMapping: 실시간 송신/읽음 + STOMP 예외 → 개인 오류 큐
 ├── service/
 │   ├── ChatRoomService.java             # ✅ 방 개설/조회/종료/단계 진행 (Facade)
@@ -214,7 +234,11 @@ com.blursome.chat
 │   └── response/                        # ✅ ChatRoomSummaryResponse, ChatMessageResponse, ChatProgressChangedResponse
 ├── event/
 │   ├── ChatProgressAdvancedEvent.java   # ✅ 단계 상승 도메인 이벤트
-│   └── ChatProgressEventListener.java   # ✅ AFTER_COMMIT 구독 → /topic 브로드캐스트
+│   ├── ChatProgressEventListener.java   # ✅ AFTER_COMMIT 구독 → /topic 브로드캐스트
+│   ├── ChatMessageBroadcastEvent.java   # ✅ 메시지 브로드캐스트 도메인 이벤트(#85)
+│   ├── ChatMessageBroadcastListener.java# ✅ AFTER_COMMIT 구독 → /topic/rooms/{roomId}
+│   ├── ChatRoomNotificationEvent.java   # ✅ 유저 단위 알림 도메인 이벤트(#88)
+│   └── ChatRoomNotificationListener.java# ✅ AFTER_COMMIT 구독 → /user/queue/rooms
 ├── config/
 │   ├── WebSocketConfig.java             # ✅ STOMP 엔드포인트/브로커 설정
 │   └── StompAuthChannelInterceptor.java # ✅ CONNECT 인증 + SUBSCRIBE 참여자 검증
@@ -235,7 +259,7 @@ com.blursome.chat
 | **실시간 메시지 송신**    | WebSocket(STOMP `SEND`)      | 양방향 푸시                               |
 | **실시간 메시지 수신**    | WebSocket(STOMP `SUBSCRIBE`) | 브로드캐스트                               |
 | 읽음 처리             | **WebSocket 우선** (STOMP)     | ✅ 실시간성 우선. 읽음 위치 갱신은 STOMP, REST는 보조 |
-| 단계 동의             | REST `POST`                  | 트랜잭션·검증이 중요, 빈도 낮음                   |
+| 단계 진행             | 별도 API 없음                    | 메시지 송신 트랜잭션 안에서 유효 카운트로 자동 상승(#79)    |
 | 방 종료/나가기          | REST `POST`                  | 명시적 행위                               |
 
 > 원칙: **영속·조회 트랜잭션은 Service(Facade)** 가 담당하고, WebSocket 컨트롤러도 동일하게 Service를 경유한다. STOMP 핸들러에 비즈니스
@@ -261,6 +285,7 @@ com.blursome.chat
 | 구독    | `/topic/rooms/{roomId}`    | ✅ 해당 방의 메시지·단계 변경 브로드캐스트 수신(구독 시 참여자 검증)        |
 | 송신    | `/app/rooms/{roomId}/send` | ✅ 메시지 전송 → 서버가 저장 후 `/topic/rooms/{roomId}`로 발행 |
 | 송신    | `/app/rooms/{roomId}/read` | ✅ 읽음 위치 갱신 (WebSocket 우선)                     |
+| 개인 알림 | `/user/queue/rooms`        | ✅ 유저 단위 알림(#88) — 방 미구독 상태에서도 `NEW_ROOM`/`NEW_MESSAGE` 수신. 접속 시 한 번만 구독 |
 | 개인 알림 | `/user/queue/errors`       | ✅ 검증 실패 등 발신자 개인 응답(해당 세션 한정)                  |
 
 ### 6-3. 핸드셰이크 인증 (JWT, ✅ 구현)
@@ -286,7 +311,23 @@ com.blursome.chat
   "content": "안녕하세요",
   "createdAt": "2026-06-04T12:00:00"
 }
+
+// 서버 → 개인 큐 : /user/queue/rooms (이슈 #88, 방 미구독 상태에서도 수신)
+// type=NEW_ROOM: 첫 접촉으로 개설된 방. type=NEW_MESSAGE: 기존 방의 새 메시지.
+// partnerId/partnerNickname은 수신자 기준 상대(개설자/발신자). NEW_MESSAGE는 partnerNickname=null 가능.
+{
+  "type": "NEW_ROOM",
+  "roomId": 7,
+  "partnerId": 3001,
+  "partnerNickname": "상대닉네임",
+  "message": { "messageId": 1024, "roomId": 7, "senderId": 3001, "type": "TEXT", "content": "안녕하세요", "createdAt": "2026-06-04T12:00:00" }
+}
 ```
+
+> **멱등 신호 계약(#88)**: `/user/queue/rooms`의 알림은 `(roomId, message.messageId)` 기준으로 **덮어쓰기** 처리한다(증분 금지).
+> STOMP 재전송, 그리고 첫 접촉 시 같은 첫 메시지에 대해 `NEW_ROOM`과 `NEW_MESSAGE`가 모두 도착하는 중복에도 안읽음이 이중
+> 계산되지 않도록, 클라이언트는 마지막 메시지·안읽음을 이 신호로 set(또는 목록 재조회)하고 blind increment 하지 않는다. 발행은 방
+> 토픽과 동일하게 커밋 이후(`@TransactionalEventListener(AFTER_COMMIT)`) 이뤄지며, 오프라인 보관은 없다(미접속 시 버려지고 다음 접속 시 방 목록 조회로 동기화).
 
 ### 6-5. 브로커 확장 전략 (✅ 단계별 확정)
 
@@ -307,24 +348,31 @@ com.blursome.chat
 ### 7-1. 매칭 → 방 개설 (🧩)
 
 ```
-[매칭 결과: memberA, memberB]
-        │
-        ▼
-ChatRoomService.openRoom(a, b)        @Transactional
-    ├─ 활성 방 선조회(findActiveRoomBetween) → 있으면 그 방 반환
-    └─ 없으면 createRoom:
-        ├─ ChatRoom.createOnMatched(a, b)         → saveAndFlush (ACTIVE / MATCHED / activePairKey)
-        ├─ ChatRoomMember.join(room, a)           → save
-        └─ ChatRoomMember.join(room, b)           → save
-        │
-        ▼
-   room 반환 (양쪽에 푸시/알림은 Notification 도메인과 조율)
+[대화 시작: viewer가 target feedId로]            [매칭 결과: memberA, memberB]
+        │                                               │
+        ▼                                               ▼
+DiscoveryService(ChatStartService).startChat            ChatRoomService.openRoom(a, b)
+    ├─ feedId→회원 해석 / 자기자신 차단                    └─ (매칭 도메인 진입점, 동일)
+    ├─ 게이트 재검증(내 피드·이성·대상 피드 5장 READY·활성)
+    ├─ Block 테이블 우선 검사 → BLOCKED_PARTICIPANT
+    └─ chatRoomService.openRoom(viewer, target)        @Transactional
+            ├─ findByPairKey(min-max) → 상태 무관 단건 조회
+            │     ├─ ACTIVE   → (room, created=false)  "이미 채팅 중", 메시지 미전송
+            │     ├─ CLOSED   → RELATIONSHIP_CLOSED (409)
+            │     ├─ REPORTED → RELATIONSHIP_UNDER_REVIEW (409)
+            │     └─ BLOCKED  → BLOCKED_PARTICIPANT (409, 방어적)
+            └─ 없으면(첫 접촉) createWithFirstMessage  @REQUIRES_NEW (방+첫 메시지 원자적)
+                    ├─ ChatRoom.createOnMatched(a, b)  → saveAndFlush (ACTIVE / MATCHED / pairKey)
+                    ├─ ChatRoomMember.join(room, a/b)  → save
+                    ├─ chatMessageService.send(첫 메시지)  → 같은 트랜잭션에 합류(REQUIRED)
+                    └─ (room, created=true, firstMessage)
 ```
 
-- ✅ **중복 방 생성 방지 (서비스 + DB 이중 방어)**: 두 회원 사이에 `ACTIVE` 방이 이미 있으면 새로 만들지 않고 그 방을 반환한다.
-  과거에 나가서 `CLOSED`된 방만 있는 경우에는 **새 방을 개설**한다. → `ChatRoomService.openRoom`에서 활성 방을 먼저 조회해 분기.
-- ✅ **동시 매칭 경합**: 선조회-후생성은 원자적이지 않아 동시 요청 시 중복이 생길 수 있으므로, `chat_room.active_pair_key` **유니크 제약**으로 최종 방어한다.
-  경합에서 진 쪽은 `saveAndFlush`에서 제약 위반(`DataIntegrityViolationException`) → `CHAT_409_ROOM_CREATION_CONFLICT`로 변환되며, 재시도 시 선조회가 이미 만들어진 방을 반환한다.
+- ✅ **대화 시작 API(이슈 #87)**: `POST /api/discovery/feeds/{feedId}/chat`. feedId→회원 해석·게이트 재검증은 디스커버리 유스케이스(`ChatStartService`)가 맡고(직접 입력이 탐색 필터를 우회하지 못하게), 방 개설·관계 분기는 `openRoom`이 맡는다. 첫 접촉이면 방 생성 + 첫 메시지를 한 트랜잭션으로 처리하고 `created=true`, 이미 ACTIVE면 메시지 없이 기존 방으로 안내(`created=false`) — 둘 다 200.
+- ✅ **방+첫 메시지 원자성(이슈 #87)**: 첫 접촉의 방 생성과 첫 메시지 전송은 `ChatRoomCreator.createWithFirstMessage`의 **하나의 REQUIRES_NEW 트랜잭션**에서 처리된다(`send`는 REQUIRED로 합류). 첫 메시지 전송이 실패하면 방까지 함께 롤백돼 "첫 접촉인데 빈 방만 생성"되는 비원자 상태가 생기지 않는다. REQUIRES_NEW로 격리돼 있어 유니크 위반 시 이 단위만 롤백되고 호출 측은 경합 복구(재조회 흡수)를 이어갈 수 있다.
+- ✅ **관계 단건 분기 (서비스 + DB 이중 방어)**: 페어당 방이 영구히 하나이므로(`pairKey` 유니크) `findByPairKey`로 상태 무관 단건을 조회해 분기한다. ACTIVE는 "이미 채팅 중", CLOSED/REPORTED/BLOCKED는 각 도메인 예외로 막고, 없으면 첫 접촉으로 새로 만든다.
+- ✅ **동시 첫 접촉 경합**: 선조회-후생성은 원자적이지 않으므로 `chat_room.pair_key` **유니크 제약**으로 최종 방어한다.
+  경합에서 진 쪽은 `saveAndFlush`에서 제약 위반(`DataIntegrityViolationException`) → 새 트랜잭션(`findRoomInNewTx`)으로 상대가 만든 ACTIVE 방을 재조회해 `created=false`로 흡수한다(첫 메시지 중복 전송 없음). 재조회도 실패하면 `CHAT_409_ROOM_CREATION_CONFLICT`.
 - ✅ **조회는 내가 나갔는지로만 판별**: 1:1 방에서 한쪽이 나가면 방은 `CLOSED`가 되지만 상대의 `leftAt`은 `null`로 남는다. 목록/단건/이력 조회의 참여자 검증은 방 상태(`ACTIVE`/`CLOSED`)가 아니라 **`leftAt IS NULL`만** 확인한다 — 상대가 먼저 나가 방이 종료돼도 남은 사람은 계속 조회할 수 있고(상대 나간 것 확인 후 본인이 나가기), 내가 나간 방만 목록에서 즉시 사라진다. 송신·읽음 같은 **쓰기**는 별도로 `roomStatus = ACTIVE`까지 확인해 종료된 방을 `ROOM_CLOSED`로 막는다.
 
 ### 7-2. 연결 & 구독
@@ -387,26 +435,28 @@ ChatRoomService.openRoom(a, b)        @Transactional
   (`ChatReadReceiptResponse{eventType:"READ", roomId, readerId, lastReadMessageId}`)를 브로드캐스트한다.
   상대(발신자) 클라이언트는 `readerId`가 자신이 아닐 때 자신이 보낸 메시지의 읽음 표시를 실시간 갱신한다.
 
-### 7-5. 단계 진행 (상호 동의)
+### 7-5. 단계 진행 (유효 메시지 누적, 이슈 #79)
+
+별도 동의 API는 없다. 단계 상승은 **메시지 송신 트랜잭션 안에서** 일어난다.
 
 ```
-[Client A] ─ POST /api/chat/rooms/{roomId}/progress/agree ─▶ ChatRoomController
-                                                                  │
-                                                                  ▼
-                                       ChatRoomService.agreeProgress(roomId, memberId)  @Transactional
-                                         ├─ memberA.agreeProgress(next)        (본인 동의 단계 상승)
-                                         ├─ room.advanceProgressIfBothAgreed(a, b)
-                                         │     └─ 둘 다 동의 → room.progressStatus++
-                                         └─ 변경 시 /topic/rooms/{roomId}로 단계 변경 이벤트 발행
+[Client A] ─ STOMP SEND /app/rooms/{roomId}/send ─▶ ChatStompController ─▶ ChatMessageService.send  @Transactional
+                                         ├─ getWritableMembership() : 방 행 비관적 락(방 단위 직렬화)
+                                         ├─ 메시지 저장 + 미리보기 전진
+                                         └─ applyRevealProgress(sender, message)
+                                              ├─ 유효 판정(TEXT·trim≥4·교대·2초 디바운스)  ─ 아니면 종료
+                                              ├─ sender.countValidMessage(now) ; room.recordValidSender(senderId)
+                                              ├─ room.advanceProgressTo( policy.statusFor(min(A,B)) )
+                                              └─ 단계가 바뀐 경우에만 ChatProgressAdvancedEvent 발행
 ```
 
-- ✅ **구현**: `ChatRoomService.agreeProgress`가 단계 상승 시 `ChatProgressAdvancedEvent`를 발행하고,
+- ✅ **구현**: `ChatMessageService.send`가 단계 상승 시 `ChatProgressAdvancedEvent`를 발행하고,
   `ChatProgressEventListener`가 `@TransactionalEventListener(AFTER_COMMIT)`로 받아 `/topic/rooms/{roomId}`에
   `ChatProgressChangedResponse`(`eventType=PROGRESS_CHANGED`)를 브로드캐스트한다. 커밋 이후에만 발행하므로 롤백 시
   오발송이 없다. 같은 토픽의 메시지 응답과는 `eventType`으로 구분한다.
-- 한쪽만 동의 → 방 단계 변화 없음, 상대에게 "동의 대기" 표시(선택).
-- ✅ **역할 분리**: Chat 도메인은 **단계(`progressStatus`)만 관리**한다. 각 단계에 대응하는 사진(블러 해제 대상)의 저장·제공은 프로필/회원 도메인
-  책임이다.
+- 유효 메시지 1건은 `min(A,B)`를 최대 1만 올리므로 단계 상승은 메시지당 최대 한 칸이다. 미달이면 방 단계 변화 없음.
+- ✅ **역할 분리**: Chat 도메인은 **단계(`progressStatus`)만 관리**한다. 각 단계에 대응하는 사진(원본 공개)의 발급은 feed 도메인
+  책임이다(`getRevealedImages`, 이슈 #53).
 - 단계가 오르면 클라이언트는 해당 단계에 설정된 사진의 블러를 해제해 공개한다. Chat은 "현재 몇 단계인지"만 알리고, 사진 자체는 보유·전송하지 않는다.
 
 ### 7-6. 채팅방 나가기 (비대칭 종료)
@@ -436,7 +486,7 @@ ChatRoomService.openRoom(a, b)        @Transactional
 - ✅ **조회 가시성**(`getVisibleMembership`)은 방 상태와 무관하게 **내 `leftAt IS NULL`**일 때만 통과한다 → A는 막히고(404) B는 통과.
 - ✅ **쓰기 가시성**(`getWritableMembership`)은 `roomStatus = ACTIVE` + 내 `leftAt IS NULL`을 함께 본다 → A·B 모두 송신 차단(`ROOM_CLOSED`).
 - ✅ **남은 사람(B)도 나가기 가능**: 상대가 먼저 나가 `CLOSED`된 방에서 B가 다시 `/leave`를 호출하면 B의 `leftAt`이 세팅돼 B의 목록에서도 사라진다(`ChatRoom.close()`는 멱등이라 재호출은 no-op).
-- ✅ **단계 동의**(`agreeProgress`)는 방 상태를 바꾸는 쓰기이므로 종료된 방에서는 `getWritableMembership`로 막힌다(`ROOM_CLOSED`).
+- ✅ **단계 진행**(메시지 송신 시 유효 카운트)은 `send`가 `getWritableMembership`로 방 ACTIVE를 검증하므로 종료된 방에서는 카운트도 단계 상승도 일어나지 않는다(`ROOM_CLOSED`).
 - ✅ **퇴장 ↔ 송신 동시성(비관적 락)**: 송신은 "방 ACTIVE 확인 → 메시지 저장"이고 퇴장은 "방 CLOSED"라, 락이 없으면 송신이 ACTIVE를 확인한
   직후 상대가 나가도 메시지가 저장돼 *종료된 방에 송신*이 새어 나갈 수 있다. 이를 막기 위해 **쓰기 경로(`getWritableMembership`)와 퇴장(`leaveRoom`)이
   같은 `chat_room` 행을 비관적 쓰기 락(`findByIdForUpdate`, `SELECT … FOR UPDATE`)으로 먼저 잡아 직렬화**한다. 퇴장이 먼저 커밋되면 락 해제 후
@@ -479,7 +529,7 @@ ChatRoomService.openRoom(a, b)        @Transactional
 `com.blursome.chat.exception.ChatErrorCode` (`ErrorCode` 구현 Enum):
 
 > ✅ **경로별 매핑 차이**: 조회(REST)는 **내가 나간 방**만 `ROOM_NOT_FOUND`(404)로 숨긴다(상대가 나가 종료된 방은 남은 사람에게 계속 노출).
-> 쓰기(STOMP 송신·읽음, 단계 동의)는 종료된 방을 `ROOM_CLOSED`(409)로 명시한다. 방 없음(`ROOM_NOT_FOUND`)·비참여(`NOT_PARTICIPANT`)
+> 쓰기(STOMP 송신·읽음)는 종료된 방을 `ROOM_CLOSED`(409)로 명시한다. 방 없음(`ROOM_NOT_FOUND`)·비참여(`NOT_PARTICIPANT`)
 > 판별은 두 경로가 동일하다. 잘못된 본문/타입(빈 본문·`SYSTEM` 송신·조작된 읽음 커서)은 `INVALID_MESSAGE`(400)로 통일한다.
 
 | 코드(안)                              | 상황            | HTTP |
@@ -490,8 +540,13 @@ ChatRoomService.openRoom(a, b)        @Transactional
 | `CHAT_400_INVALID_MESSAGE`         | 빈 본문/타입 오류    | 400  |
 | `CHAT_400_CANNOT_OPEN_SELF_ROOM`   | 동일 회원으로 방 개설 시도 | 400  |
 | `CHAT_400_INVALID_ROOM_PARTICIPANTS` | 참여자 정보 오류(null 등) | 400  |
-| `CHAT_409_PROGRESS_ALREADY_AGREED` | 이미 동의한 단계 재동의 | 409  |
 | `CHAT_409_ROOM_CREATION_CONFLICT`  | 동시 매칭으로 방 개설 경합 | 409  |
+| `CHAT_409_BLOCKED_PARTICIPANT`     | 차단 관계와 대화 시작 시도(#77·#87) | 409  |
+| `CHAT_409_RELATIONSHIP_CLOSED`     | 종료된 관계로 대화 시작 시도(#87) | 409  |
+| `CHAT_409_RELATIONSHIP_UNDER_REVIEW` | 검토 중(REPORTED)인 관계로 대화 시작 시도(#87) | 409  |
+| `DISCOVERY_404_CHAT_START_TARGET_NOT_FOUND` | 대화 시작 대상 피드 없음(#87) | 404  |
+| `DISCOVERY_403_CHAT_START_PROFILE_INCOMPLETE` | 내 피드 5장 미완성(#87) | 403  |
+| `DISCOVERY_409_CHAT_START_NOT_ELIGIBLE` | 대상이 시작 조건 미충족(이성 아님·비공개·비활성, #87) | 409  |
 
 ---
 
@@ -502,14 +557,14 @@ ChatRoomService.openRoom(a, b)        @Transactional
 | # | 항목            | 결정                                                               |
 |---|---------------|------------------------------------------------------------------|
 | 1 | WebSocket 의존성 | ✅ `spring-boot-starter-websocket` 추가 완료(`build.gradle.kts`)      |
-| 2 | 중복 방 생성       | ✅ `ACTIVE` 방 중복 금지, `CLOSED` 이후 새 방 허용 (서비스 계층)                  |
+| 2 | 중복 방 생성       | ✅ 페어당 방 1개(`pair_key` 유니크). 이슈 #87로 `CLOSED`는 관계 영구 종료라 **재개설 불가**(서비스 + DB 이중 방어) |
 | 3 | 읽음 처리 채널      | ✅ WebSocket 우선                                                   |
 | 4 | 안읽음 카운트       | ✅ 초기 DB count → 트래픽 증가 시 Redis 전환                                |
-| 5 | 사진 단계 연계      | ✅ Chat은 단계만 관리, 사진 공개(블러 해제)는 프로필/회원 도메인                         |
+| 5 | 사진 단계 연계      | ✅ Chat은 단계만 관리, 단계 상승은 유효 메시지 누적(#79), 원본 공개는 feed 도메인(#53)        |
 | 6 | SockJS        | ✅ 초기 미사용(순수 WebSocket)                                           |
 | 7 | 브로커 확장        | ✅ 1) Simple Broker → 2) Redis Pub/Sub → 3) RabbitMQ 단계 전략 (§6-5) |
 | 8 | `SYSTEM` 메시지  | ✅ `ChatMessageType.SYSTEM` 추가 완료                                 |
-| 9 | 단계 동의 취소      | ✅ 되돌리기 비허용(단조 증가)                                                |
+| 9 | 단계 후퇴          | ✅ 되돌리기 비허용(단조 증가) — 누적 카운트·`progressStatus` 모두 후퇴하지 않음(#79)      |
 
 ### 구현 시 남은 검토 항목
 

@@ -6,7 +6,6 @@ import static org.mockito.BDDMockito.given;
 
 import com.blursome.blursome.chat.domain.ChatRoom;
 import com.blursome.blursome.chat.domain.ChatRoomMember;
-import com.blursome.blursome.chat.domain.ChatRoomProgressStatus;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
 import com.blursome.blursome.chat.repository.ChatRoomRepository;
@@ -116,6 +115,23 @@ class ChatRoomMembershipReaderTest {
   }
 
   @Test
+  @DisplayName("차단자에게는 비노출: 내가 상대를 차단한 방은 ROOM_NOT_FOUND로 가린다(#77, 중립 응답)")
+  void getVisibleMembership_whenViewerBlockedPartner_thenThrowsNotFound() {
+    // given — 방·멤버십은 정상이지만 내가 상대를 차단함(단방향 비노출)
+    ChatRoom room = activeRoom(ROOM_ID);
+    ChatRoomMember membership = membership(MY_ROW_ID, room);
+    given(chatRoomRepository.findById(ROOM_ID)).willReturn(Optional.of(room));
+    given(chatRoomMemberRepository.findMembership(ROOM_ID, MEMBER_ID))
+        .willReturn(Optional.of(membership));
+    given(chatRoomMemberRepository.existsViewerBlockInRoom(ROOM_ID, MEMBER_ID)).willReturn(true);
+
+    // when & then — 차단 전용 코드가 아닌 일반 404로 가려 차단 사실을 노출하지 않는다
+    assertThatThrownBy(() -> membershipReader.getVisibleMembership(ROOM_ID, MEMBER_ID))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", ChatErrorCode.ROOM_NOT_FOUND.getCode());
+  }
+
+  @Test
   @DisplayName("쓰기용: ACTIVE 방의 참여 중인 멤버면 멤버십을 반환한다(방 행을 비관적 락으로 조회)")
   void getWritableMembership_whenParticipant_thenReturnsMembership() {
     // given — 쓰기 경로는 동시 퇴장과 직렬화하려고 findByIdForUpdate로 방 행을 잠근다
@@ -174,7 +190,6 @@ class ChatRoomMembershipReaderTest {
         OAuthProvider.KAKAO, "kakao-" + rowId, "name", "member" + rowId + "@example.com", null);
     ChatRoomMember crm = ChatRoomMember.join(room, member);
     ReflectionTestUtils.setField(crm, "id", rowId);
-    ReflectionTestUtils.setField(crm, "agreedProgressStatus", ChatRoomProgressStatus.MATCHED);
     return crm;
   }
 }

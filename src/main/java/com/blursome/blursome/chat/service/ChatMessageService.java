@@ -2,10 +2,16 @@ package com.blursome.blursome.chat.service;
 
 import com.blursome.blursome.chat.domain.ChatMessage;
 import com.blursome.blursome.chat.domain.ChatMessageType;
+import com.blursome.blursome.chat.domain.ChatRevealPolicy;
 import com.blursome.blursome.chat.domain.ChatRoom;
 import com.blursome.blursome.chat.domain.ChatRoomMember;
+import com.blursome.blursome.chat.domain.ChatRoomProgressStatus;
 import com.blursome.blursome.chat.dto.request.ChatMessageSendRequest;
 import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
+import com.blursome.blursome.chat.dto.response.ChatRoomNotificationResponse;
+import com.blursome.blursome.chat.event.ChatMessageBroadcastEvent;
+import com.blursome.blursome.chat.event.ChatProgressAdvancedEvent;
+import com.blursome.blursome.chat.event.ChatRoomNotificationEvent;
 import com.blursome.blursome.chat.exception.ChatErrorCode;
 import com.blursome.blursome.chat.repository.ChatMessageRepository;
 import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
@@ -13,12 +19,15 @@ import com.blursome.blursome.chat.repository.ChatRoomRepository;
 import com.blursome.blursome.chat.repository.RoomUnreadCount;
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.member.domain.Member;
+import java.time.Clock;
+import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,6 +45,9 @@ public class ChatMessageService {
   private final ChatRoomRepository chatRoomRepository;
   private final ChatRoomMemberRepository chatRoomMemberRepository;
   private final ChatRoomMembershipReader membershipReader;
+  private final ChatRevealPolicy revealPolicy;
+  private final ApplicationEventPublisher eventPublisher;
+  private final Clock clock;
 
   /**
    * 실시간 메시지를 저장하고 미리보기를 갱신한다(설계 §7-3). 발신자는 STOMP principal에서 넘어온 {@code senderId}이며,
@@ -44,7 +56,9 @@ public class ChatMessageService {
    * 클래스 기본값({@code readOnly = true})을 덮어 쓰기 트랜잭션으로 연다.
    *
    * <p>미리보기({@code lastMessageId})는 동시 송신 경합에서 과거 id로 되돌아가지 않도록 조건부 UPDATE로 전진만 시킨다.
-   * 저장 후 {@code /topic/rooms/{roomId}} 브로드캐스트는 호출 측(STOMP 컨트롤러)이 반환된 응답으로 수행한다.
+   * {@code /topic/rooms/{roomId}} 브로드캐스트는 커밋 이후 {@link ChatMessageBroadcastEvent} 리스너가 수행한다 —
+   * 같은 트랜잭션에서 트리거 메시지를 먼저 발행하고, 단계 상승 시 SYSTEM 안내 메시지를 뒤에 발행하므로 전송
+   * 순서가 트리거 → 안내로 보장된다(이슈 #85). 반환값은 STOMP 응답·테스트용이다.
    */
   @Transactional
   public ChatMessageResponse send(Long roomId, Long senderId, ChatMessageSendRequest request) {
@@ -52,7 +66,88 @@ public class ChatMessageService {
     ChatMessage message = createMessage(membership.getChatRoom(), membership.getMember(), request);
     chatMessageRepository.save(message);
     chatRoomRepository.advanceLastMessage(roomId, message.getId());
-    return ChatMessageResponse.from(message);
+    ChatMessageResponse response = ChatMessageResponse.from(message);
+    eventPublisher.publishEvent(new ChatMessageBroadcastEvent(roomId, response));
+    publishNewMessageNotifications(roomId, senderId, response);
+    applyRevealProgress(membership, message);
+    return response;
+  }
+
+  /**
+   * 방 토픽 브로드캐스트와 별개로, 발신자를 뺀 나머지 참여자의 개인 큐로 {@code NEW_MESSAGE}를 팬아웃한다
+   * (이슈 #88). 수신자가 그 방을 구독 중이 아니어도(방 목록 등 다른 화면) 방 목록·안읽음 배지를 즉시 갱신할 수
+   * 있게 하는 신호다. 발신자 본인은 제외해 자기 메시지로 자기 개인 큐가 울리지 않는다. 1:1 방이라 보통 상대 1명에게
+   * 발행되며, 전송은 방 토픽과 동일하게 커밋 이후({@link com.blursome.blursome.chat.event.ChatRoomNotificationListener})
+   * 수행된다.
+   *
+   * <p>단계 상승 {@code SYSTEM} 안내 메시지는 트리거 메시지 직후에 같은 방에 기록되며, 수신자는 이 트리거
+   * 메시지의 {@code NEW_MESSAGE}로 이미 목록이 갱신되므로 별도 팬아웃하지 않는다(중복 알림 방지).
+   */
+  private void publishNewMessageNotifications(
+      Long roomId, Long senderId, ChatMessageResponse message) {
+    for (Long recipientId : chatRoomMemberRepository.findOtherMemberIds(roomId, senderId)) {
+      eventPublisher.publishEvent(new ChatRoomNotificationEvent(
+          recipientId, ChatRoomNotificationResponse.newMessage(roomId, senderId, message)));
+    }
+  }
+
+  /**
+   * 유효 메시지면 발신자 카운트를 올리고, 양방향 누적 기준({@code min(A, B)})을 넘기면 방의 사진 공개 단계를
+   * 전진시킨다(이슈 #79). 단계가 실제로 바뀐 경우에만 공개 안내 SYSTEM 메시지를 타임라인에 기록하고
+   * {@link ChatProgressAdvancedEvent}를 발행해 WebSocket 브로드캐스트를 트리거한다.
+   *
+   * <p>유효 판정: {@code TEXT}이고({@code IMAGE}/{@code SYSTEM} 제외) 본문 {@code trim} 후 최소 길이 이상이며,
+   * 직전에 유효 카운트된 발신자와 다른 발신자(교대 발화)이고, 발신자별 디바운스 간격을 지났을 때다. 이 메서드는
+   * {@code send}의 쓰기 트랜잭션 안에서 호출되며, {@code getWritableMembership}이 방 행을 비관적 락으로 잡아
+   * 방 단위로 송신을 직렬화하므로 카운트 증분·단계 전이를 read-modify-write로 안전하게 수행한다(설계 §7-6 락 순서).
+   */
+  private void applyRevealProgress(ChatRoomMember sender, ChatMessage message) {
+    if (message.getType() != ChatMessageType.TEXT
+        || !revealPolicy.isCountableContent(message.getContent())) {
+      return;
+    }
+    ChatRoom room = sender.getChatRoom();
+    Long senderMemberId = sender.getMember().getId();
+    LocalDateTime now = LocalDateTime.now(clock);
+    if (!room.isAlternatingSender(senderMemberId)
+        || !sender.isCountEligible(now, revealPolicy.countDebounce())) {
+      return;
+    }
+    sender.countValidMessage(now);
+    room.recordValidSender(senderMemberId);
+
+    ChatRoomMember partner = findPartner(room.getId(), sender);
+    long min = Math.min(sender.getValidMessageCount(), partner.getValidMessageCount());
+    if (room.advanceProgressTo(revealPolicy.statusFor(min))) {
+      recordRevealSystemMessage(room);
+      eventPublisher.publishEvent(
+          new ChatProgressAdvancedEvent(room.getId(), room.getProgressStatus()));
+    }
+  }
+
+  /**
+   * 단계가 실제로 상승했을 때 공개 안내 SYSTEM 메시지를 저장하고, 미리보기 갱신과 브로드캐스트 발행까지 처리한다
+   * (이슈 #85). 문구는 도달한 단계({@link ChatRoomProgressStatus#revealSystemMessage()})가 단일 출처로 정한다.
+   * 단계 상승은 항상 {@code PHOTO_REVEAL_STEP_1} 이상으로만 일어나 문구가 항상 존재하므로 {@code createSystemMessage}가
+   * 빈 본문으로 막히지 않는다. 미리보기({@code lastMessageId})는 트리거 메시지보다 뒤에 저장돼 더 큰 id이므로 조건부
+   * UPDATE로 그대로 전진한다. 브로드캐스트 이벤트는 트리거 메시지({@link ChatMessageBroadcastEvent}) <b>다음</b>에
+   * 발행돼, 커밋 이후 전송 순서가 트리거 → 안내가 된다.
+   */
+  private void recordRevealSystemMessage(ChatRoom room) {
+    ChatMessage systemMessage =
+        ChatMessage.createSystemMessage(room, room.getProgressStatus().revealSystemMessage());
+    chatMessageRepository.save(systemMessage);
+    chatRoomRepository.advanceLastMessage(room.getId(), systemMessage.getId());
+    eventPublisher.publishEvent(
+        new ChatMessageBroadcastEvent(room.getId(), ChatMessageResponse.from(systemMessage)));
+  }
+
+  /** 1:1 방에서 발신자를 제외한 상대 참여 행을 찾는다(양방향 min 카운트 계산용). */
+  private ChatRoomMember findPartner(Long roomId, ChatRoomMember sender) {
+    return chatRoomMemberRepository.findAllByRoomId(roomId).stream()
+        .filter(member -> !member.getId().equals(sender.getId()))
+        .findFirst()
+        .orElseThrow(() -> BaseException.from(ChatErrorCode.ROOM_NOT_FOUND));
   }
 
   /**

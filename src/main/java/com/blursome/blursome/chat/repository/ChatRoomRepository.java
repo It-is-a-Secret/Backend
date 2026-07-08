@@ -14,7 +14,7 @@ public interface ChatRoomRepository extends JpaRepository<ChatRoom, Long> {
   /**
    * 방 행을 비관적 쓰기 락({@code SELECT ... FOR UPDATE})으로 조회한다(설계 §7-6 동시성).
    *
-   * <p>송신·읽음·단계 동의 같은 <b>쓰기</b>는 방이 {@code ACTIVE}임을 확인한 뒤 진행하고, 퇴장({@code leaveRoom})은
+   * <p>송신·읽음·단계 상승 같은 <b>쓰기</b>는 방이 {@code ACTIVE}임을 확인한 뒤 진행하고, 퇴장({@code leaveRoom})은
    * 방을 {@code CLOSED}로 바꾼다. 두 트랜잭션이 동시에 돌면, 송신이 ACTIVE를 확인한 직후 상대가 나가 방이 닫혀도
    * 메시지가 저장돼 "종료된 방에 송신"이 새어 나갈 수 있다. 쓰기 경로와 퇴장이 <b>같은 방 행</b>에 이 락을 먼저 잡아
    * 직렬화하면, 퇴장이 먼저 커밋된 뒤의 송신은 잠금 해제 후 CLOSED를 보고 {@code ROOM_CLOSED}로 막힌다.
@@ -23,6 +23,13 @@ public interface ChatRoomRepository extends JpaRepository<ChatRoom, Long> {
   @Lock(LockModeType.PESSIMISTIC_WRITE)
   @Query("select r from ChatRoom r where r.id = :roomId")
   Optional<ChatRoom> findByIdForUpdate(@Param("roomId") Long roomId);
+
+  /**
+   * 두 회원의 페어 키로 방을 상태 무관하게 단건 조회한다(이슈 #87). CLOSED가 관계의 영구 종료가 되면서 페어당 방이
+   * 영구히 하나로 보장되므로(유니크 제약, {@code close()}가 키를 비우지 않음), 대화 시작 시 이 단건의 {@code roomStatus}로
+   * 분기한다(없음→첫 접촉 / ACTIVE→이미 채팅 중 / CLOSED·REPORTED·BLOCKED→거절). 키는 {@link ChatRoom#pairKey}로 만든다.
+   */
+  Optional<ChatRoom> findByPairKey(String pairKey);
 
   /**
    * 미리보기용 {@code lastMessageId}를 더 큰 값일 때만 원자적으로 전진시킨다(설계 §8).

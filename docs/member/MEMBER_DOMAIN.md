@@ -37,6 +37,7 @@ BlurSome의 회원(Member) 도메인을 정의합니다. 소셜 로그인으로 
 - 소셜 로그인·JWT 인증 흐름은 기존 체계를 그대로 사용한다(`docs/ARCHITECTURE.md § 8`).
 - 매칭·채팅은 **온보딩 완료(`COMPLETED`)** 회원만 진입한다고 가정한다(채팅 도메인은 본 문서 범위 밖, [`docs/chat/CHAT_FEATURE.md`](../chat/CHAT_FEATURE.md)).
 - 학교 이메일로 **어떤 메일 도메인을 학교로 인정할지**, 인증 코드 발송/검증 메커니즘은 본 문서 범위 밖(인증 서비스가 검증을 끝낸 결과만 도메인에 반영).
+- 온보딩 완료 시 **`Feed` 엔티티가 자동 생성**된다. 피드는 `Member`의 공개 필드만 복사한 별도 엔티티로, 다른 회원의 피드 탐색 시 `Member` 전체를 노출하지 않는다([`docs/feed/FEED_DOMAIN.md`](../feed/FEED_DOMAIN.md)).
 
 ---
 
@@ -44,7 +45,7 @@ BlurSome의 회원(Member) 도메인을 정의합니다. 소셜 로그인으로 
 
 ### 2-1. Member (`member`)
 
-회원 1명. 소셜 로그인에서 받은 **불변에 가까운 식별 정보**(provider, providerId, name, email)와, 가입 과정에서 채워지는 **온보딩 정보**(nickName, schoolEmail, gender), 그리고 **상태 필드**(role, activityStatus, registrationStatus)로 구성된다.
+회원 1명. 소셜 로그인에서 받은 **불변에 가까운 식별 정보**(provider, providerId, name, email)와, 가입 과정에서 채워지는 **온보딩 정보**(nickName, schoolEmail), 그리고 **상태 필드**(role, activityStatus, registrationStatus)로 구성된다. 공개 프로필(생년·학과·MBTI·성별)은 `Member`가 아니라 `Feed`가 보유한다([`docs/feed/FEED_DOMAIN.md`](../feed/FEED_DOMAIN.md)).
 
 | 필드 | 타입 / 제약 | 출처 / 설명 |
 |---|---|---|
@@ -54,13 +55,14 @@ BlurSome의 회원(Member) 도메인을 정의합니다. 소셜 로그인으로 
 | `name` | `String`, `nullable=false`, len 50 | **소셜 제공 이름** (표시용 닉네임과 별개) |
 | `email` | `String`, nullable, len 100 | 소셜 제공 이메일. 이메일 동의 미수신 시 `null`(식별은 `(provider, providerId)`로 함) |
 | `profileImageUrl` | `String`, nullable, len 500 | 소셜 제공 프로필 사진 |
-| `nickName` | `String`, nullable, len 30 | **온보딩에서 입력**하는 닉네임. 가입 완료 전 `null` |
+| `nickName` | `String`, nullable, len 30 | **온보딩에서 입력**하는 닉네임. 가입 완료 전 `null`. **유니크** |
 | `schoolEmail` | `String`, nullable, len 100 | 학교 인증 이메일. 인증 완료 시 세팅. **유니크** |
-| `gender` | `Gender`, nullable, len 10 | 온보딩에서 입력. 완료 전 `null` |
 | `role` | `MemberRole`, `nullable=false`, len 20, default `USER` | 권한 |
 | `activityStatus` | `ActivityStatus`, `nullable=false`, len 20, default `ACTIVE` | 탈퇴 등 활동 상태 |
 | `registrationStatus` | `RegistrationStatus`, `nullable=false`, len 30, default `UNVERIFIED` | 가입 단계 |
-| `createdAt`/`updatedAt` | `BaseEntity` | 감사 필드 |
+| `withdrawnAt` | `LocalDateTime`, nullable | 탈퇴 시각. `withdraw()`에서 세팅·`reactivate()`에서 해제. **탈퇴 후 30일 보존·영구 삭제 배치의 기준** |
+| `lastActiveAt` | `LocalDateTime`, nullable | 마지막 접속·주요 활동 시각. 로그인 시 갱신. "최근 접속 우선 노출" 정렬 기준 |
+| `createdAt`/`updatedAt` | `BaseEntity` | 감사 필드. ⚠️ `updatedAt`은 프로필 갱신 등 임의 수정에도 변하므로 **탈퇴 시각 대용으로 쓰지 않는다**(→ `withdrawnAt` 사용) |
 
 #### 제약 조건
 
@@ -77,7 +79,7 @@ BlurSome의 회원(Member) 도메인을 정의합니다. 소셜 로그인으로 
 | `OAuthProvider` | `KAKAO` (확장 예정) | 소셜 로그인 제공자. 추가는 append |
 | `MemberRole` | `USER("ROLE_USER")`, `ADMIN("ROLE_ADMIN")` | Spring Security authority 보유 |
 | `Gender` | `MALE`, `FEMALE` | 온보딩 입력. ✅ 두 값으로 제한 |
-| `ActivityStatus` | `ACTIVE`, `WITHDRAWN` | 소프트삭제. `SUSPENDED`(관리자 정지)는 후순위 append |
+| `ActivityStatus` | `ACTIVE`, `WITHDRAWN`, `SUSPENDED` | 소프트삭제 + **신고 제재 임시 정지(`SUSPENDED`, #75)**. 정지는 `ACTIVE`가 아니라 로그인·채팅·탐색에서 차단, 해제는 `reactivate()` |
 | `RegistrationStatus` | `UNVERIFIED` → `VERIFIED` → `COMPLETED` | **선언 순서가 단계 의미를 가짐**(ordinal 비교). append만 허용 |
 
 ---
@@ -105,9 +107,9 @@ BlurSome의 회원(Member) 도메인을 정의합니다. 소셜 로그인으로 
 createOAuthMember()
         │
         ▼
- ┌────────────┐  verifySchoolEmail(email)  ┌──────────┐  completeOnboarding(nickName, gender)  ┌───────────┐
- │ UNVERIFIED │ ─────────────────────────▶ │ VERIFIED │ ─────────────────────────────────────▶ │ COMPLETED │
- └────────────┘  (학교 이메일 세팅·유니크 검증)  └──────────┘       (nickName·gender 세팅)            └───────────┘
+ ┌────────────┐  verifySchoolEmail(email)  ┌──────────┐  completeOnboarding(nickName)  ┌───────────┐
+ │ UNVERIFIED │ ─────────────────────────▶ │ VERIFIED │ ─────────────────────────────▶ │ COMPLETED │
+ └────────────┘  (학교 이메일 세팅·유니크 검증)  └──────────┘  (nickName 세팅, 공개 프로필은 Feed)  └───────────┘
         ▲                                       │
         └──────────── 되돌리기 없음(단조 전진) ────────┘
 ```
@@ -133,9 +135,10 @@ createOAuthMember()
 
 - `WITHDRAWN`은 소프트삭제 상태. 행을 삭제하지 않고 `providerId`를 보존해 감사·재가입 추적이 가능하다.
 - `WITHDRAWN` 회원은 가입 단계 전이(`verifySchoolEmail`/`completeOnboarding`)·서비스 진입이 모두 차단된다.
-- **재가입(✅ 결정: 기존 행 재활성화)**: 탈퇴자가 같은 소셜 계정으로 재로그인하면 `findByProviderAndProviderId`가 기존 WITHDRAWN 행을 찾는다(새 행 생성은 `uk_member_provider` 충돌이라 불가). 이때 `reactivate()`로 `activityStatus`만 `ACTIVE`로 되돌리고 **`registrationStatus`·온보딩 필드(`nickName`/`schoolEmail`/`gender`)는 보존된 값 그대로 복구**한다(닉네임·학교인증 재수행 불필요).
-- (후순위 ⏳) 재가입 쿨다운이 필요하면 `withdrawnAt` 타임스탬프 + N일 제한을 추가한다. 1차는 미적용.
-- `SUSPENDED`(관리자 정지)는 후순위 — 필요 시 enum append.
+- **재가입(✅ 결정: 기존 행 재활성화)**: 탈퇴자가 같은 소셜 계정으로 재로그인하면 `findByProviderAndProviderId`가 기존 WITHDRAWN 행을 찾는다(새 행 생성은 `uk_member_provider` 충돌이라 불가). 이때 `reactivate()`로 `activityStatus`를 `ACTIVE`로 되돌리고 `withdrawnAt`을 해제하며, **`registrationStatus`·온보딩 필드(`nickName`/`schoolEmail`)는 보존된 값 그대로 복구**한다(닉네임·학교인증 재수행 불필요). 공개 프로필을 담은 `Feed`도 그대로 유지된다.
+- **탈퇴 시각 기록(✅ 추가, 이슈 #39)**: `withdraw()`는 `withdrawnAt = now()`를 기록한다. `BaseEntity.updatedAt`은 임의 수정에도 갱신되어 탈퇴 시각으로 부정확하므로, 보존·정렬 판정은 전용 컬럼 `withdrawnAt`을 쓴다.
+- **30일 보존 후 영구 삭제(🧩 설계 반영, 스케줄러는 후속 이슈)**: 탈퇴 회원은 30일간 소프트삭제 상태로 보존했다가 영구 삭제한다. 배치는 `activityStatus = WITHDRAWN AND withdrawnAt < now() - 30일` 대상을 주기적으로 하드 삭제(또는 익명화)한다. 30일 내 재로그인하면 `reactivate()`로 살아나며 `withdrawnAt`이 비워져 삭제 대상에서 빠진다. 실제 스케줄러 구현은 후속 이슈로 분리한다.
+- **`SUSPENDED`(신고 제재 임시 정지, ✅ #75)**: 대상의 고유 신고자가 7일 내 **5명**에 도달하면 `ReportService`가 `suspend()`로 `ACTIVE → SUSPENDED` 자동 전이한다. 정지 회원은 `isActive()`가 `false`라 OAuth 로그인(`MEMBER_403_SUSPENDED`로 거부, 재활성화 안 함)·채팅·탐색이 모두 차단된다. 해제는 운영자 수동 `reactivate()`(관리자 도구는 후속 이슈). 탈퇴(`WITHDRAWN`)는 되살리지 않으려 `suspend()`가 `ACTIVE`일 때만 전이한다.
 
 ---
 
@@ -151,7 +154,7 @@ static Member createOAuthMember(
     OAuthProvider provider, String providerId,
     String name, String email, String profileImageUrl)
 // → role=USER, activityStatus=ACTIVE, registrationStatus=UNVERIFIED
-//   nickName/schoolEmail/gender = null
+//   nickName/schoolEmail = null
 ```
 
 ### 4-2. 가입 단계 전이
@@ -163,9 +166,9 @@ void verifySchoolEmail(String schoolEmail)
 //   schoolEmail 세팅. (유니크 충돌은 Service에서 DataIntegrityViolation → 도메인 예외 변환)
 
 // VERIFIED → COMPLETED
-void completeOnboarding(String nickName, Gender gender)
+void completeOnboarding(String nickName)
 //   불변식: 현재 VERIFIED && ACTIVE 여야 함. UNVERIFIED면 "인증 먼저" 예외.
-//   nickName, gender 세팅.
+//   nickName 세팅. 공개 프로필(생년·학과·MBTI·성별)은 Feed가 보유(서비스가 FeedService.createFeed로 저장).
 ```
 
 ### 4-3. 소셜 프로필 동기화 (단계와 무관)
@@ -182,11 +185,19 @@ void updateProfileFromOAuth(String name, String profileImageUrl)
 ```java
 void withdraw()
 //   불변식: ACTIVE 여야 함. 이미 WITHDRAWN이면 예외.
-//   activityStatus = WITHDRAWN. (registrationStatus·온보딩 필드는 보존)
+//   activityStatus = WITHDRAWN, withdrawnAt = now(). (registrationStatus·온보딩 필드는 보존)
 
 void reactivate()
 //   불변식: WITHDRAWN 여야 함. 이미 ACTIVE면 예외.
-//   activityStatus = ACTIVE. registrationStatus·nickName·schoolEmail·gender는 건드리지 않는다(직전 상태 복구).
+//   activityStatus = ACTIVE, withdrawnAt = null. registrationStatus·nickName·schoolEmail은 건드리지 않는다(직전 상태 복구).
+```
+
+### 4-6. 활동 시각 갱신 (단계와 무관)
+
+```java
+void recordActivity()
+//   lastActiveAt = now(). 상태 전이가 아니므로 활동 상태와 무관하게 동작한다.
+//   로그인 등 활동 시점에 서비스가 호출(findOrCreateByOAuth). 신규 회원은 생성 시 초기화된다.
 ```
 
 ### 4-5. 조회 헬퍼 (질의 메서드)
@@ -204,7 +215,7 @@ boolean canUseService()           // isActive() && isOnboardingCompleted()
 1. 가입 단계는 **단조 전진** — `UNVERIFIED → VERIFIED → COMPLETED` 외 전이 불가, 되돌리기 불가.
 2. 온보딩은 **학교 인증 선행** — `VERIFIED`가 아니면 `completeOnboarding` 불가.
 3. `WITHDRAWN` 회원은 어떤 단계 전이도 불가.
-4. `nickName`/`gender`는 `completeOnboarding`에서만, `schoolEmail`은 `verifySchoolEmail`에서만 세팅.
+4. `nickName`은 `completeOnboarding`에서만, `schoolEmail`은 `verifySchoolEmail`에서만 세팅. 공개 프로필(생년·학과·MBTI·성별)은 `Member`가 아닌 `Feed`가 보유.
 5. 외부에서 상태 필드를 직접 변경하는 public setter를 제공하지 않는다.
 
 ---
@@ -270,14 +281,16 @@ MemberService.verifySchoolEmail(memberId, schoolEmail)  @Transactional
 ### 6-3. 온보딩 완료
 
 ```
-POST /api/members/me/onboarding {nickName, gender}
+POST /api/members/me/onboarding {nickName, birthYear, department, mbti, gender, interests[]}
         │
         ▼
-MemberService.completeOnboarding(memberId, request)     @Transactional
+MemberOnboardingService.completeOnboarding(memberId, request)     @Transactional
    ├─ findActiveMember(memberId)
-   ├─ member.completeOnboarding(nickName, gender)        (VERIFIED → COMPLETED)
+   ├─ member.completeOnboarding(nickName)               (VERIFIED → COMPLETED, 닉네임만 세팅)
    │     └─ VERIFIED 아니면 MEMBER_409_SCHOOL_VERIFICATION_REQUIRED
-   └─ 닉네임 유니크 충돌(DataIntegrityViolation) → MEMBER_409_NICKNAME_DUPLICATED
+   ├─ 닉네임 유니크 충돌(DataIntegrityViolation) → MEMBER_409_NICKNAME_DUPLICATED
+   ├─ interests 저장(InterestCategory)
+   └─ feedService.createFeed(member, gender, birthYear, department, mbti)   (공개 프로필 → Feed)
 ```
 
 ### 6-4. 탈퇴
@@ -313,6 +326,7 @@ MemberService.withdraw(memberId)                        @Transactional
 |---|---|---|
 | `MEMBER_404_NOT_FOUND` | 회원 없음 | 404 | ✅ |
 | `MEMBER_403_INACTIVE` | 탈퇴/비활성 회원 | 403 | ✅ |
+| `MEMBER_403_SUSPENDED` | 신고 제재로 정지된 회원(로그인 차단, #75) | 403 | ✅ |
 | `MEMBER_409_OAUTH_CONFLICT` | 소셜 가입 동시 요청 충돌 | 409 | ✅ |
 | `MEMBER_409_SCHOOL_EMAIL_DUPLICATED` | 학교 이메일 중복 | 409 | 🧩 |
 | `MEMBER_409_SCHOOL_VERIFICATION_REQUIRED` | 인증 전 온보딩 시도 | 409 | 🧩 |
@@ -331,7 +345,7 @@ MemberService.withdraw(memberId)                        @Transactional
 |---|---|---|
 | `Member.nickname` | 소셜 이름·표시 겸용 단일 필드 | **`name`(소셜) + `nickName`(온보딩) 분리** |
 | `Member.status` (`MemberStatus`) | `ACTIVE/INACTIVE` | **`activityStatus`(`ActivityStatus`: ACTIVE/WITHDRAWN)** 로 대체 |
-| 신규 필드 | — | `schoolEmail`(유니크), `gender`, `registrationStatus` 추가 |
+| 신규 필드 | — | `schoolEmail`(유니크), `registrationStatus` 추가 (공개 프로필 `gender`/생년/학과/MBTI는 `Feed`로 분리) |
 | `OAuthUserInfo.nickname` | 소셜 이름을 `nickname`으로 전달 | `name`으로 명명 변경(소셜 이름 의미 명확화) |
 | `Member.createOAuthMember(...)` | `nickname` 인자 | `name` 인자, `registrationStatus=UNVERIFIED` 초기화 |
 | `Member.updateProfileFromOAuth(...)` | `nickname` 갱신 | `name` 갱신(온보딩 `nickName` 불변 유지) |
@@ -355,11 +369,14 @@ MemberService.withdraw(memberId)                        @Transactional
 | 7 | 성별 | **`Gender` = MALE, FEMALE 로 제한** |
 | 8 | 가입 단계 네이밍 | **`UNVERIFIED → VERIFIED → COMPLETED`** (기획 Unverified/Verified와 정렬, `COMPLETED`는 `ActivityStatus.ACTIVE`와 이름 충돌 회피). 기획 'Active'·'Guest'는 파생 접근상태로 보고 별도 enum 미도입(§3-0) |
 
+| 9 | 활동성·탈퇴 타임스탬프 | **`withdrawnAt`·`lastActiveAt` 추가**(이슈 #39). 탈퇴 30일 보존 후 영구 삭제·최근 접속 정렬의 기준. `updatedAt`은 탈퇴 시각 대용으로 쓰지 않음 |
+
 ### ⏳ 남은 검토 항목
 
-- **재가입 쿨다운** — 탈퇴 후 N일 재가입 제한 도입 시 `withdrawnAt` 추가(1차 미적용).
+- **탈퇴 30일 보존 영구 삭제 스케줄러** — 설계(§3-2)는 확정. 배치 구현은 후속 이슈로 분리.
+- **재가입 쿨다운** — 필요 시 `withdrawnAt + N일` 제한 추가(현재 미적용, 타임스탬프는 이미 확보).
 - **학교 이메일 인증 메커니즘** — 인정 메일 도메인 화이트리스트, 인증 코드 발송/검증 흐름(인증 서비스 책임).
-- **`SUSPENDED`(관리자 정지)** 도입 시점.
+- **`SUSPENDED`(신고 제재 임시 정지)** — ✅ #75에서 도입(고유 신고자 5명 자동 정지 + 로그인/채팅/탐색 차단). 운영자 검토 큐·관리자 해제 API와 1명=검토 큐·발신 제한 단방향 정밀화는 후속.
 
 ---
 

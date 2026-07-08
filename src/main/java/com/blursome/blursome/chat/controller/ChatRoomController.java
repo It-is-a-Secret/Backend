@@ -3,6 +3,7 @@ package com.blursome.blursome.chat.controller;
 import com.blursome.blursome.chat.dto.response.ChatMessageResponse;
 import com.blursome.blursome.chat.dto.response.ChatRoomSummaryResponse;
 import com.blursome.blursome.chat.service.ChatRoomService;
+import com.blursome.blursome.feed.dto.response.RevealedFeedImagesResponse;
 import com.blursome.blursome.global.response.DataResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -59,14 +60,18 @@ public class ChatRoomController {
         DataResponse.ok(chatRoomService.getMessageHistory(roomId, memberId, cursor, size)));
   }
 
-  @Operation(summary = "단계 동의", description = "다음 사진 공개 단계에 동의한다. 양쪽이 모두 동의하면 방 단계가 한 칸 오른다. "
-      + "이미 마지막 단계이거나 이미 동의한 단계면 409. 참여자가 아니면 403.")
-  @PostMapping("/{roomId}/progress/agree")
-  public ResponseEntity<DataResponse<ChatRoomSummaryResponse>> agreeProgress(
+  @Operation(summary = "단계별 양쪽 사진 조회",
+      description = "ACTIVE 상태의 참여 중인 방에서만 200. 방의 현재 진행 단계가 정하는 공개 장수만큼 본인(ME)·상대(PARTNER) "
+          + "원본이 각각 displayOrder 순서대로 단기 Presigned GET으로 공개되고, 나머지는 블러본으로 내려온다. 각 사진은 role로 "
+          + "소유자를 구분한다. 참여자가 아니면 403, 방이 없거나 내가 나갔으면 404, 방이 차단/신고/종료(비ACTIVE) 상태면 원본을 "
+          + "발급하지 않고 409(ROOM_CLOSED)를 반환한다.")
+  @GetMapping("/{roomId}/revealed-images")
+  public ResponseEntity<DataResponse<RevealedFeedImagesResponse>> getRevealedImages(
       @AuthenticationPrincipal Long memberId,
       @PathVariable Long roomId
   ) {
-    return ResponseEntity.ok(DataResponse.ok(chatRoomService.agreeProgress(roomId, memberId)));
+    return ResponseEntity.ok(
+        DataResponse.ok(chatRoomService.getRevealedImages(roomId, memberId)));
   }
 
   @Operation(summary = "채팅방 나가기", description = "채팅방을 영구히 나간다(재입장 불가). 1:1이므로 방이 즉시 종료(CLOSED)된다. "

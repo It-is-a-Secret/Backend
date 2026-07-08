@@ -33,19 +33,28 @@ public class MemberService {
    * OAuth 사용자 정보를 기준으로 기존 회원을 조회하거나, 없으면 새 회원을 생성한다.
    *
    * <p>이미 가입된 회원이면 탈퇴 상태인 경우 재활성화한 뒤 OAuth 프로필 정보(이름·프로필 이미지)를
-   * 최신 값으로 갱신한다. 가입 이력이 없으면 새 회원을 생성한다.
+   * 최신 값으로 갱신하고, 로그인은 활동이므로 마지막 활동 시각을 갱신한다. 가입 이력이 없으면 새 회원을
+   * 생성한다(생성 시 {@code lastActiveAt}이 초기화됨).
+   *
+   * <p>단, 신고 제재로 <b>정지({@code SUSPENDED})된 회원은 로그인을 거부</b>한다(#75). 탈퇴와 달리
+   * 자동 재활성화하지 않으며, 토큰 발급 전에 차단한다. 해제는 운영자 수동 처리(후속)다.
    *
    * @param userInfo OAuth 제공자로부터 전달받은 사용자 정보
    * @return 조회 또는 생성된 회원 엔티티
+   * @throws BaseException 정지된 회원인 경우({@link MemberErrorCode#MEMBER_SUSPENDED})
    */
   @Transactional
   public Member findOrCreateByOAuth(OAuthUserInfo userInfo) {
     return memberRepository.findByProviderAndProviderId(userInfo.provider(), userInfo.providerId())
         .map(existing -> {
+          if (existing.isSuspended()) {
+            throw BaseException.from(MemberErrorCode.MEMBER_SUSPENDED);
+          }
           if (existing.isWithdrawn()) {
             existing.reactivate();
           }
           existing.updateProfileFromOAuth(userInfo.name(), userInfo.profileImageUrl());
+          existing.recordActivity();
           return existing;
         })
         .orElseGet(() -> createMember(userInfo));
