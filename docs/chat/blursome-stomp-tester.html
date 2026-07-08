@@ -131,6 +131,12 @@
   A에서 <code>메시지 전송</code> 후 B 로그에 같은 메시지가 도착하면 성공.
   전송 본문의 <code>senderId</code>는 서버가 무시하고 CONNECT 신분으로 결정합니다.
 </p>
+<p class="hint">
+  개인 알림 큐(<code>/user/queue/rooms</code>, #88)는 <strong>연결 직후 자동 구독</strong>됩니다.
+  <strong>방 미구독 수신</strong>을 검증하려면 수신 측에서 <code>방 구독</code>을 <em>누르지 말고</em> 연결만 한 뒤,
+  상대가 메시지를 보내거나(NEW_MESSAGE) 첫 대화를 시작하면(NEW_ROOM) <code>[/user/queue/rooms]</code> 로그를 확인하세요.
+  첫 대화 시작(NEW_ROOM)은 STOMP가 아니라 Postman <code>POST /api/discovery/feeds/{feedId}/chat</code>로 유발합니다.
+</p>
 
 <script>
 (function () {
@@ -226,6 +232,20 @@
     client.onConnect = (frame) => {
       setState(s, true, "CONNECTED");
       log(s, "recv", "✓ CONNECTED 수신 — STOMP 인증 성공");
+
+      // 개인 큐는 방 id가 필요 없는 계정 단위 채널이라 연결 직후 자동 구독한다.
+      // 개인 오류 큐
+      s.client.subscribe("/user/queue/errors", (m) => {
+        log(s, "err", "[/user/queue/errors] " + m.body);
+      }, { id: "sub-errors-" + s.key });
+
+      // 개인 알림 큐(이슈 #88) — 방 토픽을 구독하지 않아도 NEW_ROOM/NEW_MESSAGE를 받는다.
+      // 즉, "방 구독"을 누르지 않은 상태에서도 이 큐로 새 대화·새 메시지 신호가 들어온다(방 미구독 수신 검증용).
+      s.client.subscribe("/user/queue/rooms", (m) => {
+        log(s, "recv", "[/user/queue/rooms] " + m.body);
+      }, { id: "sub-rooms-" + s.key });
+
+      log(s, "sys", "개인 큐 자동 구독: /user/queue/rooms , /user/queue/errors");
     };
     client.onStompError = (frame) => {
       // 서버가 ERROR 프레임을 보낸 경우 (인증 실패 등)
@@ -247,23 +267,13 @@
     if (!s.client || !s.client.connected) { log(s, "err", "먼저 연결하세요."); return; }
     const roomId = $("roomId").value.trim();
 
-    // 개인 오류 큐
-    s.client.subscribe("/user/queue/errors", (m) => {
-      log(s, "err", "[/user/queue/errors] " + m.body);
-    }, { id: "sub-errors-" + s.key });
-
-    // 개인 알림 큐(이슈 #88) — 방을 구독하지 않아도 NEW_ROOM/NEW_MESSAGE를 받는다.
-    // 접속 시 한 번만 구독하면 어떤 방이든 새 대화·새 메시지 신호가 이 큐로 들어온다.
-    s.client.subscribe("/user/queue/rooms", (m) => {
-      log(s, "recv", "[/user/queue/rooms] " + m.body);
-    }, { id: "sub-rooms-" + s.key });
-
-    // 방 토픽
+    // 방 토픽만 구독한다. 개인 큐(errors·rooms)는 연결 시 자동 구독되므로 여기서 다루지 않는다.
+    // 따라서 이 버튼을 "누르지 않으면" 그 방을 미구독한 상태가 되고, 개인 큐로만 알림을 받는 시나리오를 만들 수 있다.
     s.client.subscribe("/topic/rooms/" + roomId, (m) => {
       log(s, "recv", "[/topic/rooms/" + roomId + "] " + m.body);
     }, { id: "sub-room-" + s.key });
 
-    log(s, "sys", "구독 완료: /topic/rooms/" + roomId + " , /user/queue/rooms , /user/queue/errors");
+    log(s, "sys", "방 토픽 구독 완료: /topic/rooms/" + roomId + " (개인 큐는 연결 시 자동 구독됨)");
   }
 
   function send(s) {
