@@ -2,6 +2,7 @@ package com.blursome.blursome.discovery.controller;
 
 import com.blursome.blursome.discovery.dto.request.ChatStartRequest;
 import com.blursome.blursome.discovery.dto.response.ChatStartResponse;
+import com.blursome.blursome.discovery.dto.response.DiscoveryCardDetailResponse;
 import com.blursome.blursome.discovery.dto.response.DiscoveryCardResponse;
 import com.blursome.blursome.discovery.service.ChatStartService;
 import com.blursome.blursome.discovery.service.DiscoveryService;
@@ -45,6 +46,19 @@ public class DiscoveryController {
       @RequestParam(defaultValue = "" + DEFAULT_PAGE_SIZE) int size
   ) {
     return ResponseEntity.ok(DataResponse.ok(discoveryService.getDiscovery(memberId, page, size)));
+  }
+
+  @Operation(summary = "탐색 카드 상세 조회",
+      description = "선택한 카드의 기본 정보(닉네임·생년·학과·MBTI·성별)와 관심사 키워드를 반환한다. 키워드마다 "
+          + "조회자도 선택한 태그면 matched=true. 사진은 GET /api/feeds/{feedId}/images로 따로 조회한다. "
+          + "탐색 목록과 같은 노출 조건(이성·활성·차단 아님·사진 5장 READY)을 재검증하며, 대상이 없거나 조건을 "
+          + "충족하지 않으면 사유 구분 없이 404. 조회자 온보딩 미완료 403.")
+  @GetMapping("/feeds/{feedId}")
+  public ResponseEntity<DataResponse<DiscoveryCardDetailResponse>> getCardDetail(
+      @AuthenticationPrincipal Long memberId,
+      @PathVariable Long feedId
+  ) {
+    return ResponseEntity.ok(DataResponse.ok(discoveryService.getCardDetail(memberId, feedId)));
   }
 
   @Operation(summary = "피드로 1:1 대화 시작",

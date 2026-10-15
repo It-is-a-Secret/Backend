@@ -1,9 +1,14 @@
 package com.blursome.blursome.member.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.blursome.blursome.global.exception.BaseException;
+import com.blursome.blursome.member.exception.MemberErrorCode;
+import java.time.LocalDateTime;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
 
 class MemberTest {
 
@@ -87,6 +92,74 @@ class MemberTest {
 
     assertThat(member.isWithdrawn()).isTrue();
     assertThat(member.isSuspended()).isFalse();
+  }
+
+  private Member onboardedMember() {
+    Member member = newMember();
+    member.verifySchoolEmail("blur@gs.anyang.ac.kr");
+    member.completeOnboarding("blur-nick");
+    return member;
+  }
+
+  @Test
+  @DisplayName("온보딩 직후에는 프로필 변경 이력이 비어 있어 바로 닉네임을 바꿀 수 있다")
+  void changeNickName_firstChangeAfterOnboardingIsAllowed() {
+    Member member = onboardedMember();
+    LocalDateTime now = LocalDateTime.of(2026, 10, 15, 9, 0);
+
+    member.changeNickName("new-nick", now);
+
+    assertThat(member.getNickName()).isEqualTo("new-nick");
+    assertThat(member.profileEditHistory().lastChangedAt(ProfileItem.NICKNAME)).isEqualTo(now);
+    assertThat(member.profileEditHistory().lastChangedAt(ProfileItem.MBTI)).isNull();
+  }
+
+  @Test
+  @DisplayName("닉네임을 바꾼 지 30일이 안 됐으면 다시 바꿀 수 없고 값도 유지된다")
+  void changeNickName_withinThirtyDays_rejected() {
+    Member member = onboardedMember();
+    LocalDateTime now = LocalDateTime.of(2026, 10, 15, 9, 0);
+    member.changeNickName("first", now);
+
+    assertThatThrownBy(() -> member.changeNickName("second", now.plusDays(29)))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code",
+            MemberErrorCode.MEMBER_NICKNAME_CHANGE_LIMITED.getCode());
+    assertThat(member.getNickName()).isEqualTo("first");
+  }
+
+  @Test
+  @DisplayName("항목별 제한이라 닉네임 제한 중에도 MBTI 변경은 기록할 수 있다")
+  void recordProfileChange_isPerItem() {
+    Member member = onboardedMember();
+    LocalDateTime now = LocalDateTime.of(2026, 10, 15, 9, 0);
+    member.changeNickName("first", now);
+
+    member.recordProfileChange(ProfileItem.MBTI, now.plusDays(1));
+
+    assertThat(member.profileEditHistory().lastChangedAt(ProfileItem.MBTI))
+        .isEqualTo(now.plusDays(1));
+  }
+
+  @Test
+  @DisplayName("온보딩 전 회원은 프로필을 변경할 수 없다")
+  void validateProfileChangeable_requiresOnboarding() {
+    Member member = newMember();
+
+    assertThatThrownBy(() -> member.validateProfileChangeable(
+        ProfileItem.NICKNAME, LocalDateTime.now()))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", MemberErrorCode.MEMBER_ONBOARDING_REQUIRED.getCode());
+  }
+
+  @Test
+  @DisplayName("임베디드 컬럼이 모두 NULL로 적재돼 이력이 null이어도 빈 이력으로 취급한다")
+  void profileEditHistory_nullEmbeddableTreatedAsEmpty() {
+    Member member = onboardedMember();
+    ReflectionTestUtils.setField(member, "profileEditHistory", null);
+
+    assertThat(member.profileEditHistory().isChangeable(ProfileItem.NICKNAME, LocalDateTime.now()))
+        .isTrue();
   }
 
   @Test

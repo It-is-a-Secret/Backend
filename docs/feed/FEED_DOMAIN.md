@@ -18,7 +18,7 @@ BlurSome의 피드(Feed) 도메인을 정의합니다. 온보딩을 완료한 �
 - `Member` 엔티티의 민감 정보(provider, providerId, email, schoolEmail, registrationStatus 등)를 피드 조회에서 원천 차단한다.
 - 공개 프로필(`gender`·`birthYear`·`department`·`mbti`)은 **`Feed`가 단독으로 보유**한다. 이 필드들은 `Member`에서 제거했으며(중복 제거), 온보딩 시 곧바로 `Feed`에 채운다.
 - 온보딩 완료 시 `Member`와 1:1로 `Feed`를 자동 생성해, 이후 피드 탐색 쿼리가 `Member`를 조회하지 않고 `Feed`만으로 완결되도록 한다.
-- `nickName`만 `Member`와 중복 보유한다(비정규화). 닉네임은 `Member`의 가입 정체성이라 양쪽에 두고, 피드 탐색 시 JOIN 없이 조회한다. `Member.nickName`이 현재 불변(변경 API 없음)이므로 동기화 부담이 없다.
+- `nickName`만 `Member`와 중복 보유한다(비정규화). 닉네임은 `Member`의 가입 정체성이라 양쪽에 두고, 피드 탐색 시 JOIN 없이 조회한다. 닉네임 변경 시(#95 프로필 수정) 같은 트랜잭션에서 `Feed.nickName`을 동기화한다(§5).
 
 ### 핵심 결정 (✅ 확정)
 
@@ -116,12 +116,10 @@ MemberOnboardingService.completeOnboarding()              @Transactional
 | 항목 | 내용 |
 |---|---|
 | 정책 | `Member.nickName`을 `Feed.nickName`에 그대로 복사 |
-| 동기화 | 현재 닉네임 변경 API 없음 → 동기화 불필요 |
-| 유니크 | `Member`와 `Feed` 양쪽에 유니크 제약 적용 |
+| 동기화 | ✅ #95 프로필 수정(`PUT /api/members/me/profile`)에서 `member.changeNickName` 직후 `feed.updateNickName`을 같은 트랜잭션에서 호출 |
+| 유니크 | `Member`와 `Feed` 양쪽에 유니크 제약 적용. 어느 쪽 충돌이든 `MEMBER_409_NICKNAME_DUPLICATED`로 변환 |
 
-### 닉네임 변경 기능 추가 시 (⏳ 미정)
-
-닉네임 변경 API가 추가되면 `Feed.updateNickName()`을 이용한 동기화 로직이 필요하다.
+MBTI도 프로필 수정에서 `Feed.changeMbti()`로 바뀐다. 성별·생년·학과는 탐색·대화 자격의 기준이라 수정 대상이 아니다. 항목별 30일 변경 제한은 `Member`가 보유한다([`MEMBER_DOMAIN.md` §6-5](../member/MEMBER_DOMAIN.md)).
 
 ```
 Member.nickName 변경 요청

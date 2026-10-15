@@ -108,4 +108,12 @@ public class Feed extends BaseEntity {
   public void updateNickName(String nickName) {
     this.nickName = nickName;
   }
+
+  /**
+   * MBTI를 변경한다(#95, {@code null}은 "모름"). 30일 변경 제한은 회원({@code Member.recordProfileChange})이
+   * 검증·기록하므로 호출 측이 먼저 수행한다.
+   */
+  public void changeMbti(Mbti mbti) {
+    this.mbti = mbti;
+  }
 }

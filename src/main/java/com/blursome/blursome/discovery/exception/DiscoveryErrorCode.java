@@ -13,6 +13,12 @@ public enum DiscoveryErrorCode implements ErrorCode {
       "온보딩을 완료해야 탐색을 이용할 수 있습니다.",
       "DISCOVERY_403_ONBOARDING_REQUIRED"
   ),
+  // 이슈 #95: 카드 상세 대상이 없거나 탐색 노출 조건(이성·활성·차단 아님·공개 5장 READY)을 충족하지 않는 경우.
+  // 피드 존재 여부 탐색을 막으려고 사유를 구분하지 않고 404로 가린다.
+  DISCOVERY_FEED_NOT_FOUND(HttpStatus.NOT_FOUND,
+      "피드를 찾을 수 없습니다.",
+      "DISCOVERY_404_FEED_NOT_FOUND"
+  ),
   // 이슈 #87: 피드로 대화 시작 시 대상 피드를 찾을 수 없는 경우.
   CHAT_START_TARGET_NOT_FOUND(HttpStatus.NOT_FOUND,
       "대화를 시작할 대상을 찾을 수 없습니다.",
