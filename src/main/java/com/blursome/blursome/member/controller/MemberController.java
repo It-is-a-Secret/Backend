@@ -10,12 +10,14 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(name = "Member", description = "회원 온보딩 API (학교 이메일 인증 → 프로필 작성)")
@@ -36,6 +38,7 @@ public class MemberController {
 
   @Operation(summary = "학교 이메일 인증 코드 발송",
       description = "안양대학교 이메일(@gs.anyang.ac.kr)로 6자리 인증 코드를 발송한다.")
+  @ResponseStatus(HttpStatus.NO_CONTENT)
   @PostMapping("/school-email/verification-codes")
   public ResponseEntity<Void> sendSchoolEmailCode(
       @AuthenticationPrincipal Long memberId,
@@ -47,6 +50,7 @@ public class MemberController {
 
   @Operation(summary = "학교 이메일 인증 코드 검증",
       description = "발송된 코드를 검증하고 학교 인증을 완료한다(UNVERIFIED → VERIFIED).")
+  @ResponseStatus(HttpStatus.NO_CONTENT)
   @PostMapping("/school-email/verifications")
   public ResponseEntity<Void> verifySchoolEmail(
       @AuthenticationPrincipal Long memberId,

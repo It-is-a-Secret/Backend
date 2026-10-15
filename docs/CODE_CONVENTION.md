@@ -109,6 +109,8 @@ return ResponseEntity.status(status).body(DataResponse.ok(response));
 return ResponseEntity.noContent().build();
 ```
 
+> **200이 아닌 성공 코드는 `@ResponseStatus`로 명세에도 표시합니다.** springdoc은 `ResponseEntity`의 실제 상태를 알 수 없어 기본 200으로 명세합니다. `noContent()`(204)·리다이렉트(302)·`CREATED`(201)를 반환하는 메서드에는 `@ResponseStatus(HttpStatus.NO_CONTENT)` 등을 함께 붙입니다(#97, `OpenApiSchemaTest`가 "본문 없는 200"을 검출).
+
 ```json
 {
   "timestamp": "2026-05-08T14:30:12.123+09:00",
