@@ -38,6 +38,8 @@
 
 > DTO에 엔티티를 직접 노출하지 않습니다. 항상 `*Request` / `*Response`로 변환합니다.
 
+> **DTO 내부 record에는 `@Schema(name = ...)`로 고유한 스키마 이름을 지정합니다.** springdoc은 클래스 simple name으로 OpenAPI 스키마 이름을 정하므로, 여러 DTO의 내부 record 이름이 같으면(예: `Image`) 하나로 합쳐져 프론트가 생성하는 타입이 틀어집니다(#97). 예: `RevealedFeedImagesResponse.Image` → `@Schema(name = "RevealedFeedImageItem")`. 회귀 검증은 `OpenApiSchemaTest`.
+
 ---
 
 ## 3. 패키지 구조 규칙
@@ -106,6 +108,8 @@ return ResponseEntity.status(status).body(DataResponse.ok(response));
 // 바디 불필요 (삭제 등)
 return ResponseEntity.noContent().build();
 ```
+
+> **200이 아닌 성공 코드는 `@ResponseStatus`로 명세에도 표시합니다.** springdoc은 `ResponseEntity`의 실제 상태를 알 수 없어 기본 200으로 명세합니다. `noContent()`(204)·리다이렉트(302)·`CREATED`(201)를 반환하는 메서드에는 `@ResponseStatus(HttpStatus.NO_CONTENT)` 등을 함께 붙입니다(#97, `OpenApiSchemaTest`가 "본문 없는 200"을 검출).
 
 ```json
 {
