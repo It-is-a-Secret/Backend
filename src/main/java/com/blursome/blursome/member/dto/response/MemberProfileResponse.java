@@ -16,7 +16,8 @@ import java.util.List;
  * <p>공개 프로필(생년·학과·MBTI·성별)은 {@link Feed}가 보유한다. 온보딩 미완료 회원은 피드가 없어
  * {@code feed}가 {@code null}이며, 해당 필드는 모두 {@code null}로 응답한다. 관심사는 회원이 선택한
  * 키워드({@link MemberKeyword}) 목록으로 응답한다. {@code profileEdit}은 수정 가능 항목별 30일 변경 제한
- * 상태다(#95).
+ * 상태다(#95). 프로필 수정은 온보딩 완료 회원만 가능하므로({@link Member#validateProfileChangeable}) 미완료
+ * 회원은 {@code profileEdit}도 {@code null}로 응답해 "변경 가능"으로 오인되지 않게 한다.
  */
 public record MemberProfileResponse(
     Long id,
@@ -43,7 +44,9 @@ public record MemberProfileResponse(
         feed == null ? null : feed.getGender(),
         member.getRegistrationStatus(),
         keywords.stream().map(MemberKeywordResponse::from).toList(),
-        ProfileEditStatusResponse.of(member.profileEditHistory(), now)
+        member.isOnboardingCompleted()
+            ? ProfileEditStatusResponse.of(member.profileEditHistory(), now)
+            : null
     );
   }
 }

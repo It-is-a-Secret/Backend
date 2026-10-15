@@ -235,6 +235,35 @@ class MemberProfileServiceTest {
   }
 
   @Test
+  @DisplayName("온보딩 완료 회원의 프로필 조회는 항목별 변경 제한 상태를 포함한다")
+  void getMyProfile_onboarded_includesProfileEdit() {
+    given(memberService.findActiveMember(MEMBER_ID)).willReturn(member);
+    given(feedService.findFeedByMemberId(MEMBER_ID)).willReturn(Optional.of(feed));
+    given(memberKeywordService.findSelections(MEMBER_ID)).willReturn(currentKeywords);
+
+    MemberProfileResponse response = memberProfileService.getMyProfile(MEMBER_ID);
+
+    assertThat(response.profileEdit()).isNotNull();
+    assertThat(response.profileEdit().nickName().changeable()).isTrue();
+  }
+
+  @Test
+  @DisplayName("온보딩 미완료 회원은 수정할 수 없으므로 profileEdit을 null로 응답한다")
+  void getMyProfile_notOnboarded_profileEditNull() {
+    Member verified = Member.createOAuthMember(OAuthProvider.KAKAO, "pid2", "name", "e2@e.com", null);
+    ReflectionTestUtils.setField(verified, "id", 2L);
+    verified.verifySchoolEmail("blur2@gs.anyang.ac.kr");
+    given(memberService.findActiveMember(2L)).willReturn(verified);
+    given(feedService.findFeedByMemberId(2L)).willReturn(Optional.empty());
+    given(memberKeywordService.findSelections(2L)).willReturn(List.of());
+
+    MemberProfileResponse response = memberProfileService.getMyProfile(2L);
+
+    assertThat(response.profileEdit()).isNull();
+    assertThat(response.mbti()).isNull();
+  }
+
+  @Test
   @DisplayName("닉네임 확인은 본인을 제외하고 중복 여부를 판단한다")
   void checkNickNameAvailability() {
     given(memberService.findActiveMember(MEMBER_ID)).willReturn(member);

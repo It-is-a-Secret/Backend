@@ -38,7 +38,7 @@ public class MemberController {
   @Operation(summary = "내 프로필 조회",
       description = "닉네임·생년·학과·MBTI·관심사·가입 단계와, 수정 가능 항목(닉네임·MBTI·관심사)별 30일 변경 제한 상태"
           + "(profileEdit: lastChangedAt·nextChangeableAt·changeable)를 반환한다. 온보딩 이후 변경한 적 없는 항목은 "
-          + "두 시각이 null이고 즉시 변경 가능하다.")
+          + "두 시각이 null이고 즉시 변경 가능하다. 온보딩 미완료 회원은 수정 대상이 아니므로 profileEdit이 null이다.")
   @GetMapping
   public ResponseEntity<DataResponse<MemberProfileResponse>> getMyProfile(
       @AuthenticationPrincipal Long memberId

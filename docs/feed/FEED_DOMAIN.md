@@ -122,14 +122,15 @@ MemberOnboardingService.completeOnboarding()              @Transactional
 MBTI도 프로필 수정에서 `Feed.changeMbti()`로 바뀐다. 성별·생년·학과는 탐색·대화 자격의 기준이라 수정 대상이 아니다. 항목별 30일 변경 제한은 `Member`가 보유한다([`MEMBER_DOMAIN.md` §6-5](../member/MEMBER_DOMAIN.md)).
 
 ```
-Member.nickName 변경 요청
+PUT /api/members/me/profile (닉네임이 바뀐 경우)
+        ↓  ── 하나의 트랜잭션 ──
+MemberProfileService: 회원 행 쓰기 락 → 30일 제한 검증 → 사전 중복 검사(본인 제외)
         ↓
-MemberService: member.updateNickName(newNickName) + flush (유니크 검증)
-        ↓ (AFTER_COMMIT — 혹은 동일 트랜잭션 내)
-FeedService: feed.updateNickName(newNickName)
+member.changeNickName(newNickName, now)   (변경 시각 기록)
+feed.updateNickName(newNickName)          (비정규화 사본 동기화)
+        ↓
+flush — uk_member_nickname / uk_feed_nick_name 충돌 시 MEMBER_409_NICKNAME_DUPLICATED
 ```
-
-`Feed.updateNickName(String nickName)` 메서드는 이미 준비되어 있다.
 
 ---
 
@@ -163,7 +164,6 @@ com.blursome.feed
 
 - **피드 탐색 API 구현** — 관심사 기반 다른 회원 피드 조회 (`GET /api/feeds?interest=BASKETBALL`). `FeedRepository`에 관심사 필터링 쿼리 추가 필요.
 - **`profileImageUrl` 관리** — 현재 `Member.profileImageUrl`(카카오 URL)이 피드에 없음. 추후 블러 처리된 이미지 URL을 `Feed`에 별도 보관할 예정.
-- **닉네임 변경 동기화** — 닉네임 변경 API 도입 시 `Feed.updateNickName()` 연동.
 - **피드 공개 여부** — 회원이 피드 노출을 끄는 기능 도입 시 `Feed.visible` 컬럼 추가.
 
 ---
