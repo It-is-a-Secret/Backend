@@ -38,6 +38,8 @@
 
 > DTO에 엔티티를 직접 노출하지 않습니다. 항상 `*Request` / `*Response`로 변환합니다.
 
+> **DTO 내부 record에는 `@Schema(name = ...)`로 고유한 스키마 이름을 지정합니다.** springdoc은 클래스 simple name으로 OpenAPI 스키마 이름을 정하므로, 여러 DTO의 내부 record 이름이 같으면(예: `Image`) 하나로 합쳐져 프론트가 생성하는 타입이 틀어집니다(#97). 예: `RevealedFeedImagesResponse.Image` → `@Schema(name = "RevealedFeedImageItem")`. 회귀 검증은 `OpenApiSchemaTest`.
+
 ---
 
 ## 3. 패키지 구조 규칙
