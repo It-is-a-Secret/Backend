@@ -303,6 +303,40 @@ MemberService.withdraw(memberId)                        @Transactional
    └─ member.withdraw()   (ACTIVE → WITHDRAWN, 소프트삭제)
 ```
 
+### 6-5. 프로필 수정 (✅ 구현, 이슈 #95)
+
+```
+PUT /api/members/me/profile { nickName, mbti, keywordTagIds[] }   (수정 가능 항목 전체 전송)
+        │
+        ▼
+MemberProfileService.updateProfile(memberId, req)               @Transactional
+   ├─ memberService.findActiveMemberForUpdate(memberId)          (회원 행 PESSIMISTIC_WRITE — 동시 수정 직렬화)
+   ├─ feed 없음 → MEMBER_403_ONBOARDING_REQUIRED
+   ├─ 현재 값과 diff → 바뀐 항목 집합(NICKNAME / MBTI / KEYWORDS)
+   ├─ 바뀐 항목 전부 member.validateProfileChangeable(item, now)  (하나라도 30일 미경과 → 전체 거절, 항목별 409)
+   ├─ 닉네임 사전 중복 검사(existsByNickNameAndIdNot) → MEMBER_409_NICKNAME_DUPLICATED
+   ├─ 관심사 검증(MemberKeywordService.resolveSelection — 기존 선택 태그는 비활성이어도 유지 허용)
+   ├─ NICKNAME: member.changeNickName + feed.updateNickName → flush (유니크 충돌 → 409 NICKNAME_DUPLICATED)
+   ├─ MBTI:     member.recordProfileChange(MBTI) + feed.changeMbti   (null = "모름")
+   └─ KEYWORDS: member.recordProfileChange(KEYWORDS) + replaceSelection(추가/삭제분만 반영)
+```
+
+- **온보딩 API를 재사용하지 않는 이유**: 온보딩은 `VERIFIED → COMPLETED` 상태 전이 전용(완료 후 409)이고, 성별·생년·학과 같은 불변 필드와 피드 생성을 포함한다.
+- **PUT(전체 전송) + 서버 diff**: MBTI는 `null`이 유효 값("모름")이라 PATCH의 "null=미변경"과 충돌한다. 프론트는 기존 프로필에 바뀐 값만 덮어 전체를 보내면 된다. 성별·생년·학과는 요청에 섞여 와도 무시한다.
+- **30일 제한은 항목별**: `Member.profileEditHistory`(임베디드 `ProfileEditHistory`: `nick_name_changed_at`·`mbti_changed_at`·`keywords_changed_at`, 모두 nullable). 실제로 바뀐 항목의 시각만 갱신한다. 온보딩 입력은 "변경"으로 치지 않아 최초 1회는 바로 수정할 수 있다(`null` = 변경 이력 없음). 다음 변경 가능 시각 = 최근 변경 + 30일(그 시각부터 가능).
+- **조회 응답**: `GET /api/members/me`의 `profileEdit.{nickName|mbti|keywords}` = `{ lastChangedAt, nextChangeableAt, changeable }`. 온보딩 미완료 회원은 수정 자체가 불가(`403 ONBOARDING_REQUIRED`)하므로 `profileEdit`을 `null`로 응답한다 — `changeable=true`로 오인되지 않도록 서버 검증 규칙과 응답을 일치시킨다.
+- **닉네임 변경 판정은 대소문자 구분**: 요청 닉네임과 현재 닉네임을 `String.equals`로 비교한다. 대소문자만 바꾼 경우(`Abc` → `abc`)도 변경으로 보고 30일 제한을 적용한다(의도된 동작).
+
+### 6-6. 닉네임 사용 가능 여부 (✅ 구현, 이슈 #95)
+
+```
+GET /api/members/me/nickname-availability?nickName=...   → 200 { nickName, available }
+```
+
+- 본인의 현재 닉네임은 `available=true`. 온보딩 중에도 쓸 수 있다(온보딩 완료를 요구하지 않음).
+- 조회 시점 결과일 뿐이므로 온보딩·프로필 수정 저장 시 서버가 다시 검증한다(사전 검사 + 유니크 제약 충돌 변환).
+- 비교는 DB collation 기준(유니크 제약과 같은 기준).
+
 ---
 
 ## 7. 데이터 접근
@@ -312,7 +346,8 @@ MemberService.withdraw(memberId)                        @Transactional
 | 소셜 계정으로 회원 조회 | `findByProviderAndProviderId(provider, providerId)` ✅ |
 | 학교 이메일 중복 확인 | `existsBySchoolEmail(email)` 또는 유니크 제약 + 충돌 예외 변환 |
 | 활성 회원 단건 | `findById` 후 `isActive()` 검증(`findActiveMember`) ✅ |
-| 닉네임 중복 확인 | `existsByNickName(nickName)` 또는 유니크 제약 + 충돌 예외 변환 |
+| 닉네임 중복 확인 | `existsByNickNameAndIdNot(nickName, id)`(본인 제외) + 유니크 제약 충돌 예외 변환 ✅ (#95) |
+| 프로필 수정 직렬화 | `findByIdForUpdate(id)` — `PESSIMISTIC_WRITE` ✅ (#95) |
 
 - Repository는 `JpaRepository<Member, Long>` 상속, 복잡 쿼리는 JPQL `@Query`(`ARCHITECTURE § 6`).
 

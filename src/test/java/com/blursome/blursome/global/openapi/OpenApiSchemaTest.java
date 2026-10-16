@@ -72,6 +72,20 @@ class OpenApiSchemaTest {
   }
 
   @Test
+  @DisplayName("프로필·카드 상세 DTO의 내부 record는 고유한 스키마 이름으로 생성된다")
+  void nestedRecordSchemas_haveUniqueNames() {
+    assertThat(schemas.has("Keyword")).isFalse();
+    assertThat(schemas.has("ItemStatus")).isFalse();
+
+    assertThat(schemas.path("DiscoveryCardDetailResponse").path("properties").path("keywords")
+        .path("items").path("$ref").asText())
+        .isEqualTo("#/components/schemas/DiscoveryCardKeywordItem");
+    assertThat(schemas.path("ProfileEditStatusResponse").path("properties").path("nickName")
+        .path("$ref").asText())
+        .isEqualTo("#/components/schemas/ProfileEditItemStatus");
+  }
+
+  @Test
   @DisplayName("본문 없는 엔드포인트는 실제 상태 코드(204/302)로 명세된다")
   void noBodyEndpoints_documentActualStatus() {
     assertResponseCodes("/api/auth/oauth/kakao/authorize", "get", "302");

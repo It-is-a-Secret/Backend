@@ -4,6 +4,7 @@ import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.global.persistence.BaseEntity;
 import com.blursome.blursome.member.exception.MemberErrorCode;
 import jakarta.persistence.Column;
+import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -100,6 +101,12 @@ public class Member extends BaseEntity {
   @Column(name = "last_active_at")
   private LocalDateTime lastActiveAt;
 
+  // 프로필 항목별 최근 변경 시각(#95, 항목별 30일 제한). 컬럼이 모두 NULL이면 Hibernate가 임베디드를 null로
+  // 적재하므로 직접 읽지 않고 profileEditHistory()로 접근한다.
+  @Getter(AccessLevel.NONE)
+  @Embedded
+  private ProfileEditHistory profileEditHistory = ProfileEditHistory.empty();
+
   @Builder(access = AccessLevel.PRIVATE)
   private Member(
       OAuthProvider provider,
@@ -181,6 +188,50 @@ public class Member extends BaseEntity {
     }
     this.nickName = nickName;
     this.registrationStatus = RegistrationStatus.COMPLETED;
+  }
+
+  /** 프로필 항목별 최근 변경 이력(#95). 변경한 적이 없으면 빈 이력. */
+  public ProfileEditHistory profileEditHistory() {
+    if (this.profileEditHistory == null) {
+      this.profileEditHistory = ProfileEditHistory.empty();
+    }
+    return this.profileEditHistory;
+  }
+
+  /**
+   * 온보딩 이후 프로필 항목을 변경할 수 있는지 검증한다(#95). 여러 항목을 한 번에 바꿀 때 하나라도 막히면
+   * 아무것도 반영하지 않도록, 서비스는 반영 전에 바뀐 항목 전부를 이 메서드로 먼저 검증한다.
+   *
+   * @throws BaseException 활성 회원이 아니거나, 온보딩 전이거나, 마지막 변경 후 30일이 지나지 않은 경우
+   */
+  public void validateProfileChangeable(ProfileItem item, LocalDateTime now) {
+    requireActive();
+    if (!isOnboardingCompleted()) {
+      throw BaseException.from(MemberErrorCode.MEMBER_ONBOARDING_REQUIRED);
+    }
+    profileEditHistory().validateChangeable(item, now);
+  }
+
+  /**
+   * 프로필 항목 변경을 기록한다(#95). 실제 값은 항목 소유 애그리거트(닉네임은 본 엔티티, MBTI는 {@code Feed},
+   * 관심사는 {@code MemberKeyword})가 바꾸고, 변경 주기 정책은 회원이 보유한다.
+   *
+   * @throws BaseException {@link #validateProfileChangeable}과 동일
+   */
+  public void recordProfileChange(ProfileItem item, LocalDateTime now) {
+    validateProfileChangeable(item, now);
+    this.profileEditHistory = profileEditHistory().record(item, now);
+  }
+
+  /**
+   * 온보딩 이후 닉네임을 변경한다(#95). 30일 제한을 검증하고 변경 시각을 기록한다. 유니크 충돌 변환과
+   * {@code Feed.nickName} 동기화는 서비스 계층이 담당한다.
+   *
+   * @throws BaseException {@link #validateProfileChangeable}과 동일
+   */
+  public void changeNickName(String nickName, LocalDateTime now) {
+    recordProfileChange(ProfileItem.NICKNAME, now);
+    this.nickName = nickName;
   }
 
   /**

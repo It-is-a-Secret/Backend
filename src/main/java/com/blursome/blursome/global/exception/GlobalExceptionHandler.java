@@ -18,6 +18,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @Slf4j
@@ -73,6 +74,24 @@ public class GlobalExceptionHandler {
             fieldError.getDefaultMessage(),
             fieldError.getRejectedValue()
         ))
+        .toList();
+
+    logWarning(e, METHOD_ARGUMENT_NOT_VALID.getHttpStatus().value());
+    return responseException(METHOD_ARGUMENT_NOT_VALID, errors);
+  }
+
+  // @RequestParam·@PathVariable 등 메서드 파라미터에 직접 붙인 제약(@NotBlank 등) 검증 실패를 처리합니다.
+  @ExceptionHandler(HandlerMethodValidationException.class)
+  public ResponseEntity<ErrorResponse> handleHandlerMethodValidation(
+      HandlerMethodValidationException e) {
+    List<ErrorDetail> errors = e.getParameterValidationResults()
+        .stream()
+        .flatMap(result -> result.getResolvableErrors().stream()
+            .map(error -> ErrorDetail.of(
+                result.getMethodParameter().getParameterName(),
+                error.getDefaultMessage(),
+                result.getArgument()
+            )))
         .toList();
 
     logWarning(e, METHOD_ARGUMENT_NOT_VALID.getHttpStatus().value());

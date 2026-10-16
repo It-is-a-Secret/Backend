@@ -45,6 +45,23 @@ public enum MemberErrorCode implements ErrorCode {
       "이미 온보딩을 완료한 회원입니다.",
       "MEMBER_409_ALREADY_ONBOARDED"
   ),
+  MEMBER_ONBOARDING_REQUIRED(HttpStatus.FORBIDDEN,
+      "온보딩을 완료해야 프로필을 수정할 수 있습니다.",
+      "MEMBER_403_ONBOARDING_REQUIRED"
+  ),
+  // 이슈 #95: 프로필 항목별 30일 변경 제한. 프론트가 막힌 항목을 구분하도록 항목별로 둔다.
+  MEMBER_NICKNAME_CHANGE_LIMITED(HttpStatus.CONFLICT,
+      "닉네임은 30일에 한 번만 변경할 수 있습니다.",
+      "MEMBER_409_NICKNAME_CHANGE_LIMITED"
+  ),
+  MEMBER_MBTI_CHANGE_LIMITED(HttpStatus.CONFLICT,
+      "MBTI는 30일에 한 번만 변경할 수 있습니다.",
+      "MEMBER_409_MBTI_CHANGE_LIMITED"
+  ),
+  MEMBER_KEYWORDS_CHANGE_LIMITED(HttpStatus.CONFLICT,
+      "관심사는 30일에 한 번만 변경할 수 있습니다.",
+      "MEMBER_409_KEYWORDS_CHANGE_LIMITED"
+  ),
   MEMBER_ALREADY_WITHDRAWN(HttpStatus.CONFLICT,
       "이미 탈퇴한 회원입니다.",
       "MEMBER_409_ALREADY_WITHDRAWN"
