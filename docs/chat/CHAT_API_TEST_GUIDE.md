@@ -354,7 +354,11 @@ destination:/topic/rooms/1
 ^@
 ```
 
-- A와 B 두 세션 모두 `/topic/rooms/1`을 구독합니다.
+- 방 토픽(`/topic/rooms/1`) 구독은 **메시지·읽음·단계 브로드캐스트(3-3~3-5)** 테스트용입니다. A·B 모두 구독해 양방향 수신을 확인합니다.
+- ⚠️ **실행 순서 — 방 미구독 테스트를 먼저**: `/topic/rooms/{roomId}`를 구독하면 그 방의 새 메시지가 방 토픽으로 바로 오므로
+  "방 미구독 수신"(#88)을 더는 검증할 수 없습니다. 따라서 **연결 + 개인 큐 구독 직후 3-2-1을 먼저 수행**하고, 그 다음에
+  방 토픽을 구독해 3-3~3-5를 진행하세요. (테스터는 개인 큐를 연결 시 자동 구독하고 `방 구독` 버튼이 방 토픽만 담당하므로 —
+  **버튼을 누르기 전이 곧 방 미구독 상태**입니다.)
 - **비참여자 구독 차단 확인**: 시드 방에 속하지 않은 회원 토큰으로 `/topic/rooms/1`을 구독하면, 연결은 유지된 채
   `/user/queue/errors`로 `CHAT_403_NOT_PARTICIPANT` 통지가 오고 구독은 성립하지 않습니다.
 - **개인 알림 큐(#88)**: `/user/queue/rooms`는 방 id가 없는 회원 개인 큐라 접속 시 한 번만 구독하면 됩니다. `/user/**`는
@@ -385,6 +389,36 @@ destination:/topic/rooms/1
 
 - **멱등 처리 주의**: 첫 접촉 시 같은 첫 메시지에 대해 `NEW_ROOM`과 `NEW_MESSAGE`가 모두 도착할 수 있습니다.
   클라이언트는 `(roomId, message.messageId)` 기준으로 **덮어쓰기**(set)로 처리하고 안읽음을 blind increment 하지 마세요.
+
+#### 수동 검증 절차 (STOMP 테스터 + Postman)
+
+> 도구: `docs/chat/blursome-stomp-tester.html`(A·B 두 세션) + Postman(REST). 테스터는 연결 시 `/user/queue/rooms`를
+> 자동 구독하므로, **수신 측은 방 토픽을 구독하지 않아도** 개인 알림이 `recv` 로그로 찍힙니다.
+
+**NEW_MESSAGE (기존 방, 수신자 방 미구독)**
+1. 테스터에서 A·B 두 세션을 각자 토큰으로 **연결**(B는 방 구독 버튼을 누르지 않아도 됨 — 개인 큐는 연결 시 자동 구독).
+2. A 세션에서 기존 ACTIVE 방으로 메시지 **송신**(`/app/rooms/{roomId}/send`).
+3. **기대**: B의 `[/user/queue/rooms]` 로그에 `type=NEW_MESSAGE` 도착(발신자 A 본인 큐로는 오지 않음).
+
+**NEW_ROOM (첫 접촉 — Postman으로 방 개설)**
+1. 테스터에서 **수신자(피드 주인) B**를 연결해 둔다(개인 큐 자동 구독 상태).
+2. Postman으로 **개설자 A** 토큰을 써서 첫 접촉을 발생시킨다:
+   ```
+   POST {{baseUrl}}/api/discovery/feeds/{feedId}/chat
+   Authorization: Bearer {{accessTokenA}}
+   Content-Type: application/json
+
+   { "message": "안녕하세요, 첫 메시지예요" }
+   ```
+   - `feedId`는 **B 소유의 공개·활성 피드** id. 게이트 충족 필요: A의 피드 5장 READY, A·B 이성, 대상 피드 공개·활성, 차단 없음
+     (미충족 시 403/409 — 본 알림 검증 전에 먼저 통과시킬 것).
+3. **기대**: B의 `[/user/queue/rooms]` 로그에 `type=NEW_ROOM` 도착(`partnerNickname`=A 닉네임, `message`=첫 메시지).
+   같은 첫 메시지에 대해 `NEW_MESSAGE`도 함께 올 수 있다(멱등 — 위 주의 참고).
+
+**격리 확인(타인 큐 차단)**: 제3자 C를 테스터로 연결해 두고 위 A→B 송신/개설을 반복하면, **C의 `/user/queue/rooms`로는 아무것도
+오지 않는다**(`/user/**`는 세션 principal로만 라우팅).
+
+**다중 세션**: 같은 B 계정으로 테스터 탭을 2개 열어 둘 다 연결하면, 한 번의 송신/개설에 **두 탭 모두** 개인 알림을 받는다.
 
 ### 3-3. 메시지 송신/수신 (SEND → 브로드캐스트)
 
@@ -419,18 +453,36 @@ content-type:application/json
 {"lastReadMessageId":3}^@
 ```
 
-- **기대**: 정상 처리(별도 브로드캐스트 없음). 이후 B로 `GET /api/chat/rooms/1` 호출 시 `unreadCount`가 0으로 줄어듦.
+- **기대**: `/topic/rooms/1` 구독자(읽음을 보낸 본인 포함, 상대도)에게 `eventType=READ` 읽음 확인이 브로드캐스트됩니다.
+  상대 클라이언트는 이 `lastReadMessageId`로 자신이 보낸 메시지의 읽음 표시를 갱신합니다(설계 §7-4). 이후 B로
+  `GET /api/chat/rooms/1` 호출 시 `unreadCount`가 0으로 줄어듭니다.
+
+  ```json
+  // /topic/rooms/1 수신 본문
+  { "eventType": "READ", "roomId": 1, "readerId": 1002, "lastReadMessageId": 3 }
+  ```
 - **커서 조작 차단 확인**: `{"lastReadMessageId": 999999999}`처럼 그 방에 없는 id를 보내면 `/user/queue/errors`로
   `CHAT_400_INVALID_MESSAGE` 통지가 오고 읽음 위치는 바뀌지 않습니다.
 
 ### 3-5. 단계 변경 브로드캐스트 (유효 메시지 누적 → STOMP 푸시)
 
 A·B가 `/topic/rooms/1`을 구독한 상태에서 시나리오 **R-4**(유효 메시지 누적)를 수행해 양방향 최소 누적이 임계값
-(10/20/…)을 넘으면, 단계가 오르는 그 송신 트랜잭션 직후 같은 토픽으로 단계 변경 이벤트가 푸시됩니다. 메시지
-응답과는 `eventType`으로 구분합니다.
+(10/20/…)을 넘으면, 단계가 오르는 그 송신 트랜잭션 직후 같은 토픽으로 **세 프레임이 순서대로** 푸시됩니다(이슈 #85).
+메시지/단계는 `type`·`eventType`으로 구분합니다.
+
+1. **트리거 메시지**: 단계를 넘긴 그 일반 `TEXT` 메시지(발신자 본인)
+2. **SYSTEM 안내 메시지**: 공개 안내(`type=SYSTEM`, `senderId=null`)가 타임라인에 기록되어 함께 브로드캐스트됨
+3. **단계 변경 이벤트**: `eventType=PROGRESS_CHANGED`
+
+즉 수동 테스터는 `PROGRESS_CHANGED` **앞에 SYSTEM 안내 메시지가 먼저** 도착하는 것을 확인해야 합니다(순서는
+커밋 이후 발행 순서로 보장됨 — `ChatMessageServiceTest`).
 
 ```json
-// /topic/rooms/1 수신 본문 (min 누적이 10에 도달해 단계가 오른 직후)
+// 1) 트리거 메시지   /topic/rooms/1
+{ "messageId": 41, "roomId": 1, "senderId": 1001, "type": "TEXT", "content": "충분히 긴 메시지", "createdAt": "2026-06-19T12:10:00" }
+// 2) SYSTEM 안내     /topic/rooms/1  (발신자 없음)
+{ "messageId": 42, "roomId": 1, "senderId": null, "type": "SYSTEM", "content": "서로의 첫 번째 사진이 공개되었어요.", "createdAt": "2026-06-19T12:10:00" }
+// 3) 단계 변경       /topic/rooms/1
 { "eventType": "PROGRESS_CHANGED", "roomId": 1, "progressStatus": "PHOTO_REVEAL_STEP_1" }
 ```
 
@@ -452,11 +504,12 @@ A·B가 `/topic/rooms/1`을 구독한 상태에서 시나리오 **R-4**(유효 �
 
 1. ② 시드 실행 → ③ 토큰 준비(A·B).
 2. **R-1/R-2/R-3** 조회로 초기 상태 확인.
-3. WebSocket 탭 2개로 **A·B 연결(3-1) → 구독(3-2)**.
-4. **A 송신(3-3)** → B 수신 확인 → **B 읽음(3-4)**.
-5. **R-4** 유효 메시지를 A·B 교대로 누적하며 **3-5** 단계 브로드캐스트 수신 확인.
-6. 오류 케이스(3-6, R 오류표) 점검.
-7. 마지막에 **R-5 나가기**로 종료 동작 확인 → 재시작하려면 ② 시드 재실행.
+3. WebSocket 탭 2개로 **A·B 연결(3-1)**. 연결 직후 개인 큐(`/user/queue/rooms`·`errors`)는 자동 구독됩니다.
+4. **#88 방 미구독 수신(3-2-1)을 먼저**: B는 방 토픽을 구독하지 않은 채, A가 송신하거나 첫 대화를 개설 → B 개인 큐로 `NEW_MESSAGE`/`NEW_ROOM` 수신 확인.
+5. 이후 **방 토픽 구독(3-2)** → **A 송신(3-3)** → B 수신 확인 → **B 읽음(3-4)** 시 `READ` 브로드캐스트 확인.
+6. **R-4** 유효 메시지를 A·B 교대로 누적하며 **3-5** 트리거 메시지 → SYSTEM 안내 → `PROGRESS_CHANGED` 순서 확인.
+7. 오류 케이스(3-6, R 오류표) 점검.
+8. 마지막에 **R-5 나가기**로 종료 동작 확인 → 재시작하려면 ② 시드 재실행.
 
 ---
 
@@ -487,6 +540,9 @@ NULL 프레이밍·하트비트를 직접 다루지 않아도 되는 대안입�
 > ⚠️ **실행 순서 주의** — A가 연결 직후 곧바로 송신하면, B가 아직 연결·구독 전이라 B 수신 테스트가 실패합니다.
 > 따라서 **A·B 두 클라이언트를 먼저 연결·구독**시켜 양쪽 준비를 확인한 뒤에 송신하고, 읽음 처리는 **고정 id가
 > 아니라 실제로 수신한 `messageId`**로 하세요(메시지 id는 재실행 때마다 달라집니다).
+>
+> 아래 스니펫은 **방 토픽까지 구독하는 전체 흐름(3-3~3-5)**용입니다. **#88 방 미구독 수신만 따로 보려면** 수신 측(B)에서
+> `client.subscribe('/topic/rooms/1', ...)` 줄을 잠시 주석 처리해 개인 큐(`/user/queue/rooms`)만 남긴 채 검증하세요.
 
 **1단계 — A·B 각각 연결·구독** (각자 자기 토큰으로 한 번씩 실행. B는 `accessTokenB`로)
 
@@ -541,11 +597,13 @@ a.send('안녕하세요 STOMP');
 // B 콘솔에서 — 고정값(3)이 아니라 방금 수신한 messageId 사용
 console.log('B가 읽을 id:', b.lastReceivedId);
 b.readReceived();
-// → 이후 B로 GET /api/chat/rooms/1 호출 시 unreadCount가 0으로 줄어듦
+// → A·B 두 콘솔의 /topic/rooms/1 구독으로 {"eventType":"READ","readerId":...,"lastReadMessageId":...}가 RECV로 찍힘
+//   (상대 A는 이 lastReadMessageId로 자신이 보낸 메시지의 읽음 표시 갱신). 이후 B로 GET /api/chat/rooms/1 → unreadCount 0
 ```
 
 - 단계 변경 확인: A·B 콘솔이 `/topic/rooms/1`을 구독한 상태에서 유효 메시지를 교대로 누적해(R-4) 양방향 최소가
-  임계값을 넘기면 `{"eventType":"PROGRESS_CHANGED",...}`가 양쪽 `RECV`로 찍힙니다.
+  임계값을 넘기면, 양쪽 `RECV`에 **트리거 `TEXT` 메시지 → `type:"SYSTEM"` 안내 메시지 → `{"eventType":"PROGRESS_CHANGED",...}`**
+  순서로 찍힙니다(본문 3-5와 동일 — `PROGRESS_CHANGED` 앞에 SYSTEM 안내가 먼저 옵니다).
 
 ## 부록 B. 빠른 참조 — STOMP 프레임 모음
 

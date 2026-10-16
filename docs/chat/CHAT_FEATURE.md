@@ -107,7 +107,7 @@ BlurSome의 채팅(Chat) 도메인 전체 로직을 정의합니다. WebSocket +
 | `chatRoom` | `@ManyToOne(LAZY)`, `nullable=false`        |                           |
 | `sender`   | `@ManyToOne(LAZY)`, **nullable** (optional) | 보낸 회원. `SYSTEM` 메시지는 `null` |
 | `content`  | `@Lob`, `nullable=false`                    | 본문. IMAGE 타입이면 URL/식별자 저장 |
-| `type`     | `ChatMessageType`, `nullable=false`, len 20 | TEXT / IMAGE              |
+| `type`     | `ChatMessageType`, `nullable=false`, len 20 | TEXT / IMAGE / SYSTEM(시스템 생성, `sender=null`) |
 | 인덱스        | `idx_chat_message_room (chat_room_id, id)`  | 방별 메시지 페이지네이션             |
 
 - 팩토리: `createTextMessage(room, sender, content)`, `createImageMessage(room, sender, imageUrl)`, `createSystemMessage(room, content)`
@@ -370,6 +370,7 @@ DiscoveryService(ChatStartService).startChat            ChatRoomService.openRoom
 
 - ✅ **대화 시작 API(이슈 #87)**: `POST /api/discovery/feeds/{feedId}/chat`. feedId→회원 해석·게이트 재검증은 디스커버리 유스케이스(`ChatStartService`)가 맡고(직접 입력이 탐색 필터를 우회하지 못하게), 방 개설·관계 분기는 `openRoom`이 맡는다. 첫 접촉이면 방 생성 + 첫 메시지를 한 트랜잭션으로 처리하고 `created=true`, 이미 ACTIVE면 메시지 없이 기존 방으로 안내(`created=false`) — 둘 다 200.
 - ✅ **방+첫 메시지 원자성(이슈 #87)**: 첫 접촉의 방 생성과 첫 메시지 전송은 `ChatRoomCreator.createWithFirstMessage`의 **하나의 REQUIRES_NEW 트랜잭션**에서 처리된다(`send`는 REQUIRED로 합류). 첫 메시지 전송이 실패하면 방까지 함께 롤백돼 "첫 접촉인데 빈 방만 생성"되는 비원자 상태가 생기지 않는다. REQUIRES_NEW로 격리돼 있어 유니크 위반 시 이 단위만 롤백되고 호출 측은 경합 복구(재조회 흡수)를 이어갈 수 있다.
+- ✅ **새 방 실시간 통지(이슈 #88)**: 첫 접촉으로 방을 만들면 `ChatRoomCreator`가 수신자(상대)의 개인 큐(`/user/queue/rooms`)로 `NEW_ROOM`을 발행한다(커밋 이후 `ChatRoomNotificationEvent`). 상대는 그 방을 `/topic/rooms/{roomId}`로 구독한 적이 없어도 방 목록에 새 대화를 즉시 띄울 수 있다(§6-2·§6-4). 같은 첫 메시지에 대해 `send`의 `NEW_MESSAGE`(§7-3)도 함께 도착할 수 있어 클라이언트는 멱등(덮어쓰기)으로 처리한다(§6-4).
 - ✅ **관계 단건 분기 (서비스 + DB 이중 방어)**: 페어당 방이 영구히 하나이므로(`pairKey` 유니크) `findByPairKey`로 상태 무관 단건을 조회해 분기한다. ACTIVE는 "이미 채팅 중", CLOSED/REPORTED/BLOCKED는 각 도메인 예외로 막고, 없으면 첫 접촉으로 새로 만든다.
 - ✅ **동시 첫 접촉 경합**: 선조회-후생성은 원자적이지 않으므로 `chat_room.pair_key` **유니크 제약**으로 최종 방어한다.
   경합에서 진 쪽은 `saveAndFlush`에서 제약 위반(`DataIntegrityViolationException`) → 새 트랜잭션(`findRoomInNewTx`)으로 상대가 만든 ACTIVE 방을 재조회해 `created=false`로 흡수한다(첫 메시지 중복 전송 없음). 재조회도 실패하면 `CHAT_409_ROOM_CREATION_CONFLICT`.
@@ -394,23 +395,27 @@ DiscoveryService(ChatStartService).startChat            ChatRoomService.openRoom
                                                                     │
                                                                     ▼
                                               ChatMessageService.send(roomId, senderId, dto)  @Transactional
-                                                ├─ 참여자/방 ACTIVE 검증
+                                                ├─ getWritableMembership() : 참여자/방 ACTIVE 검증(+방 행 비관적 락)
                                                 ├─ ChatMessage.createTextMessage(...) → save
-                                                ├─ ChatRoom.updateLastMessage(message.id)   (미리보기 갱신)
-                                                └─ 알림 생성(Notification 도메인, 오프라인 상대)
+                                                ├─ chatRoomRepository.advanceLastMessage(message.id)  (미리보기 원자적 전진)
+                                                ├─ publish ChatMessageBroadcastEvent              (#85)
+                                                └─ publish ChatRoomNotificationEvent(NEW_MESSAGE)  (#88, 발신자 제외 참여자)
                                                                     │
-                                                                    ▼
-                              messagingTemplate.convertAndSend("/topic/rooms/{roomId}", response)
-                                                                    │
-                                                          ┌─────────┴─────────┐
-                                                          ▼                   ▼
-                                                     [Client A]           [Client B]
+                                                       커밋(AFTER_COMMIT) 이후 리스너가 전송
+                                  ┌─────────────────────────────────┴─────────────────────────────┐
+                                  ▼                                                               ▼
+                ChatMessageBroadcastListener                                   ChatRoomNotificationListener
+                → /topic/rooms/{roomId}  (구독자 A·B)                            → /user/queue/rooms  (방 미구독 상대)
 ```
 
-- ✅ **구현**: `ChatStompController.send` → `ChatMessageService.send`(쓰기 트랜잭션)에서 참여자·방 ACTIVE 검증 후 저장하고
-  `SimpMessagingTemplate`으로 `/topic/rooms/{roomId}`에 `ChatMessageResponse`를 발행한다. 발신자는 STOMP principal에서
-  결정한다(§9). 미리보기 갱신은 §8의 원자적 전진(역행 방지)으로 처리한다.
-- ⏳ 오프라인 상대 알림 생성(Notification 도메인 연동)은 후속 작업.
+- ✅ **구현(브로드캐스트는 커밋 이후 이벤트, 이슈 #85)**: `ChatStompController.send` → `ChatMessageService.send`(쓰기 트랜잭션)에서
+  참여자·방 ACTIVE 검증 후 저장한다. `/topic/rooms/{roomId}` 브로드캐스트는 컨트롤러·서비스가 직접 보내지 않고
+  `ChatMessageBroadcastEvent`를 발행해 `ChatMessageBroadcastListener`가 `@TransactionalEventListener(AFTER_COMMIT)`로 전송한다
+  (롤백 시 미전송, 단계 상승 SYSTEM 메시지·`PROGRESS_CHANGED`와 전송 순서 정합 — §7-5). 발신자는 STOMP principal에서 결정한다(§9).
+  미리보기 갱신은 §8의 원자적 전진(역행 방지).
+- ✅ **방 미구독 상대 통지(이슈 #88)**: 같은 송신에서 발신자를 제외한 참여자의 개인 큐(`/user/queue/rooms`)로 `NEW_MESSAGE`를
+  팬아웃한다(`ChatRoomNotificationEvent`, AFTER_COMMIT). 상대가 그 방을 구독 중이 아니어도 방 목록·안읽음을 갱신할 수 있다(§6-2·§6-4).
+- ⏳ 오프라인 상대 **푸시 알림**(Notification 도메인 연동)은 후속 작업 — #88의 인앱 실시간 통지(`/user/queue/rooms`)와는 별개다.
 
 ### 7-4. 읽음 처리 & 안읽음 카운트 (✅ 구현 / 🧩 캐싱 예정)
 
@@ -447,13 +452,19 @@ DiscoveryService(ChatStartService).startChat            ChatRoomService.openRoom
                                               ├─ 유효 판정(TEXT·trim≥4·교대·2초 디바운스)  ─ 아니면 종료
                                               ├─ sender.countValidMessage(now) ; room.recordValidSender(senderId)
                                               ├─ room.advanceProgressTo( policy.statusFor(min(A,B)) )
-                                              └─ 단계가 바뀐 경우에만 ChatProgressAdvancedEvent 발행
+                                              └─ 단계가 바뀐 경우에만:
+                                                   ├─ SYSTEM 안내 메시지 저장 + publish ChatMessageBroadcastEvent  (#85)
+                                                   └─ publish ChatProgressAdvancedEvent
+   (트리거 TEXT 브로드캐스트는 send에서 이미 발행됨 → 커밋 후 전송 순서: 트리거 TEXT → SYSTEM 안내 → PROGRESS_CHANGED)
 ```
 
-- ✅ **구현**: `ChatMessageService.send`가 단계 상승 시 `ChatProgressAdvancedEvent`를 발행하고,
-  `ChatProgressEventListener`가 `@TransactionalEventListener(AFTER_COMMIT)`로 받아 `/topic/rooms/{roomId}`에
-  `ChatProgressChangedResponse`(`eventType=PROGRESS_CHANGED`)를 브로드캐스트한다. 커밋 이후에만 발행하므로 롤백 시
-  오발송이 없다. 같은 토픽의 메시지 응답과는 `eventType`으로 구분한다.
+- ✅ **구현(이슈 #85·#79)**: 단계가 실제로 오르면 `ChatMessageService`는 ① 공개 안내 **SYSTEM 메시지를 저장**하고 그
+  브로드캐스트(`ChatMessageBroadcastEvent`)를 발행한 뒤 ② `ChatProgressAdvancedEvent`를 발행한다. 트리거 `TEXT` 메시지
+  브로드캐스트는 그 앞(같은 `send`)에서 이미 발행됐으므로, 커밋 이후 같은 `/topic/rooms/{roomId}`로 **트리거 TEXT → SYSTEM 안내
+  → `PROGRESS_CHANGED`** 순서로 전송된다(발행 순서 = 전송 순서). `PROGRESS_CHANGED`는 `ChatProgressEventListener`가
+  `@TransactionalEventListener(AFTER_COMMIT)`로 받아 `ChatProgressChangedResponse`(`eventType=PROGRESS_CHANGED`)로 보낸다.
+  커밋 이후에만 발행하므로 롤백 시 오발송이 없고, 같은 토픽의 메시지 응답과는 `type`·`eventType`으로 구분한다
+  (CHAT_API_TEST_GUIDE § 3-5와 동일).
 - 유효 메시지 1건은 `min(A,B)`를 최대 1만 올리므로 단계 상승은 메시지당 최대 한 칸이다. 미달이면 방 단계 변화 없음.
 - ✅ **역할 분리**: Chat 도메인은 **단계(`progressStatus`)만 관리**한다. 각 단계에 대응하는 사진(원본 공개)의 발급은 feed 도메인
   책임이다(`getRevealedImages`, 이슈 #53).
@@ -570,7 +581,7 @@ DiscoveryService(ChatStartService).startChat            ChatRoomService.openRoom
 
 - ✅ **구독 시 참여자 검증** 인터셉터 구현(§7-2) — `StompAuthChannelInterceptor`의 `SUBSCRIBE` 처리로 완료.
 - ⏳ **연결 도중 토큰 만료** 시 재연결 유도 정책(§6-3) — CONNECT 거절까지만 구현, 세부 정책은 후속.
-- ⏳ **오프라인 상대 알림** 생성(Notification 도메인 연동, §7-3) — 후속.
+- ⏳ **오프라인 상대 푸시 알림** 생성(Notification 도메인 연동, §7-3) — 후속. (#88은 접속 중 인앱 실시간 통지 `/user/queue/rooms`만 제공 — 오프라인 푸시는 별개)
 - ⏳ **수평 확장 시 브로커 전환** — 현재 단일 인스턴스 in-memory Simple 브로커(§6-5 1단계), 2대 이상 확장 직전 Redis Pub/Sub로 전환.
 
 ---
