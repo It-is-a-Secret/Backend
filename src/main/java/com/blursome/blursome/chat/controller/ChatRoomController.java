@@ -10,6 +10,7 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -17,6 +18,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(name = "Chat", description = "채팅방 조회 API")
@@ -76,6 +78,7 @@ public class ChatRoomController {
 
   @Operation(summary = "채팅방 나가기", description = "채팅방을 영구히 나간다(재입장 불가). 1:1이므로 방이 즉시 종료(CLOSED)된다. "
       + "나간 본인은 즉시 목록에서 사라지고 이력 조회·송신이 모두 막히지만, 남은 상대는 직접 나갈 때까지 목록·이력을 그대로 볼 수 있다(송신만 차단).")
+  @ResponseStatus(HttpStatus.NO_CONTENT)
   @PostMapping("/{roomId}/leave")
   public ResponseEntity<Void> leaveRoom(
       @AuthenticationPrincipal Long memberId,

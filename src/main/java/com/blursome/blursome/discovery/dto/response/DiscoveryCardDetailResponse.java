@@ -7,6 +7,7 @@ import com.blursome.blursome.keyword.domain.MemberKeyword;
 import com.blursome.blursome.member.domain.Department;
 import com.blursome.blursome.member.domain.Gender;
 import com.blursome.blursome.member.domain.Mbti;
+import io.swagger.v3.oas.annotations.media.Schema;
 import java.util.List;
 import java.util.Set;
 
@@ -45,6 +46,7 @@ public record DiscoveryCardDetailResponse(
   }
 
   /** 상대가 선택한 키워드 한 건. {@code matched}는 조회자도 같은 태그를 선택했는지 여부. */
+  @Schema(name = "DiscoveryCardKeywordItem", description = "상대가 선택한 키워드 한 건")
   public record Keyword(
       String categoryCode,
       String categoryName,

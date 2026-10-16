@@ -2,6 +2,7 @@ package com.blursome.blursome.member.dto.response;
 
 import com.blursome.blursome.member.domain.ProfileEditHistory;
 import com.blursome.blursome.member.domain.ProfileItem;
+import io.swagger.v3.oas.annotations.media.Schema;
 import java.time.LocalDateTime;
 
 /** 프로필 항목별 30일 변경 제한 상태(#95). */
@@ -24,6 +25,7 @@ public record ProfileEditStatusResponse(
    * @param nextChangeableAt 다음 변경 가능 시각({@code lastChangedAt + 30일}). 변경한 적이 없으면 {@code null}
    * @param changeable       지금 변경할 수 있는지
    */
+  @Schema(name = "ProfileEditItemStatus", description = "프로필 항목 하나의 30일 변경 제한 상태")
   public record ItemStatus(
       LocalDateTime lastChangedAt,
       LocalDateTime nextChangeableAt,

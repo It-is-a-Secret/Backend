@@ -2,6 +2,7 @@ package com.blursome.blursome.feed.dto.response;
 
 import com.blursome.blursome.feed.domain.FeedImage;
 import com.blursome.blursome.feed.domain.FeedImageProcessingStatus;
+import io.swagger.v3.oas.annotations.media.Schema;
 import java.util.List;
 
 /**
@@ -22,6 +23,7 @@ public record FeedImageResponse(List<Image> images) {
    * @param blurLevel 블러 강도(50~100)
    * @param processingStatus 블러본 생성 상태({@code PROCESSING} → {@code READY}/{@code FAILED})
    */
+  @Schema(name = "FeedImageItem", description = "내 피드 사진 한 장(블러본·처리 상태)")
   public record Image(
       Long id,
       Integer displayOrder,

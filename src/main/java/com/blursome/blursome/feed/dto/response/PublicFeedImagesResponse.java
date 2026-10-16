@@ -1,6 +1,7 @@
 package com.blursome.blursome.feed.dto.response;
 
 import com.blursome.blursome.feed.domain.FeedImage;
+import io.swagger.v3.oas.annotations.media.Schema;
 import java.util.List;
 
 /**
@@ -16,6 +17,7 @@ public record PublicFeedImagesResponse(List<Image> images) {
    * @param displayOrder 피드 내 노출 순서(1~5)
    * @param variantUrl 공개 블러본 URL({@code variantsBaseUrl + variantKey})
    */
+  @Schema(name = "PublicFeedImageItem", description = "공개 피드 사진 한 장(블러본)")
   public record Image(Integer displayOrder, String variantUrl) {
 
     public static Image of(FeedImage image, String variantUrl) {
