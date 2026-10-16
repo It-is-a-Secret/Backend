@@ -112,6 +112,7 @@ GET /api/discovery?cursor={opaque}&size={n}     (인증 필요, 온보딩 완료
 ```
 
 - **FeedCard**: 노출용 공개 프로필(닉네임·년생·학과·MBTI·성별·블러 대표 이미지·선택 키워드 일부). 원본 사진은 채팅 단계 공개 정책을 따른다(탐색에는 블러본만).
+- **카드 상세 (✅ 구현, #95)**: `GET /api/discovery/feeds/{feedId}` → `{ feedId, nickName, birthYear, department, departmentLabel, mbti, gender, keywords[{ categoryCode, categoryName, tagId, tagCode, tagName, matched }] }`. `matched`는 조회자도 같은 태그를 선택했는지 여부다. 사진은 `GET /api/feeds/{feedId}/images`로 따로 받는다. feedId 직접 입력으로 후보 필터(§2)를 우회하지 못하도록 같은 조건(이성·활성·온보딩 완료·차단 양방향 아님·사진 5장 READY)을 단건으로 재검증하고, 미충족은 존재 여부를 드러내지 않도록 없음과 같은 `404 DISCOVERY_404_FEED_NOT_FOUND`로 응답한다. 조회자 온보딩 전이면 `403 DISCOVERY_403_ONBOARDING_REQUIRED`.
 - **커서 페이지네이션**: MVP는 `created_at, id` 복합 커서(최신순). 점수 정렬 단계에서는 `(score, last_active_at, id)` 기반 커서 또는 캐시된 순위 인덱스를 쓴다(§6).
 
 ---

@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -44,6 +45,7 @@ public class AuthController {
    * 화이트리스트에 포함된 값만 허용한다(오픈 리다이렉트 방지). 생략 시 기본값을 사용한다.
    */
   @Operation(summary = "카카오 로그인 시작", description = "카카오 인가 화면으로 302 리다이렉트한다.")
+  @ResponseStatus(HttpStatus.FOUND)
   @GetMapping("/oauth/kakao/authorize")
   public ResponseEntity<Void> kakaoAuthorize(
       @RequestParam(name = "redirect_uri", required = false) String redirectUri) {
@@ -87,6 +89,7 @@ public class AuthController {
   }
 
   /** RT 쿠키 기반 로그아웃(멱등). 부재·만료·위조 RT여도 204를 반환하고 쿠키를 만료시킨다. */
+  @ResponseStatus(HttpStatus.NO_CONTENT)
   @PostMapping("/logout")
   public ResponseEntity<Void> logout(
       @CookieValue(name = RefreshTokenCookieFactory.COOKIE_NAME, required = false)

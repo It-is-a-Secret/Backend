@@ -2,12 +2,15 @@ package com.blursome.blursome.discovery.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 
+import com.blursome.blursome.block.repository.BlockRepository;
+import com.blursome.blursome.discovery.dto.response.DiscoveryCardDetailResponse;
 import com.blursome.blursome.discovery.dto.response.DiscoveryCardResponse;
 import com.blursome.blursome.discovery.exception.DiscoveryErrorCode;
 import com.blursome.blursome.discovery.repository.DiscoveryRepository;
@@ -19,6 +22,10 @@ import com.blursome.blursome.member.domain.Gender;
 import com.blursome.blursome.member.domain.Mbti;
 import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.OAuthProvider;
+import com.blursome.blursome.member.domain.RegistrationStatus;
+import com.blursome.blursome.keyword.domain.KeywordCategory;
+import com.blursome.blursome.keyword.domain.KeywordTag;
+import com.blursome.blursome.keyword.domain.MemberKeyword;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
@@ -43,6 +50,8 @@ class DiscoveryServiceTest {
   private DiscoveryScorer discoveryScorer;
   @Mock
   private KeywordRelationCache keywordRelationCache;
+  @Mock
+  private BlockRepository blockRepository;
 
   @InjectMocks
   private DiscoveryService discoveryService;
@@ -114,6 +123,118 @@ class DiscoveryServiceTest {
 
     assertThatThrownBy(() -> discoveryService.getDiscovery(99L, 0, 20))
         .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code",
+            DiscoveryErrorCode.DISCOVERY_ONBOARDING_REQUIRED.getCode());
+  }
+
+  // ===== 카드 상세(#95) =====
+
+  private Feed onboardedFeed(long feedId, long memberId, Gender gender) {
+    Feed feed = feed(feedId, memberId, gender, 2000);
+    ReflectionTestUtils.setField(feed.getMember(), "registrationStatus",
+        RegistrationStatus.COMPLETED);
+    return feed;
+  }
+
+  private MemberKeyword keyword(Member member, long tagId) {
+    KeywordCategory category = KeywordCategory.of("HOBBY", "취미", 1, true);
+    KeywordTag tag = KeywordTag.of(category, "T" + tagId, "태그" + tagId);
+    ReflectionTestUtils.setField(tag, "id", tagId);
+    return MemberKeyword.of(member, tag);
+  }
+
+  private void givenDetailTarget(Feed viewerFeed, Feed target) {
+    given(feedService.findFeedByMemberId(viewerFeed.getMember().getId()))
+        .willReturn(Optional.of(viewerFeed));
+    given(feedService.findFeedById(target.getId())).willReturn(Optional.of(target));
+  }
+
+  @Test
+  @DisplayName("카드 상세는 기본 정보와 관심사를 반환하고 나와 겹치는 키워드에 matched를 표시한다")
+  void getCardDetail_returnsKeywordsWithMatched() {
+    Feed viewerFeed = onboardedFeed(1L, 1L, Gender.MALE);
+    Feed target = onboardedFeed(20L, 20L, Gender.FEMALE);
+    givenDetailTarget(viewerFeed, target);
+    given(blockRepository.existsBlockBetween(1L, 20L)).willReturn(false);
+    given(feedService.isFeedPublishable(20L)).willReturn(true);
+    given(memberKeywordRepository.findByMemberIdWithTag(1L))
+        .willReturn(List.of(keyword(viewerFeed.getMember(), 100L)));
+    given(memberKeywordRepository.findByMemberIdWithTag(20L))
+        .willReturn(List.of(keyword(target.getMember(), 100L), keyword(target.getMember(), 200L)));
+
+    DiscoveryCardDetailResponse result = discoveryService.getCardDetail(1L, 20L);
+
+    assertThat(result.feedId()).isEqualTo(20L);
+    assertThat(result.nickName()).isEqualTo("nick-20");
+    assertThat(result.keywords())
+        .extracting(DiscoveryCardDetailResponse.Keyword::tagId,
+            DiscoveryCardDetailResponse.Keyword::matched)
+        .containsExactly(tuple(100L, true), tuple(200L, false));
+  }
+
+  @Test
+  @DisplayName("동성 피드 상세는 존재를 드러내지 않고 404")
+  void getCardDetail_sameGender_notFound() {
+    Feed viewerFeed = onboardedFeed(1L, 1L, Gender.MALE);
+    Feed target = onboardedFeed(20L, 20L, Gender.MALE);
+    givenDetailTarget(viewerFeed, target);
+
+    assertThatThrownBy(() -> discoveryService.getCardDetail(1L, 20L))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", DiscoveryErrorCode.DISCOVERY_FEED_NOT_FOUND.getCode());
+  }
+
+  @Test
+  @DisplayName("차단 관계(양방향)인 상대의 상세는 404")
+  void getCardDetail_blocked_notFound() {
+    Feed viewerFeed = onboardedFeed(1L, 1L, Gender.MALE);
+    Feed target = onboardedFeed(20L, 20L, Gender.FEMALE);
+    givenDetailTarget(viewerFeed, target);
+    given(blockRepository.existsBlockBetween(1L, 20L)).willReturn(true);
+
+    assertThatThrownBy(() -> discoveryService.getCardDetail(1L, 20L))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", DiscoveryErrorCode.DISCOVERY_FEED_NOT_FOUND.getCode());
+  }
+
+  @Test
+  @DisplayName("사진 5장이 모두 공개 준비되지 않은 피드의 상세는 404")
+  void getCardDetail_notPublishable_notFound() {
+    Feed viewerFeed = onboardedFeed(1L, 1L, Gender.MALE);
+    Feed target = onboardedFeed(20L, 20L, Gender.FEMALE);
+    givenDetailTarget(viewerFeed, target);
+    given(blockRepository.existsBlockBetween(1L, 20L)).willReturn(false);
+    given(feedService.isFeedPublishable(20L)).willReturn(false);
+
+    assertThatThrownBy(() -> discoveryService.getCardDetail(1L, 20L))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", DiscoveryErrorCode.DISCOVERY_FEED_NOT_FOUND.getCode());
+  }
+
+  @Test
+  @DisplayName("정지·탈퇴 등 비활성 상대의 상세는 404")
+  void getCardDetail_inactiveTarget_notFound() {
+    Feed viewerFeed = onboardedFeed(1L, 1L, Gender.MALE);
+    Feed target = onboardedFeed(20L, 20L, Gender.FEMALE);
+    target.getMember().suspend();
+    givenDetailTarget(viewerFeed, target);
+
+    assertThatThrownBy(() -> discoveryService.getCardDetail(1L, 20L))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", DiscoveryErrorCode.DISCOVERY_FEED_NOT_FOUND.getCode());
+  }
+
+  @Test
+  @DisplayName("존재하지 않는 피드 상세는 404, 조회자가 온보딩 전이면 403")
+  void getCardDetail_missingFeedOrViewerNotOnboarded() {
+    Feed viewerFeed = onboardedFeed(1L, 1L, Gender.MALE);
+    given(feedService.findFeedByMemberId(1L)).willReturn(Optional.of(viewerFeed));
+    given(feedService.findFeedById(999L)).willReturn(Optional.empty());
+    given(feedService.findFeedByMemberId(2L)).willReturn(Optional.empty());
+
+    assertThatThrownBy(() -> discoveryService.getCardDetail(1L, 999L))
+        .hasFieldOrPropertyWithValue("code", DiscoveryErrorCode.DISCOVERY_FEED_NOT_FOUND.getCode());
+    assertThatThrownBy(() -> discoveryService.getCardDetail(2L, 20L))
         .hasFieldOrPropertyWithValue("code",
             DiscoveryErrorCode.DISCOVERY_ONBOARDING_REQUIRED.getCode());
   }

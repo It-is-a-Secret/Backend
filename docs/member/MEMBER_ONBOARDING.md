@@ -223,9 +223,10 @@ com.blursome.member
 - **실제 SMTP 구현** — `spring-boot-starter-mail` 도입 + `SmtpEmailVerificationSender`, 로깅 스텁은 `local` 프로파일로 한정.
 - **인증 시도 제한 / 발송 레이트리밋** — 무차별 코드 입력·메일 폭탄 방어.
 - **인정 도메인 확장** — 대학원/타 캠퍼스 도메인 추가 시 `SchoolEmailPolicy` 화이트리스트를 집합으로 확장.
-- **관심사 수정/재선택 API** — 온보딩 이후 관심사 변경(현재 `InterestCategoryRepository.deleteByMemberId` 보유, 노출 API 미정).
+- ~~**관심사 수정/재선택 API**~~ — ✅ #95 `PUT /api/members/me/profile`로 구현([`MEMBER_DOMAIN.md` §6-5](MEMBER_DOMAIN.md)). 키워드 검증은 `MemberKeywordService`로 옮겨 온보딩과 공유한다.
 - **피드 탐색 API** — 관심사 기반 피드 조회 구현. 설계는 [`docs/feed/FEED_DOMAIN.md`](../feed/FEED_DOMAIN.md) 참조.
-- **닉네임 변경 동기화** — 닉네임 변경 기능 도입 시 `Feed.updateNickName()` 연동 필요.
+- ~~**닉네임 변경 동기화**~~ — ✅ #95 프로필 수정 시 `Feed.updateNickName()` 연동.
+- 온보딩 API는 가입 단계 전이 전용이며 완료 후 재호출은 409다. 온보딩 이후 수정은 프로필 수정 API를 쓴다(#95).
 
 ---
 

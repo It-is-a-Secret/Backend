@@ -1,6 +1,7 @@
 package com.blursome.blursome.feed.dto.request;
 
 import com.blursome.blursome.feed.domain.FeedImage;
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -38,6 +39,7 @@ public record FeedImageSaveRequest(
    * @param blurLevel 블러 강도(50~100). 원본 업로드 시 메타데이터로 박은 값과 동일해야 하며, 생략 시
    *     {@link FeedImage#DEFAULT_BLUR_LEVEL}이 적용된다.
    */
+  @Schema(name = "FeedImageSaveItem", description = "피드 사진 저장 요청의 사진 한 장")
   public record Image(
       @NotBlank(message = "원본 객체 key는 필수입니다.")
       @Size(max = 512, message = "원본 객체 key는 512자 이하여야 합니다.")

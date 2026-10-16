@@ -1,5 +1,7 @@
 package com.blursome.blursome.discovery.service;
 
+import com.blursome.blursome.block.repository.BlockRepository;
+import com.blursome.blursome.discovery.dto.response.DiscoveryCardDetailResponse;
 import com.blursome.blursome.discovery.dto.response.DiscoveryCardResponse;
 import com.blursome.blursome.discovery.exception.DiscoveryErrorCode;
 import com.blursome.blursome.discovery.repository.DiscoveryRepository;
@@ -8,7 +10,8 @@ import com.blursome.blursome.feed.service.FeedService;
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.keyword.domain.MemberKeyword;
 import com.blursome.blursome.keyword.repository.MemberKeywordRepository;
-import com.blursome.blursome.member.domain.Gender;
+import com.blursome.blursome.keyword.service.MemberKeywordService;
+import com.blursome.blursome.member.domain.Member;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -44,6 +47,7 @@ public class DiscoveryService {
   private final MemberKeywordRepository memberKeywordRepository;
   private final DiscoveryScorer discoveryScorer;
   private final KeywordRelationCache keywordRelationCache;
+  private final BlockRepository blockRepository;
 
   /**
    * viewer에게 보여줄 탐색 카드를 점수순으로 조회한다.
@@ -89,6 +93,38 @@ public class DiscoveryService {
         .limit(pageSize)
         .map(s -> DiscoveryCardResponse.from(s.feed()))
         .toList();
+  }
+
+  /**
+   * 탐색 카드 상세를 조회한다(#95). 상대의 공개 프로필과 관심사 키워드를 반환하고, 조회자와 겹치는 키워드에
+   * {@code matched}를 표시한다.
+   *
+   * <p>feedId 직접 입력으로 탐색 후보 필터를 우회하지 못하도록 목록과 같은 노출 조건(이성·활성·온보딩 완료·차단
+   * 양방향 아님·피드 공개 5장 READY)을 재검증한다. 조건 미충족은 피드 존재 여부를 드러내지 않도록 없음과 같은 404로
+   * 응답한다.
+   *
+   * @throws BaseException 조회자가 온보딩 전(403)이거나, 대상이 없거나 노출 조건을 충족하지 않는 경우(404)
+   */
+  public DiscoveryCardDetailResponse getCardDetail(Long viewerId, Long feedId) {
+    Feed viewerFeed = feedService.findFeedByMemberId(viewerId)
+        .orElseThrow(() -> BaseException.from(DiscoveryErrorCode.DISCOVERY_ONBOARDING_REQUIRED));
+    Feed targetFeed = feedService.findFeedById(feedId)
+        .filter(feed -> isVisibleTo(viewerFeed, feed))
+        .orElseThrow(() -> BaseException.from(DiscoveryErrorCode.DISCOVERY_FEED_NOT_FOUND));
+
+    Set<Long> viewerTagIds = MemberKeywordService.tagIdsOf(
+        memberKeywordRepository.findByMemberIdWithTag(viewerId));
+    return DiscoveryCardDetailResponse.of(targetFeed,
+        memberKeywordRepository.findByMemberIdWithTag(targetFeed.getMember().getId()), viewerTagIds);
+  }
+
+  /** 탐색 후보 조건({@link DiscoveryRepository#findCandidates})의 단건 판정. 이성이면 본인은 자연히 제외된다. */
+  private boolean isVisibleTo(Feed viewerFeed, Feed targetFeed) {
+    Member target = targetFeed.getMember();
+    return targetFeed.getGender() == viewerFeed.getGender().opposite()
+        && target.canUseService()
+        && !blockRepository.existsBlockBetween(viewerFeed.getMember().getId(), target.getId())
+        && feedService.isFeedPublishable(targetFeed.getId());
   }
 
   private DiscoveryProfile buildViewerProfile(Long viewerId, Feed viewerFeed,

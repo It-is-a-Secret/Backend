@@ -1,6 +1,7 @@
 package com.blursome.blursome.feed.dto.response;
 
 import com.blursome.blursome.feed.domain.FeedImage;
+import io.swagger.v3.oas.annotations.media.Schema;
 import java.util.List;
 
 /**
@@ -31,6 +32,7 @@ public record RevealedFeedImagesResponse(List<Image> images) {
    *     {@code false}면 공개 블러본 URL이다.
    * @param imageUrl {@code revealed}에 따라 원본 Presigned GET URL 또는 블러본 공개 URL
    */
+  @Schema(name = "RevealedFeedImageItem", description = "채팅 단계별 공개 사진 한 장")
   public record Image(Role role, Integer displayOrder, boolean revealed, String imageUrl) {
 
     /** 원본이 공개된 사진(원본 단기 Presigned GET URL). */

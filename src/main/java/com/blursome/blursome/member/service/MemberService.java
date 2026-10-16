@@ -5,6 +5,7 @@ import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.dto.OAuthUserInfo;
 import com.blursome.blursome.member.exception.MemberErrorCode;
 import com.blursome.blursome.member.repository.MemberRepository;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.hibernate.exception.ConstraintViolationException;
@@ -111,7 +112,24 @@ public class MemberService {
    *     비활성 상태인 경우({@link MemberErrorCode#MEMBER_INACTIVE})
    */
   public Member findActiveMember(Long id) {
-    Member member = memberRepository.findById(id)
+    return requireActive(memberRepository.findById(id));
+  }
+
+  /**
+   * {@link #findActiveMember}와 같지만 회원 행에 쓰기 락을 건다(#95 프로필 수정 직렬화). 호출 측 쓰기 트랜잭션
+   * 안에서 사용해야 한다.
+   */
+  public Member findActiveMemberForUpdate(Long id) {
+    return requireActive(memberRepository.findByIdForUpdate(id));
+  }
+
+  /** 본인을 제외하고 닉네임이 이미 사용 중인지 확인한다(#95). */
+  public boolean isNickNameTaken(String nickName, Long excludeMemberId) {
+    return memberRepository.existsByNickNameAndIdNot(nickName, excludeMemberId);
+  }
+
+  private Member requireActive(Optional<Member> found) {
+    Member member = found
         .orElseThrow(() -> BaseException.from(MemberErrorCode.MEMBER_NOT_FOUND));
     if (!member.isActive()) {
       throw BaseException.from(MemberErrorCode.MEMBER_INACTIVE);
