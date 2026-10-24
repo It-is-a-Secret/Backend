@@ -204,7 +204,7 @@ pm.environment.set('accessTokenB', issueAccessToken(pm.environment.get('memberBI
 {
   "timestamp": "2026-06-19T12:00:00.000+09:00",
   "data": [
-    { "roomId": 1, "roomStatus": "ACTIVE", "progressStatus": "MATCHED", "lastMessageId": 2, "unreadCount": 1 }
+    { "roomId": 1, "roomStatus": "ACTIVE", "progressStatus": "MATCHED", "partnerId": 1001, "partnerNickname": "철수", "lastMessageId": 2, "unreadCount": 1 }
   ]
 }
 ```
@@ -259,7 +259,7 @@ pm.environment.set('accessTokenB', issueAccessToken(pm.environment.get('memberBI
 
 ```json
 // 단계가 STEP_1로 오른 뒤 GET /api/chat/rooms/1 응답
-{ "timestamp": "...", "data": { "roomId": 1, "roomStatus": "ACTIVE", "progressStatus": "PHOTO_REVEAL_STEP_1", "lastMessageId": 2, "unreadCount": 0 } }
+{ "timestamp": "...", "data": { "roomId": 1, "roomStatus": "ACTIVE", "progressStatus": "PHOTO_REVEAL_STEP_1", "partnerId": 1001, "lastMessageId": 2, "unreadCount": 0 } }
 ```
 
 ### 시나리오 R-5. 채팅방 나가기 (비대칭 종료)
