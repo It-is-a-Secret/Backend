@@ -1,5 +1,6 @@
 package com.blursome.blursome.global.security;
 
+import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.global.exception.JwtAuthenticationException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -21,6 +22,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
   private final JwtTokenProvider jwtTokenProvider;
   private final JwtAuthenticationEntryPoint authenticationEntryPoint;
+  private final MemberAccessValidator memberAccessValidator;
 
   @Override
   protected void doFilterInternal(
@@ -32,10 +34,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     if (token != null) {
       try {
         JwtAuthentication authentication = jwtTokenProvider.parseAccess(token);
+        // 서명·만료가 유효해도 탈퇴한 회원의 토큰은 보호 API에 쓰지 못하게 막는다(#107).
+        memberAccessValidator.validateAccess(authentication.getPrincipal());
         SecurityContextHolder.getContext().setAuthentication(authentication);
       } catch (JwtAuthenticationException e) {
         SecurityContextHolder.clearContext();
         authenticationEntryPoint.commence(request, response, e);
+        return;
+      } catch (BaseException e) {
+        SecurityContextHolder.clearContext();
+        authenticationEntryPoint.writeError(response, e);
         return;
       }
     }

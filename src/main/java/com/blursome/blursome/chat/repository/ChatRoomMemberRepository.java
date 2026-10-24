@@ -98,11 +98,20 @@ public interface ChatRoomMemberRepository extends JpaRepository<ChatRoomMember, 
   /**
    * 방에서 나를 제외한 다른 참여자들의 회원 id를 조회한다(이슈 #88, 새 메시지 개인 알림 팬아웃 대상). 1:1 방이라
    * 보통 상대 1명이며, 발신자 본인은 제외하므로 자기 메시지로 자기 개인 큐가 울리지 않는다. {@code member_id}
-   * 컬럼만 투영해 가볍게 조회한다({@code chat_room_id} 선두 유니크 인덱스를 탄다).
+   * 컬럼만 투영해 가볍게 조회한다({@code chat_room_id} 선두 유니크 인덱스를 탄다). 방을 나간 참여자(탈퇴 회원 포함,
+   * #107)는 개인 알림 대상에서 뺀다.
    */
   @Query("select crm.member.id from ChatRoomMember crm "
-      + "where crm.chatRoom.id = :roomId and crm.member.id <> :memberId")
+      + "where crm.chatRoom.id = :roomId and crm.member.id <> :memberId and crm.leftAt is null")
   List<Long> findOtherMemberIds(@Param("roomId") Long roomId, @Param("memberId") Long memberId);
+
+  /**
+   * 회원이 아직 나가지 않은 방의 id를 오름차순으로 조회한다(#107 탈퇴 시 대화 종료). 여러 방을 잠글 때 항상 같은 순서로
+   * 잠가 교착을 막기 위해 정렬해서 돌려준다.
+   */
+  @Query("select crm.chatRoom.id from ChatRoomMember crm "
+      + "where crm.member.id = :memberId and crm.leftAt is null order by crm.chatRoom.id asc")
+  List<Long> findJoinedRoomIdsOrderByRoomId(@Param("memberId") Long memberId);
 
   /**
    * 주어진 방들에서 나를 제외한 상대 참여자 정보(회원 id + 닉네임 + 읽음 커서)를 한 번에 조회한다(목록 조회 N+1 회피).

@@ -63,7 +63,7 @@ class ReportServiceTest {
   @Test
   @DisplayName("프로필 신고를 접수한다(방 없음)")
   void report_profile_saves() {
-    given(memberRepository.findById(2L)).willReturn(Optional.of(member(2L)));
+    given(memberRepository.findByIdForUpdate(2L)).willReturn(Optional.of(member(2L)));
     given(memberRepository.getReferenceById(1L)).willReturn(member(1L));
     given(reportRepository.saveAndFlush(any(Report.class))).willAnswer(inv -> inv.getArgument(0));
 
@@ -78,7 +78,7 @@ class ReportServiceTest {
       "COERCIVE_MEETING", "DANGEROUS_PERSON", "FINANCIAL_OR_PERSONAL_INFO_REQUEST", "SPAM", "ETC"})
   @DisplayName("화면 7개 항목의 사유는 요청한 사유 그대로 저장된다(#102)")
   void report_selectableReason_savesWithReason(ReportReason reason) {
-    given(memberRepository.findById(2L)).willReturn(Optional.of(member(2L)));
+    given(memberRepository.findByIdForUpdate(2L)).willReturn(Optional.of(member(2L)));
     given(memberRepository.getReferenceById(1L)).willReturn(member(1L));
     given(reportRepository.saveAndFlush(any(Report.class))).willAnswer(inv -> inv.getArgument(0));
 
@@ -112,7 +112,7 @@ class ReportServiceTest {
   @Test
   @DisplayName("대상 회원이 없으면 MEMBER_NOT_FOUND 예외")
   void report_targetNotFound_throws() {
-    given(memberRepository.findById(99L)).willReturn(Optional.empty());
+    given(memberRepository.findByIdForUpdate(99L)).willReturn(Optional.empty());
 
     assertThatThrownBy(() -> reportService.report(1L, request(99L, null)))
         .isInstanceOf(BaseException.class)
@@ -122,7 +122,7 @@ class ReportServiceTest {
   @Test
   @DisplayName("채팅방 신고인데 방이 없으면 ROOM_NOT_FOUND 예외")
   void report_roomNotFound_throws() {
-    given(memberRepository.findById(2L)).willReturn(Optional.of(member(2L)));
+    given(memberRepository.findByIdForUpdate(2L)).willReturn(Optional.of(member(2L)));
     given(chatRoomRepository.findById(10L)).willReturn(Optional.empty());
 
     assertThatThrownBy(() -> reportService.report(1L, request(2L, 10L)))
@@ -133,7 +133,7 @@ class ReportServiceTest {
   @Test
   @DisplayName("중복 신고(유니크 충돌)는 REPORT_ALREADY_EXISTS 예외")
   void report_duplicate_throws() {
-    given(memberRepository.findById(2L)).willReturn(Optional.of(member(2L)));
+    given(memberRepository.findByIdForUpdate(2L)).willReturn(Optional.of(member(2L)));
     given(memberRepository.getReferenceById(1L)).willReturn(member(1L));
     given(reportRepository.saveAndFlush(any(Report.class)))
         .willThrow(new DataIntegrityViolationException("dup"));
@@ -147,7 +147,7 @@ class ReportServiceTest {
   @DisplayName("채팅방 신고가 고유 신고자 3명에 도달하면 방을 동결(REPORTED)한다")
   void report_roomThresholdReached_marksRoomReported() {
     ChatRoom room = mock(ChatRoom.class);
-    given(memberRepository.findById(2L)).willReturn(Optional.of(member(2L)));
+    given(memberRepository.findByIdForUpdate(2L)).willReturn(Optional.of(member(2L)));
     given(memberRepository.getReferenceById(1L)).willReturn(member(1L));
     given(chatRoomRepository.findById(10L)).willReturn(Optional.of(room));
     given(reportRepository.saveAndFlush(any(Report.class))).willAnswer(inv -> inv.getArgument(0));
@@ -162,7 +162,7 @@ class ReportServiceTest {
   @DisplayName("임계치 미달이면 방을 동결하지 않는다")
   void report_belowThreshold_doesNotMarkRoom() {
     ChatRoom room = mock(ChatRoom.class);
-    given(memberRepository.findById(2L)).willReturn(Optional.of(member(2L)));
+    given(memberRepository.findByIdForUpdate(2L)).willReturn(Optional.of(member(2L)));
     given(memberRepository.getReferenceById(1L)).willReturn(member(1L));
     given(chatRoomRepository.findById(10L)).willReturn(Optional.of(room));
     given(reportRepository.saveAndFlush(any(Report.class))).willAnswer(inv -> inv.getArgument(0));
@@ -177,7 +177,7 @@ class ReportServiceTest {
   @DisplayName("고유 신고자 5명에 도달하면 대상 회원을 임시 정지(SUSPENDED)한다")
   void report_fiveDistinctReporters_suspendsTarget() {
     Member target = member(2L);
-    given(memberRepository.findById(2L)).willReturn(Optional.of(target));
+    given(memberRepository.findByIdForUpdate(2L)).willReturn(Optional.of(target));
     given(memberRepository.getReferenceById(1L)).willReturn(member(1L));
     given(reportRepository.saveAndFlush(any(Report.class))).willAnswer(inv -> inv.getArgument(0));
     given(reportRepository.countDistinctReporters(eq(2L), any(LocalDateTime.class))).willReturn(5L);
@@ -191,7 +191,7 @@ class ReportServiceTest {
   @DisplayName("정지 임계치(5명) 미달이면 대상 회원을 정지하지 않는다")
   void report_belowSuspendThreshold_doesNotSuspend() {
     Member target = member(2L);
-    given(memberRepository.findById(2L)).willReturn(Optional.of(target));
+    given(memberRepository.findByIdForUpdate(2L)).willReturn(Optional.of(target));
     given(memberRepository.getReferenceById(1L)).willReturn(member(1L));
     given(reportRepository.saveAndFlush(any(Report.class))).willAnswer(inv -> inv.getArgument(0));
     given(reportRepository.countDistinctReporters(eq(2L), any(LocalDateTime.class))).willReturn(4L);

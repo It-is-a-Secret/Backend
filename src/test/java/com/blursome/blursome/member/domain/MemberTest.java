@@ -173,4 +173,107 @@ class MemberTest {
     assertThat(member.isActive()).isTrue();
     assertThat(member.isSuspended()).isFalse();
   }
+
+  @Test
+  @DisplayName("탈퇴 시각을 주입하면 그 시각이 withdrawnAt으로 기록되고 재가입 가능 시각은 +30일이다(#107)")
+  void withdraw_withTime_recordsWithdrawnAtAndRejoinAvailableAt() {
+    // given
+    Member member = newMember();
+    LocalDateTime withdrawnAt = LocalDateTime.of(2026, 10, 1, 9, 30);
+
+    // when
+    member.withdraw(withdrawnAt);
+
+    // then
+    assertThat(member.getWithdrawnAt()).isEqualTo(withdrawnAt);
+    assertThat(member.rejoinAvailableAt()).isEqualTo(LocalDateTime.of(2026, 10, 31, 9, 30));
+  }
+
+  @Test
+  @DisplayName("재가입 제한은 withdrawnAt+30일 미만이면 참이고 정확히 그 시각부터 거짓이다(#107)")
+  void isRejoinRestricted_boundary() {
+    // given
+    Member member = newMember();
+    LocalDateTime withdrawnAt = LocalDateTime.of(2026, 10, 1, 9, 30);
+    member.withdraw(withdrawnAt);
+    LocalDateTime availableAt = withdrawnAt.plusDays(30);
+
+    // when & then
+    assertThat(member.isRejoinRestricted(availableAt.minusSeconds(1))).isTrue();
+    assertThat(member.isRejoinRestricted(availableAt)).isFalse();
+    assertThat(member.isRejoinRestricted(availableAt.plusDays(1))).isFalse();
+  }
+
+  @Test
+  @DisplayName("활성 회원은 재가입 제한 대상이 아니고 재가입 가능 시각도 없다(#107)")
+  void isRejoinRestricted_whenActive_thenFalse() {
+    // given
+    Member member = newMember();
+
+    // when & then
+    assertThat(member.isRejoinRestricted(LocalDateTime.now())).isFalse();
+    assertThat(member.rejoinAvailableAt()).isNull();
+  }
+
+  @Test
+  @DisplayName("30일이 지난 탈퇴 회원의 식별자를 해제하면 provider·학교 이메일·개인정보가 비워지고 닉네임은 남는다(#107)")
+  void releaseIdentifiers_whenExpired_thenAnonymizes() {
+    // given
+    Member member = newMember();
+    ReflectionTestUtils.setField(member, "id", 7L);
+    member.verifySchoolEmail("student@gs.anyang.ac.kr");
+    member.completeOnboarding("블러");
+    LocalDateTime withdrawnAt = LocalDateTime.of(2026, 10, 1, 9, 30);
+    member.withdraw(withdrawnAt);
+    LocalDateTime releasedAt = withdrawnAt.plusDays(30);
+
+    // when
+    member.releaseIdentifiers(releasedAt);
+
+    // then
+    assertThat(member.getProviderId()).isEqualTo("withdrawn:7");
+    assertThat(member.getSchoolEmail()).isNull();
+    assertThat(member.getEmail()).isNull();
+    assertThat(member.getProfileImageUrl()).isNull();
+    assertThat(member.getName()).isEqualTo("탈퇴한 회원");
+    assertThat(member.getNickName()).isEqualTo("블러");
+    assertThat(member.isWithdrawn()).isTrue();
+    assertThat(member.isIdentifiersReleased()).isTrue();
+    assertThat(member.getIdentifiersReleasedAt()).isEqualTo(releasedAt);
+  }
+
+  @Test
+  @DisplayName("재가입 제한 중이거나 활성 회원이면 식별자를 해제할 수 없다(#107)")
+  void releaseIdentifiers_whenRestrictedOrActive_thenThrows() {
+    // given
+    Member active = newMember();
+    Member restricted = newMember();
+    LocalDateTime withdrawnAt = LocalDateTime.of(2026, 10, 1, 9, 30);
+    restricted.withdraw(withdrawnAt);
+
+    // when & then
+    assertThatThrownBy(() -> active.releaseIdentifiers(withdrawnAt))
+        .isInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(() -> restricted.releaseIdentifiers(withdrawnAt.plusDays(30).minusSeconds(1)))
+        .isInstanceOf(IllegalStateException.class);
+    assertThat(restricted.getProviderId()).isEqualTo("kakao-1");
+  }
+
+  @Test
+  @DisplayName("이미 식별자를 해제했으면 다시 호출해도 바뀌지 않는다(#107)")
+  void releaseIdentifiers_whenAlreadyReleased_thenNoOp() {
+    // given
+    Member member = newMember();
+    ReflectionTestUtils.setField(member, "id", 7L);
+    LocalDateTime withdrawnAt = LocalDateTime.of(2026, 10, 1, 9, 30);
+    member.withdraw(withdrawnAt);
+    LocalDateTime firstRelease = withdrawnAt.plusDays(30);
+    member.releaseIdentifiers(firstRelease);
+
+    // when
+    member.releaseIdentifiers(firstRelease.plusDays(1));
+
+    // then
+    assertThat(member.getIdentifiersReleasedAt()).isEqualTo(firstRelease);
+  }
 }

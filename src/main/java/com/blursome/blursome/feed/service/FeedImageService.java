@@ -288,8 +288,12 @@ public class FeedImageService {
    */
   @Transactional(readOnly = true)
   public PublicFeedImagesResponse getPublicFeedImages(Long feedId) {
+    // 탈퇴·정지 회원의 피드는 사진이 남아 있어도 공개하지 않는다(#107). 사유는 드러내지 않고 피드 없음과 같게 응답한다.
+    boolean ownerActive = feedRepository.findById(feedId)
+        .map(feed -> feed.getMember().isActive())
+        .orElse(false);
     List<FeedImage> images = feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(feedId);
-    if (!FeedImage.isPublishable(images)) {
+    if (!ownerActive || !FeedImage.isPublishable(images)) {
       throw BaseException.from(FeedErrorCode.FEED_NOT_FOUND);
     }
     return new PublicFeedImagesResponse(images.stream()

@@ -13,11 +13,13 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.DynamicUpdate;
 
 /**
  * 회원 엔티티.
@@ -30,9 +32,13 @@ import lombok.NoArgsConstructor;
  *
  * <p>가입 단계는 {@code UNVERIFIED → VERIFIED → COMPLETED} 순으로만 전진하며(순차 강제·단조 증가),
  * 모든 상태 전이는 불변식을 검증하는 도메인 메서드로만 수행한다. 설계 근거는 {@code docs/member/MEMBER_DOMAIN.md} 참조.
+ *
+ * <p>{@code @DynamicUpdate}로 바뀐 컬럼만 UPDATE한다. 탈퇴(#107)·학교 인증·신고 정지처럼 같은 회원 행을 다른
+ * 트랜잭션이 고칠 수 있어, 전체 컬럼을 쓰면 먼저 읽어 둔 이전 활동 상태로 탈퇴를 덮어쓸 수 있다.
  */
 @Entity
 @Getter
+@DynamicUpdate
 @Table(
     name = "member",
     uniqueConstraints = {
@@ -52,6 +58,15 @@ import lombok.NoArgsConstructor;
 )
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Member extends BaseEntity {
+
+  /** 탈퇴 후 같은 카카오 계정·학교 이메일로 다시 가입할 수 없는 기간(#107). */
+  public static final Duration REJOIN_RESTRICTION = Duration.ofDays(30);
+
+  /** 식별자를 해제한 탈퇴 회원의 {@code providerId} 접두사. 원래 공급자 ID와 겹치지 않는 값으로 유니크를 유지한다. */
+  static final String RELEASED_PROVIDER_ID_PREFIX = "withdrawn:";
+
+  /** 식별자를 해제한 탈퇴 회원의 표시 이름. {@code name}은 not null이라 원문 대신 이 값을 둔다. */
+  static final String RELEASED_NAME = "탈퇴한 회원";
 
   @Id
   @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -92,10 +107,15 @@ public class Member extends BaseEntity {
   @Column(name = "registration_status", nullable = false, length = 30)
   private RegistrationStatus registrationStatus;
 
-  // 탈퇴 시각. 탈퇴 후 30일 보존·영구 삭제 배치의 기준이며, withdraw()에서 세팅·reactivate()에서 해제한다.
+  // 탈퇴 시각. 30일 재가입 제한(#107)과 식별자 해제의 기준이며, withdraw()에서 세팅·reactivate()에서 해제한다.
   // BaseEntity.updatedAt은 프로필 갱신 등 임의 수정에도 변하므로 탈퇴 시각 대용으로 쓰지 않는다.
   @Column(name = "withdrawn_at")
   private LocalDateTime withdrawnAt;
+
+  // 탈퇴 후 30일이 지나 카카오 식별자·학교 이메일·개인정보를 해제(익명화)한 시각(#107). null이면 아직 해제 전이다.
+  // 행 자체는 채팅·신고 등 FK 이력 보존을 위해 남긴다.
+  @Column(name = "identifiers_released_at")
+  private LocalDateTime identifiersReleasedAt;
 
   // 마지막 접속·주요 활동 시각. 로그인 시 갱신하며, "최근 접속 우선 노출" 정렬의 기준이 된다.
   @Column(name = "last_active_at")
@@ -247,23 +267,78 @@ public class Member extends BaseEntity {
     }
   }
 
+  /** 현재 시각으로 탈퇴 처리한다. 시각을 제어해야 하는 서비스는 {@link #withdraw(LocalDateTime)}를 쓴다. */
+  public void withdraw() {
+    withdraw(LocalDateTime.now());
+  }
+
   /**
-   * 회원을 탈퇴 처리한다(소프트삭제, {@code ACTIVE → WITHDRAWN}). 가입 단계·온보딩 정보는 보존한다.
-   * 탈퇴 시각({@code withdrawnAt})을 기록해 30일 보존 후 영구 삭제 배치의 기준으로 삼는다.
+   * 회원을 탈퇴 처리한다(소프트삭제, {@code → WITHDRAWN}). 가입 단계·온보딩 정보는 보존한다.
+   * 탈퇴 시각({@code withdrawnAt})을 기록해 30일 재가입 제한과 식별자 해제의 기준으로 삼는다(#107).
    *
    * @throws BaseException 이미 탈퇴한 회원인 경우
    */
-  public void withdraw() {
+  public void withdraw(LocalDateTime now) {
     if (this.activityStatus == ActivityStatus.WITHDRAWN) {
       throw BaseException.from(MemberErrorCode.MEMBER_ALREADY_WITHDRAWN);
     }
     this.activityStatus = ActivityStatus.WITHDRAWN;
-    this.withdrawnAt = LocalDateTime.now();
+    this.withdrawnAt = now;
   }
 
   /**
-   * 비활성 회원을 재활성화한다({@code WITHDRAWN}/{@code SUSPENDED → ACTIVE}). 탈퇴 재가입 시 호출되며,
-   * 신고 제재로 정지된 회원의 운영자 수동 해제(#75)에도 사용한다. 가입 단계·온보딩 정보
+   * 같은 카카오 계정·학교 이메일로 다시 가입할 수 있게 되는 시각({@code withdrawnAt + 30일}, #107). 탈퇴 회원이 아니면
+   * {@code null}.
+   */
+  public LocalDateTime rejoinAvailableAt() {
+    if (!isWithdrawn() || this.withdrawnAt == null) {
+      return null;
+    }
+    return this.withdrawnAt.plus(REJOIN_RESTRICTION);
+  }
+
+  /**
+   * 탈퇴 후 재가입 제한 기간인지 여부(#107). {@code withdrawnAt + 30일} <b>미만</b>이면 제한하고, 정확히 그 시각부터
+   * 허용한다.
+   */
+  public boolean isRejoinRestricted(LocalDateTime now) {
+    LocalDateTime availableAt = rejoinAvailableAt();
+    return availableAt != null && now.isBefore(availableAt);
+  }
+
+  /** 카카오 식별자·학교 이메일 등 재가입에 쓰는 식별자를 이미 해제했는지 여부(#107). */
+  public boolean isIdentifiersReleased() {
+    return this.identifiersReleasedAt != null;
+  }
+
+  /**
+   * 재가입 제한이 끝난 탈퇴 회원의 식별자와 개인정보를 해제(익명화)한다(#107). 행은 채팅·신고 등 FK 이력 보존을 위해
+   * 남기고, {@code (provider, providerId)}·{@code schoolEmail} 유니크 값을 비워 같은 카카오 계정과 학교 이메일로
+   * 새로 가입할 수 있게 한다. 이미 해제했으면 멱등(no-op).
+   *
+   * <p>닉네임은 지난 채팅 이력에서 상대를 식별하는 표시명으로 남긴다.
+   *
+   * @throws IllegalStateException 탈퇴 회원이 아니거나 아직 재가입 제한 기간인 경우
+   */
+  public void releaseIdentifiers(LocalDateTime now) {
+    if (isIdentifiersReleased()) {
+      return;
+    }
+    if (!isWithdrawn() || isRejoinRestricted(now)) {
+      throw new IllegalStateException("재가입 제한이 끝난 탈퇴 회원만 식별자를 해제할 수 있습니다: " + this.id);
+    }
+    this.providerId = RELEASED_PROVIDER_ID_PREFIX + this.id;
+    this.schoolEmail = null;
+    this.email = null;
+    this.name = RELEASED_NAME;
+    this.profileImageUrl = null;
+    this.identifiersReleasedAt = now;
+  }
+
+  /**
+   * 비활성 회원을 재활성화한다({@code WITHDRAWN}/{@code SUSPENDED → ACTIVE}). 신고 제재로 정지된 회원의 운영자 수동
+   * 해제(#75)에 사용한다. 탈퇴 회원의 재가입은 30일 제한 뒤 새 회원 생성으로 처리하므로(#107) 로그인 경로에서는 더 이상
+   * 호출하지 않는다. 가입 단계·온보딩 정보
    * ({@code nickName}/{@code schoolEmail})는 직전 상태 그대로 복구하고, 탈퇴 시각({@code withdrawnAt})은
    * 해제한다.
    *

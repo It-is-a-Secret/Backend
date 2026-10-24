@@ -598,6 +598,7 @@ class FeedImageServiceTest {
   @Test
   @DisplayName("공개 조회: 정확히 5장 전부 READY면 displayOrder 순서로 블러본 URL을 노출한다")
   void getPublicFeedImages_exactlyFiveReady() {
+    givenPublicFeedOwner(true);
     given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(readyImages(5));
     given(storageService.toPublicVariantUrl(anyString()))
         .willAnswer(invocation -> "https://cdn/" + invocation.getArgument(0));
@@ -617,6 +618,7 @@ class FeedImageServiceTest {
   @Test
   @DisplayName("공개 조회: 5장이라도 하나가 READY가 아니면 FEED_404_NOT_FOUND로 비노출한다")
   void getPublicFeedImages_notAllReady() {
+    givenPublicFeedOwner(true);
     List<FeedImage> images = new java.util.ArrayList<>(readyImages(4));
     images.add(feedImage(5, VARIANT_A, FeedImageProcessingStatus.PROCESSING));
     given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(images);
@@ -629,6 +631,7 @@ class FeedImageServiceTest {
   @Test
   @DisplayName("공개 조회: 전부 READY라도 5장 미만이면 FEED_404_NOT_FOUND로 비노출한다")
   void getPublicFeedImages_fewerThanFive() {
+    givenPublicFeedOwner(true);
     given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(readyImages(4));
 
     assertThatThrownBy(() -> feedImageService.getPublicFeedImages(FEED_ID))
@@ -639,11 +642,33 @@ class FeedImageServiceTest {
   @Test
   @DisplayName("공개 조회: 이미지가 0장이면 FEED_404_NOT_FOUND로 비노출한다")
   void getPublicFeedImages_empty() {
+    givenPublicFeedOwner(true);
     given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(List.of());
 
     assertThatThrownBy(() -> feedImageService.getPublicFeedImages(FEED_ID))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", "FEED_404_NOT_FOUND");
+  }
+
+  @Test
+  @DisplayName("공개 조회: 사진이 정확히 5장 전부 READY여도 피드 주인이 탈퇴했으면 FEED_404_NOT_FOUND로 비노출한다(#107)")
+  void getPublicFeedImages_whenOwnerWithdrawn_hidesFeed() {
+    givenPublicFeedOwner(false);
+    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(readyImages(5));
+
+    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(FEED_ID))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "FEED_404_NOT_FOUND");
+  }
+
+  /** 공개 조회 대상 피드와 그 주인 회원의 활성 여부를 준비한다. */
+  private void givenPublicFeedOwner(boolean active) {
+    Feed feed = mock(Feed.class);
+    com.blursome.blursome.member.domain.Member owner =
+        mock(com.blursome.blursome.member.domain.Member.class);
+    given(owner.isActive()).willReturn(active);
+    given(feed.getMember()).willReturn(owner);
+    given(feedRepository.findById(FEED_ID)).willReturn(Optional.of(feed));
   }
 
   @Test
