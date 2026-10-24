@@ -20,6 +20,7 @@ import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.global.exception.code.GlobalErrorCode;
 import com.blursome.blursome.global.storage.S3ObjectKeyGenerator;
 import com.blursome.blursome.global.storage.S3StorageService;
+import com.blursome.blursome.global.storage.S3StorageService.OriginalObject;
 import com.blursome.blursome.global.storage.S3StorageService.PresignedUpload;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -27,6 +28,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -83,7 +85,8 @@ public class FeedImageService {
    *   <li>{@code id} 항목 + 다른 {@code blurLevel}: 원본을 새 key로 복사해 Lambda를 다시 실행하고, 같은 행의
    *       key·블러 강도를 바꿔 {@code PROCESSING}부터 다시 추적한다(copy-on-reprocess).</li>
    *   <li>{@code objectKey} 항목: 새 행을 {@code PROCESSING}으로 만든다. {@code variantKey}는 원본 key에서
-   *       결정론적으로 계산한다.</li>
+   *       결정론적으로 계산한다. 블러 강도는 실제 업로드된 원본의 메타데이터(Lambda가 적용할 값)로 기록하며, 요청에
+   *       {@code blurLevel}을 보냈다면 그 값과 같아야 한다.</li>
    *   <li>현재 목록에 있지만 요청에 없는 행: 삭제한다.</li>
    * </ul>
    *
@@ -98,7 +101,9 @@ public class FeedImageService {
    * @throws BaseException 피드가 없거나({@code FEED_404_NOT_FOUND}), id/objectKey 조합이 잘못됐거나
    *     ({@code FEED_IMAGE_400_INVALID_REFERENCE}), 순서·참조가 중복됐거나({@code FEED_IMAGE_400_DUPLICATE_ORDER},
    *     {@code FEED_IMAGE_400_DUPLICATE_REFERENCE}), 원본 key가 회원 소유가 아니거나
-   *     ({@code FEED_IMAGE_400_INVALID_OBJECT_KEY}), 기존 사진 id가 이 피드에 없는 경우({@code FEED_IMAGE_404_NOT_FOUND})
+   *     ({@code FEED_IMAGE_400_INVALID_OBJECT_KEY}), 원본이 업로드되지 않았거나({@code FEED_IMAGE_400_ORIGINAL_NOT_UPLOADED})
+   *     요청 블러 강도가 업로드 값과 다르거나({@code FEED_IMAGE_400_BLUR_LEVEL_MISMATCH}), 기존 사진 id가 이 피드에 없는
+   *     경우({@code FEED_IMAGE_404_NOT_FOUND})
    */
   @Transactional
   public FeedImageResponse replaceImages(Long memberId, FeedImageSaveRequest request) {
@@ -117,6 +122,7 @@ public class FeedImageService {
         feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(feed.getId());
     List<KeptImage> keptImages = resolveKeptImages(items, currentImages);
     validateUploadsNotKept(uploads, keptImages);
+    Map<String, Integer> uploadBlurLevels = resolveUploadedBlurLevels(memberId, uploads);
 
     // S3 복사를 DB 변경보다 먼저 끝내, 복사 실패 시 DB가 바뀌지 않게 한다.
     Map<Long, ReprocessedKeys> reprocessed = copyOriginalsForReprocessing(memberId, keptImages);
@@ -139,7 +145,7 @@ public class FeedImageService {
                 upload.displayOrder(),
                 upload.objectKey(),
                 keyGenerator.toVariantKey(upload.objectKey()),
-                upload.blurLevel()))
+                uploadBlurLevels.get(upload.objectKey())))
             .toList());
 
     List<FeedImage> finalImages = new ArrayList<>(keptImages.size() + saved.size());
@@ -174,6 +180,37 @@ public class FeedImageService {
       keptImages.add(new KeptImage(image, item.displayOrder(), blurLevel));
     }
     return keptImages;
+  }
+
+  /**
+   * 새 사진마다 실제로 업로드된 원본을 조회해, 블러 Lambda가 적용할 블러 강도를 정한다. 원본 메타데이터가 기준이므로
+   * DB·응답의 {@code blurLevel}이 실제 블러본과 어긋나지 않는다. 요청에 {@code blurLevel}을 보냈다면 그 값과 같아야 하고,
+   * 생략했다면 메타데이터 값을 그대로 쓴다. 요청에서 뺀 기존 사진의 key를 새 사진으로 다시 보내며 강도를 바꾸는 경우도
+   * 원본 메타데이터가 그대로라 여기서 걸러진다(강도 변경은 기존 사진 {@code id}로 해야 재처리된다).
+   *
+   * @return 원본 key별 기록할 블러 강도
+   */
+  private Map<String, Integer> resolveUploadedBlurLevels(
+      Long memberId, List<FeedImageSaveRequest.Image> uploads) {
+    Map<String, Integer> blurLevels = new HashMap<>();
+    for (FeedImageSaveRequest.Image upload : uploads) {
+      Optional<OriginalObject> original;
+      try {
+        original = storageService.findOriginal(upload.objectKey());
+      } catch (SdkException e) {
+        log.error("새 사진 원본 조회 실패. memberId={}, objectKey={}", memberId, upload.objectKey(), e);
+        throw BaseException.from(GlobalErrorCode.INTERNAL_SERVER_ERROR);
+      }
+      if (original.isEmpty()) {
+        throw BaseException.from(FeedImageErrorCode.ORIGINAL_NOT_UPLOADED);
+      }
+      int appliedBlurLevel = FeedImage.resolveAppliedBlurLevel(original.get().blurLevelMetadata());
+      if (upload.blurLevel() != null && upload.blurLevel() != appliedBlurLevel) {
+        throw BaseException.from(FeedImageErrorCode.BLUR_LEVEL_MISMATCH);
+      }
+      blurLevels.put(upload.objectKey(), appliedBlurLevel);
+    }
+    return blurLevels;
   }
 
   /**

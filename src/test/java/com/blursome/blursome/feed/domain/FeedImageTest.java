@@ -271,6 +271,16 @@ class FeedImageTest {
       assertThat(image.getBlurLevel()).isEqualTo(80);
     }
 
+    @ParameterizedTest(name = "[{index}] 메타데이터 {0} → 적용 강도 {1}")
+    @org.junit.jupiter.params.provider.CsvSource(value = {
+        "70, 70", " 95 , 95", "49, 50", "101, 100", "abc, 80", "NULL, 80"
+    }, nullValues = "NULL")
+    @DisplayName("원본 메타데이터로 Lambda가 적용할 블러 강도를 Lambda와 같은 규칙으로 계산한다")
+    void resolveAppliedBlurLevel_followsLambdaRule(String metadataValue, int expected) {
+      // when & then
+      assertThat(FeedImage.resolveAppliedBlurLevel(metadataValue)).isEqualTo(expected);
+    }
+
     @Test
     @DisplayName("처리 시작 시각이 없는 이전 행은 createdAt을 기준 시각으로 쓴다")
     void getProcessingBaseTime_whenLegacyRow_fallsBackToCreatedAt() {

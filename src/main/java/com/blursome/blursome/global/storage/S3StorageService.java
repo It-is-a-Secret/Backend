@@ -2,6 +2,7 @@ package com.blursome.blursome.global.storage;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import software.amazon.awssdk.services.s3.S3Client;
@@ -144,6 +145,29 @@ public class S3StorageService {
   }
 
   /**
+   * originals 버킷의 원본 객체를 {@code HeadObject}로 조회해 블러 Lambda가 읽을 {@code blur-level} 메타데이터를 돌려준다.
+   * 저장 API가 새 사진의 요청 블러 강도를 실제로 업로드된 값과 대조하는 데 쓴다(#105). 객체 바이트는 받지 않는다.
+   *
+   * @param objectKey originals 버킷의 원본 객체 key
+   * @return 객체가 있으면 메타데이터 정보, 없으면(HTTP 404) 빈 값
+   * @throws S3Exception 404가 아닌 S3 오류
+   */
+  public Optional<OriginalObject> findOriginal(String objectKey) {
+    try {
+      HeadObjectResponse head = s3Client.headObject(HeadObjectRequest.builder()
+          .bucket(properties.originalsBucket())
+          .key(objectKey)
+          .build());
+      return Optional.of(new OriginalObject(head.metadata().get(BLUR_LEVEL_METADATA_KEY)));
+    } catch (S3Exception e) {
+      if (e.statusCode() == HTTP_NOT_FOUND) {
+        return Optional.empty();
+      }
+      throw e;
+    }
+  }
+
+  /**
    * 블러 강도를 바꿔 블러본을 다시 만들도록 원본을 새 key로 복사한다(#105 copy-on-reprocess).
    *
    * <p>originals 버킷 안에서 server-side {@code CopyObject}만 수행하므로 원본 바이트가 애플리케이션 서버를 거치지
@@ -178,6 +202,14 @@ public class S3StorageService {
         .contentType(source.contentType())
         .metadata(metadata)
         .build());
+  }
+
+  /**
+   * 업로드된 원본 객체의 메타데이터.
+   *
+   * @param blurLevelMetadata {@code x-amz-meta-blur-level} 원문. 메타데이터가 없으면 {@code null}
+   */
+  public record OriginalObject(String blurLevelMetadata) {
   }
 
   /**

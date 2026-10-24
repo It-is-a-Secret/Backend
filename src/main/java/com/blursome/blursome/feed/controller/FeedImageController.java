@@ -46,10 +46,11 @@ public class FeedImageController {
           + "- 기존 사진 유지·재정렬: id와 새 displayOrder. ID·블러본 URL·처리 상태가 그대로 유지된다.\n"
           + "- 기존 사진 블러 변경: id와 다른 blurLevel. 서버가 원본을 새 key로 복사해 블러본을 다시 만들며, "
           + "응답은 새 variantUrl과 PROCESSING이다. 별도 재처리 API는 없다. blurLevel 생략 시 현재 값 유지.\n"
-          + "- 새 사진: objectKey. PROCESSING으로 생성되고 blurLevel 생략 시 80.\n\n"
+          + "- 새 사진: objectKey. 원본 업로드가 끝난 key여야 하며 PROCESSING으로 생성된다. blurLevel은 Presigned "
+          + "발급 때 지정한 값이 적용되고, 보낸다면 그 값과 같아야 한다(FEED_IMAGE_400_BLUR_LEVEL_MISMATCH).\n\n"
           + "인증 주체에서 피드를 도출하므로 feedId를 받지 않는다. 다른 회원 사진 id는 FEED_IMAGE_404_NOT_FOUND, "
           + "id/objectKey 조합 오류는 FEED_IMAGE_400_INVALID_REFERENCE, 같은 사진 중복 지정은 "
-          + "FEED_IMAGE_400_DUPLICATE_REFERENCE다.")
+          + "FEED_IMAGE_400_DUPLICATE_REFERENCE, 업로드되지 않은 objectKey는 FEED_IMAGE_400_ORIGINAL_NOT_UPLOADED다.")
   @PostMapping
   public ResponseEntity<DataResponse<FeedImageResponse>> saveImages(
       @AuthenticationPrincipal Long memberId,

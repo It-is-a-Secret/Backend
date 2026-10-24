@@ -20,6 +20,7 @@ import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.DynamicUpdate;
 
 /**
  * 피드에 노출되는 사진 1장. {@link Feed}와 N:1로 대응한다.
@@ -30,9 +31,13 @@ import lombok.NoArgsConstructor;
  * <p>{@code processingStartedAt}을 제외한 모든 컬럼은 {@code nullable=false}로 두어 행이 존재하면 항상 완전한
  * 정보를 갖도록 한다. {@code variantKey}가 non-null이라고 해서 블러본 객체가 S3에 존재함을 보장하지는 않으며,
  * 실제 존재는 {@link FeedImageProcessingStatus}로 추적한다.
+ *
+ * <p>{@code @DynamicUpdate}로 바뀐 컬럼만 UPDATE한다. 저장 API(순서·key)와 상태 스케줄러(처리 상태)가 같은 행을
+ * 다른 트랜잭션에서 고칠 수 있어, 전체 컬럼을 쓰면 한쪽이 읽어 둔 이전 값으로 다른 쪽 변경을 덮어쓸 수 있다.
  */
 @Entity
 @Getter
+@DynamicUpdate
 @Table(
     name = "feed_image",
     uniqueConstraints = {
@@ -241,7 +246,33 @@ public class FeedImage extends BaseEntity {
     return images.size() == REQUIRED_PUBLISH_COUNT && images.stream().allMatch(FeedImage::isReady);
   }
 
-  /** 블러본 존재가 확인되어 공개 노출 가능 상태로 전이한다. (HeadObject 200) */
+  /**
+   * 원본 객체 메타데이터({@code x-amz-meta-blur-level}) 값으로 블러 Lambda가 실제로 적용할 블러 강도를 계산한다.
+   * Lambda({@code lambda/blur/handler.py}의 {@code resolve_blur_level})와 같은 규칙이어야 한다: 값이 없거나
+   * 정수가 아니면 {@link #DEFAULT_BLUR_LEVEL}, 범위를 벗어나면 가까운 경계값.
+   *
+   * @param metadataValue 원본 객체의 {@code blur-level} 메타데이터 원문({@code null} 허용)
+   * @return Lambda가 블러본에 적용하는 블러 강도(50~100)
+   */
+  public static int resolveAppliedBlurLevel(String metadataValue) {
+    if (metadataValue == null) {
+      return DEFAULT_BLUR_LEVEL;
+    }
+    int value;
+    try {
+      value = Integer.parseInt(metadataValue.strip());
+    } catch (NumberFormatException e) {
+      return DEFAULT_BLUR_LEVEL;
+    }
+    return Math.min(MAX_BLUR_LEVEL, Math.max(MIN_BLUR_LEVEL, value));
+  }
+
+  /**
+   * 블러본 존재가 확인되어 공개 노출 가능 상태로 전이한다. (HeadObject 200)
+   *
+   * <p>운영 스케줄러는 다른 트랜잭션과의 경합을 피하려고 엔티티 대신 조건부 UPDATE
+   * ({@code FeedImageRepository#transitionProcessingStatus})로 전이한다.
+   */
   public void markReady() {
     this.processingStatus = FeedImageProcessingStatus.READY;
   }

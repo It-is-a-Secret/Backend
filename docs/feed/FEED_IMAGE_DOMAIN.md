@@ -119,7 +119,7 @@ public enum FeedImageProcessingStatus {
         (실패 && 5분 이내 → PROCESSING 유지, 다음 주기 재확인)
 ```
 
-**스케줄러 사양**: 주기 1분 · 대상 `processing_status = PROCESSING` · 최초 확인 지연 `started <= now-30초` · 1회 최대 100개 · 정렬 `started ASC` · `READY` 조건 `HeadObject` 성공 · `FAILED` 조건 `HeadObject` 실패 && `started <= now-5분` · 중복 실행 방지는 단일 서버 기준 단순 `@Scheduled`.
+**스케줄러 사양**: 주기 1분 · 대상 `processing_status = PROCESSING` · 최초 확인 지연 `started <= now-30초` · 1회 최대 100개 · 정렬 `started ASC` · `READY` 조건 `HeadObject` 성공 · `FAILED` 조건 `HeadObject` 실패 && `started <= now-5분` · 중복 실행 방지는 단일 서버 기준 단순 `@Scheduled`. 상태 전이는 확인한 `id + variant_key`가 아직 `PROCESSING`일 때만 `processing_status`만 바꾸는 조건부 UPDATE다(#105). 확인 중 저장 API가 재처리·재정렬해도 이전 세대 결과로 새 세대를 `READY`/`FAILED`로 만들거나 key·순서를 되돌리지 않는다. 엔티티는 `@DynamicUpdate`로 바뀐 컬럼만 쓴다.
 
 > **시간 기반을 쓰는 이유**: 횟수(`check_count`) 기반은 스케줄러가 죽으면 카운트가 멈춰 판정이 지연되지만, 시간 기반은 스케줄러가 재시작돼도 시작 시각만 보고 즉시 `FAILED`를 판정할 수 있어 더 안전하다. 별도 카운터 컬럼을 두지 않는다.
 >
@@ -229,7 +229,7 @@ Feed (1) ──────────── (N) FeedImage
 | `id` | 필수 | 금지 |
 | `objectKey` | 금지 | 필수 (Presigned 발급 응답의 `originalKey`) |
 | `displayOrder` | 필수 (1~5, 요청 내 중복 불가) | 필수 |
-| `blurLevel` | 선택: 생략 시 현재 값 유지, 다르면 재처리 | 선택: 생략 시 80 (Presigned 발급 값과 같아야 함) |
+| `blurLevel` | 선택: 생략 시 현재 값 유지, 다르면 재처리 | 선택: 실제 업로드된 원본의 `x-amz-meta-blur-level`(Lambda 적용 값)이 기록됨. 보낸다면 그 값과 같아야 함 |
 
 | 사용자 동작 | 요청 | 서버 동작 · 응답 |
 |---|---|---|
@@ -241,7 +241,7 @@ Feed (1) ──────────── (N) FeedImage
 **처리 순서와 보장**
 
 1. 피드 행을 비관적 락(`SELECT ... FOR UPDATE`)으로 잠가 같은 회원의 동시 저장을 직렬화한다.
-2. 요청을 검증한다: `id`/`objectKey` 정확히 하나, `displayOrder`·`id`·`objectKey` 중복 없음, `objectKey`는 회원 소유 형식, `id`는 현재 피드 소속, 새 `objectKey`가 유지하는 사진의 원본 key와 같지 않음.
+2. 요청을 검증한다: `id`/`objectKey` 정확히 하나, `displayOrder`·`id`·`objectKey` 중복 없음, `objectKey`는 회원 소유 형식, `id`는 현재 피드 소속, 새 `objectKey`가 유지하는 사진의 원본 key와 같지 않음. 새 사진은 원본 `HeadObject`로 업로드 여부와 `blur-level` 메타데이터를 확인해, 요청 `blurLevel`이 Lambda가 적용할 값과 다르면 거부한다(생략 시 메타데이터 값 기록). 요청에서 뺀 기존 사진의 key를 새 사진으로 다시 보내며 강도를 바꾸는 우회도 여기서 막힌다.
 3. 재처리 대상의 원본을 S3 server-side `CopyObject`로 새 key에 복사한다(DB 변경 전). 실패하면 500으로 거부하고 DB는 바뀌지 않는다.
 4. 빠진 행 삭제 → 순서가 바뀌는 행을 임시 순서(음수)로 옮김 → 최종 순서·재처리 key 반영 → 새 행 저장. 각 단계 사이에 flush해 1↔2 교환에서도 `uk_feed_image_order`가 충돌하지 않는다.
 5. 최종 목록을 `displayOrder` 오름차순으로 응답한다.
@@ -292,6 +292,8 @@ com.blursome.global.storage           ✅ S3 인프라 (횡단 관심사)
 | `FEED_IMAGE_400_INVALID_OBJECT_KEY` | `objectKey`가 회원 소유 원본 key 형식이 아님 | 400 |
 | `FEED_IMAGE_400_INVALID_REFERENCE` | 항목에 `id`와 `objectKey`가 모두 없거나 모두 있음(#105) | 400 |
 | `FEED_IMAGE_400_DUPLICATE_REFERENCE` | 같은 `id`·`objectKey`를 두 번 지정했거나, 새 `objectKey`가 유지하는 사진의 원본 key와 같음(#105) | 400 |
+| `FEED_IMAGE_400_ORIGINAL_NOT_UPLOADED` | 새 `objectKey`의 원본이 originals 버킷에 없음(업로드 전) | 400 |
+| `FEED_IMAGE_400_BLUR_LEVEL_MISMATCH` | 새 사진의 요청 `blurLevel`이 업로드된 원본 메타데이터(Lambda 적용 값)와 다름 | 400 |
 | `FEED_IMAGE_404_NOT_FOUND` | 기존 사진 `id`가 없거나 다른 회원 피드 소속(존재 여부 비노출) | 404 |
 | `SERVER_ERROR_500_INTERNAL_SERVER_ERROR` | blur 재처리용 S3 복사 실패(전역 코드, 서버 로그에 member/image/key 기록) | 500 |
 

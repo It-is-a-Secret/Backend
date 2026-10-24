@@ -256,6 +256,9 @@ public enum FeedImageProcessingStatus {
 | `FAILED` 조건 | `HeadObject` 실패 && `started <= now - 5분` |
 | 5분 이내 미확인 | `PROCESSING` 유지, 다음 주기 재확인 |
 | 중복 실행 방지 | 단일 서버 기준 단순 `@Scheduled` (다중 인스턴스 전환 시 락 도입 검토) |
+| 상태 반영 방식 (#105) | 엔티티 더티 체킹이 아닌 조건부 UPDATE: `SET processing_status = :next WHERE id = :id AND variant_key = :확인한 key AND processing_status = 'PROCESSING'`. `HeadObject`는 DB 트랜잭션 밖에서, 갱신은 짧은 자체 트랜잭션으로 |
+
+> **조건부 UPDATE를 쓰는 이유(#105)**: 스케줄러가 행을 읽고 `HeadObject`를 하는 사이 저장 API가 같은 사진을 재처리(새 `variant_key`)하거나 순서를 바꿀 수 있다. 엔티티로 전이하면 ① 이전 블러본 확인 결과로 새 세대를 `READY`로 잘못 전이하고, ② 전체 컬럼 UPDATE로 읽어 둔 이전 key·blur·순서를 되살릴 수 있다. 확인한 `variant_key`(세대)가 그대로일 때만 상태 컬럼만 바꾸면 둘 다 막힌다. 갱신 0건이면 그사이 재처리·삭제된 것이므로 건너뛰고, 새 세대는 다음 주기에 새 key로 확인한다. `FeedImage`는 `@DynamicUpdate`로 저장 API도 바뀐 컬럼만 쓴다.
 
 **피드 노출 / 실패 UX (✅ 확정)**
 
@@ -291,6 +294,8 @@ Lambda는 S3 `ObjectCreated` 이벤트로 비동기 실행되므로, 사용자�
 3. 원본 `HeadObject`로 Content-Type·사용자 메타데이터를 읽고, originals 버킷 안에서 server-side `CopyObject`를 수행한다. 메타데이터 지시자는 `REPLACE`, `blur-level`만 새 값으로 바꾸고 Content-Type은 유지한다. 원본 바이트는 애플리케이션 서버를 거치지 않는다.
 4. 새 객체의 `ObjectCreated:Copy` 이벤트가 Lambda를 실행해 새 강도로 새 블러본을 만든다(알림 이벤트가 `s3:ObjectCreated:*`여야 한다, §8-5).
 5. 같은 `FeedImage` 행(ID 유지)의 `original_key`·`variant_key`·`blur_level`을 새 값으로 바꾸고 `PROCESSING`, `processing_started_at = now`로 되돌린다. 응답은 새 `variantUrl`과 `PROCESSING`이다. 스케줄러가 새 블러본을 확인하면 `READY`가 된다.
+
+**새 사진의 `blur_level` 기준 (#105)**: DB·응답의 `blur_level`이 실제 블러본과 같도록, 새 사진(`objectKey`)은 저장 시 원본 `HeadObject`로 `x-amz-meta-blur-level`을 읽어 Lambda가 적용할 값(누락·비정수 → 80, 범위 밖 → 경계값. Lambda `resolve_blur_level`과 같은 규칙)을 기록한다. 요청에 `blurLevel`을 보냈는데 이 값과 다르면 `FEED_IMAGE_400_BLUR_LEVEL_MISMATCH`, 원본이 없으면 `FEED_IMAGE_400_ORIGINAL_NOT_UPLOADED`로 거부한다. 강도 변경은 기존 사진 `id`로만 가능하며(위 재처리), 뺀 사진의 key를 새 사진으로 다시 보내 강도만 바꾸는 우회는 메타데이터 불일치로 막힌다.
 
 **기존 key에 덮어쓰지 않는 이유**
 

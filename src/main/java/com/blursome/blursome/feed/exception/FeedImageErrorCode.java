@@ -29,6 +29,14 @@ public enum FeedImageErrorCode implements ErrorCode {
       "같은 사진을 한 요청에서 두 번 지정할 수 없습니다.",
       "FEED_IMAGE_400_DUPLICATE_REFERENCE"
   ),
+  ORIGINAL_NOT_UPLOADED(HttpStatus.BAD_REQUEST,
+      "업로드가 확인되지 않은 사진입니다. 원본을 먼저 업로드해 주세요.",
+      "FEED_IMAGE_400_ORIGINAL_NOT_UPLOADED"
+  ),
+  BLUR_LEVEL_MISMATCH(HttpStatus.BAD_REQUEST,
+      "블러 강도가 업로드할 때 지정한 값과 다릅니다.",
+      "FEED_IMAGE_400_BLUR_LEVEL_MISMATCH"
+  ),
   NOT_FOUND(HttpStatus.NOT_FOUND,
       "피드 이미지를 찾을 수 없습니다.",
       "FEED_IMAGE_404_NOT_FOUND"

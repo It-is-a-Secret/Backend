@@ -129,6 +129,35 @@ class FeedImageRepositoryTest {
   }
 
   @Test
+  @DisplayName("조건부 상태 전이는 id·variantKey·기대 상태가 모두 같을 때만 상태 컬럼만 바꾼다(#105)")
+  void transitionProcessingStatus_updatesOnlyMatchingGeneration() {
+    Feed feed = persistFeed("transition");
+    FeedImage image = persistImage(feed, 1, FeedImageProcessingStatus.PROCESSING);
+    em.flush();
+    String currentVariant = image.getVariantKey();
+    em.clear();
+
+    // 스케줄러가 확인한 뒤 재처리로 key가 바뀐 경우(이전 세대) → 0건
+    int staleGeneration = feedImageRepository.transitionProcessingStatus(image.getId(),
+        "variants/old-generation.jpg", FeedImageProcessingStatus.PROCESSING,
+        FeedImageProcessingStatus.READY);
+    // 이미 다른 상태인 경우(기대 상태 불일치) → 0건
+    int wrongExpected = feedImageRepository.transitionProcessingStatus(image.getId(),
+        currentVariant, FeedImageProcessingStatus.FAILED, FeedImageProcessingStatus.READY);
+    int matched = feedImageRepository.transitionProcessingStatus(image.getId(),
+        currentVariant, FeedImageProcessingStatus.PROCESSING, FeedImageProcessingStatus.READY);
+    em.clear();
+
+    assertThat(staleGeneration).isZero();
+    assertThat(wrongExpected).isZero();
+    assertThat(matched).isEqualTo(1);
+    FeedImage reloaded = feedImageRepository.findById(image.getId()).orElseThrow();
+    assertThat(reloaded.getProcessingStatus()).isEqualTo(FeedImageProcessingStatus.READY);
+    assertThat(reloaded.getVariantKey()).isEqualTo(currentVariant);
+    assertThat(reloaded.getDisplayOrder()).isEqualTo(1);
+  }
+
+  @Test
   @DisplayName("폴링 쿼리는 limit 개수까지만 반환한다")
   void pollingQuery_respectsLimit() {
     Feed feed = persistFeed("limit");

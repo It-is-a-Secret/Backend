@@ -30,6 +30,7 @@ import com.blursome.blursome.feed.repository.FeedRepository;
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.global.storage.S3ObjectKeyGenerator;
 import com.blursome.blursome.global.storage.S3StorageService;
+import com.blursome.blursome.global.storage.S3StorageService.OriginalObject;
 import com.blursome.blursome.global.storage.S3StorageService.PresignedUpload;
 import java.util.List;
 import java.util.Map;
@@ -117,6 +118,8 @@ class FeedImageServiceTest {
     given(keyGenerator.isOwnedOriginalKey(eq(MEMBER_ID), anyString())).willReturn(true);
     given(keyGenerator.toVariantKey(KEY_A)).willReturn(VARIANT_A);
     given(keyGenerator.toVariantKey(KEY_B)).willReturn(VARIANT_B);
+    givenUploadedOriginal(KEY_A, "70");
+    givenUploadedOriginal(KEY_B, "80");
     givenSaveAllReturnsArgument();
     givenVariantUrls();
 
@@ -204,6 +207,7 @@ class FeedImageServiceTest {
     givenCurrentImages(kept, replaced);
     given(keyGenerator.isOwnedOriginalKey(MEMBER_ID, KEY_C)).willReturn(true);
     given(keyGenerator.toVariantKey(KEY_C)).willReturn(VARIANT_C);
+    givenUploadedOriginal(KEY_C, "90");
     givenSaveAllReturnsArgument();
     givenVariantUrls();
 
@@ -406,6 +410,113 @@ class FeedImageServiceTest {
   }
 
   @Test
+  @DisplayName("새 사진의 요청 blurLevel이 업로드된 원본 메타데이터와 다르면 FEED_IMAGE_400_BLUR_LEVEL_MISMATCH로 거부한다")
+  void replaceImages_whenUploadBlurLevelDiffersFromMetadata_throwsMismatch() {
+    // given: Presigned 발급·업로드는 50으로 했는데 저장 요청은 100
+    givenLockedFeed();
+    givenCurrentImages();
+    given(keyGenerator.isOwnedOriginalKey(MEMBER_ID, KEY_A)).willReturn(true);
+    givenUploadedOriginal(KEY_A, "50");
+
+    // when & then
+    assertThatThrownBy(() -> feedImageService.replaceImages(MEMBER_ID, request(
+        FeedImageSaveRequest.Image.upload(KEY_A, 1, 100))))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "FEED_IMAGE_400_BLUR_LEVEL_MISMATCH");
+    verify(feedImageRepository, never()).saveAll(any());
+  }
+
+  @Test
+  @DisplayName("요청에서 뺀 기존 사진의 key를 새 사진으로 다시 보내며 blurLevel을 바꾸면 메타데이터 불일치로 거부한다")
+  void replaceImages_whenDroppedKeyResentWithOtherBlurLevel_throwsMismatch() {
+    // given: id=10(KEY_A, blur 80)을 목록에서 빼고 같은 key를 objectKey로 95와 함께 보낸다.
+    givenLockedFeed();
+    givenCurrentImages(currentImage(10L, 1, KEY_A, VARIANT_A, 80, FeedImageProcessingStatus.READY));
+    given(keyGenerator.isOwnedOriginalKey(MEMBER_ID, KEY_A)).willReturn(true);
+    givenUploadedOriginal(KEY_A, "80");
+
+    // when & then
+    assertThatThrownBy(() -> feedImageService.replaceImages(MEMBER_ID, request(
+        FeedImageSaveRequest.Image.upload(KEY_A, 1, 95))))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "FEED_IMAGE_400_BLUR_LEVEL_MISMATCH");
+    verify(feedImageRepository, never()).deleteAll(any());
+    verify(storageService, never()).reprocessOriginal(anyString(), anyString(), anyInt());
+  }
+
+  @Test
+  @DisplayName("새 사진의 blurLevel을 생략하면 업로드된 원본 메타데이터 값으로 기록한다")
+  void replaceImages_whenUploadBlurLevelOmitted_usesMetadataValue() {
+    // given
+    givenLockedFeed();
+    givenCurrentImages();
+    given(keyGenerator.isOwnedOriginalKey(MEMBER_ID, KEY_A)).willReturn(true);
+    given(keyGenerator.toVariantKey(KEY_A)).willReturn(VARIANT_A);
+    givenUploadedOriginal(KEY_A, "60");
+    givenSaveAllReturnsArgument();
+    givenVariantUrls();
+
+    // when
+    FeedImageResponse response = feedImageService.replaceImages(MEMBER_ID, request(
+        FeedImageSaveRequest.Image.upload(KEY_A, 1, null)));
+
+    // then
+    assertThat(response.images()).extracting(FeedImageResponse.Image::blurLevel).containsExactly(60);
+  }
+
+  @Test
+  @DisplayName("원본에 blur-level 메타데이터가 없으면 Lambda와 같이 기본값 80을 적용 값으로 본다")
+  void replaceImages_whenMetadataMissing_usesLambdaDefault() {
+    // given
+    givenLockedFeed();
+    givenCurrentImages();
+    given(keyGenerator.isOwnedOriginalKey(MEMBER_ID, KEY_A)).willReturn(true);
+    givenUploadedOriginal(KEY_A, null);
+
+    // when & then: Lambda는 80으로 블러하므로 70 요청은 불일치다.
+    assertThatThrownBy(() -> feedImageService.replaceImages(MEMBER_ID, request(
+        FeedImageSaveRequest.Image.upload(KEY_A, 1, 70))))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "FEED_IMAGE_400_BLUR_LEVEL_MISMATCH");
+  }
+
+  @Test
+  @DisplayName("업로드되지 않은 objectKey는 FEED_IMAGE_400_ORIGINAL_NOT_UPLOADED로 거부한다")
+  void replaceImages_whenOriginalNotUploaded_throwsOriginalNotUploaded() {
+    // given
+    givenLockedFeed();
+    givenCurrentImages();
+    given(keyGenerator.isOwnedOriginalKey(MEMBER_ID, KEY_A)).willReturn(true);
+    given(storageService.findOriginal(KEY_A)).willReturn(Optional.empty());
+
+    // when & then
+    assertThatThrownBy(() -> feedImageService.replaceImages(MEMBER_ID, request(
+        FeedImageSaveRequest.Image.upload(KEY_A, 1, null))))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "FEED_IMAGE_400_ORIGINAL_NOT_UPLOADED");
+    verify(feedImageRepository, never()).saveAll(any());
+  }
+
+  @Test
+  @DisplayName("새 사진 원본 조회가 S3 오류로 실패하면 5xx로 거부하고 재처리 복사도 하지 않는다")
+  void replaceImages_whenOriginalLookupFails_throwsServerError() {
+    // given: 기존 사진 재블러와 새 사진이 함께 있어도 원본 확인이 먼저라 복사가 일어나지 않는다.
+    givenLockedFeed();
+    givenCurrentImages(currentImage(10L, 1, KEY_A, VARIANT_A, 80, FeedImageProcessingStatus.READY));
+    given(keyGenerator.isOwnedOriginalKey(MEMBER_ID, KEY_B)).willReturn(true);
+    given(storageService.findOriginal(KEY_B))
+        .willThrow((S3Exception) S3Exception.builder().statusCode(403).build());
+
+    // when & then
+    assertThatThrownBy(() -> feedImageService.replaceImages(MEMBER_ID, request(
+        FeedImageSaveRequest.Image.existing(10L, 1, 95),
+        FeedImageSaveRequest.Image.upload(KEY_B, 2, null))))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "SERVER_ERROR_500_INTERNAL_SERVER_ERROR");
+    verify(storageService, never()).reprocessOriginal(anyString(), anyString(), anyInt());
+  }
+
+  @Test
   @DisplayName("피드가 없으면 FEED_404_NOT_FOUND로 거부한다")
   void replaceImages_whenFeedNotFound_throwsFeedNotFound() {
     // given
@@ -423,6 +534,11 @@ class FeedImageServiceTest {
     Feed feed = mock(Feed.class);
     lenient().when(feed.getId()).thenReturn(FEED_ID);
     given(feedRepository.findByMemberIdForUpdate(MEMBER_ID)).willReturn(Optional.of(feed));
+  }
+
+  private void givenUploadedOriginal(String objectKey, String blurLevelMetadata) {
+    given(storageService.findOriginal(objectKey))
+        .willReturn(Optional.of(new OriginalObject(blurLevelMetadata)));
   }
 
   private void givenCurrentImages(FeedImage... images) {

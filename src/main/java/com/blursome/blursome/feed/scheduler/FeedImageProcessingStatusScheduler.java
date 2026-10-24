@@ -12,7 +12,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Limit;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
  * 블러본 처리 상태 폴링 스케줄러. Lambda가 비동기로 생성하는 블러본의 존재를 variants 버킷 {@code HeadObject}로
@@ -24,10 +23,16 @@ import org.springframework.transaction.annotation.Transactional;
  * 재처리 시점부터 잰다.
  *
  * <ul>
- *   <li>{@code HeadObject} 성공 → {@link FeedImage#markReady()}</li>
- *   <li>객체 없음(404) && 처리 시작 {@code <= now - 5분} → {@link FeedImage#markFailed()}</li>
+ *   <li>{@code HeadObject} 성공 → {@code READY}</li>
+ *   <li>객체 없음(404) && 처리 시작 {@code <= now - 5분} → {@code FAILED}</li>
  *   <li>객체 없음(404) && 5분 이내 → {@code PROCESSING} 유지, 다음 주기 재확인</li>
  * </ul>
+ *
+ * <p><b>저장 API와의 경합(#105)</b>: 확인하는 사이 저장 API가 같은 사진을 재처리(새 {@code variantKey})하거나 순서를
+ * 바꿀 수 있다. 그래서 엔티티를 더티 체킹으로 고치지 않고, 읽어 둔 {@code id + variantKey}가 아직 {@code PROCESSING}일
+ * 때만 상태 컬럼을 바꾸는 조건부 UPDATE({@link FeedImageRepository#transitionProcessingStatus})로 전이한다. 이전
+ * 세대의 확인 결과는 새 세대에 적용되지 않고, 그사이 바뀐 key·순서·블러 강도도 덮어쓰지 않는다. S3 확인은 DB
+ * 트랜잭션 밖에서 하고, 각 갱신은 짧은 자체 트랜잭션으로 실행해 저장 API를 오래 막지 않는다.
  *
  * <p>단일 서버 기준 단순 {@code @Scheduled}로 동작한다. 다중 인스턴스 중복 실행 방지(분산 락)는 v1 범위가
  * 아니다. (설계: {@code FEED_IMAGE_BLUR_PIPELINE.md} §8-1)
@@ -50,11 +55,10 @@ public class FeedImageProcessingStatusScheduler {
   private final S3StorageService storageService;
 
   /**
-   * {@code PROCESSING} 대상의 블러본 존재를 폴링해 상태를 전이시킨다. 변경된 엔티티는 트랜잭션 종료 시 더티
-   * 체킹으로 반영된다. 한 이미지의 S3 확인이 실패(404 외 오류)하더라도 나머지 이미지 처리는 계속한다.
+   * {@code PROCESSING} 대상의 블러본 존재를 폴링해 상태를 전이시킨다. 한 이미지의 S3 확인이 실패(404 외 오류)하더라도
+   * 나머지 이미지 처리는 계속한다.
    */
   @Scheduled(fixedRate = POLL_INTERVAL_MS)
-  @Transactional
   public void pollProcessingStatus() {
     LocalDateTime now = LocalDateTime.now();
     LocalDateTime checkThreshold = now.minusSeconds(INITIAL_DELAY_SECONDS);
@@ -69,14 +73,17 @@ public class FeedImageProcessingStatusScheduler {
   }
 
   private void transition(FeedImage image, LocalDateTime failureThreshold) {
+    FeedImageProcessingStatus next;
     try {
       if (storageService.existsVariant(image.getVariantKey())) {
-        image.markReady();
+        next = FeedImageProcessingStatus.READY;
       } else if (!image.getProcessingBaseTime().isAfter(failureThreshold)) {
         // 객체 없음 && 처리 시작 <= now - 5분 → 더 기다려도 생성될 가능성이 낮아 FAILED로 판정한다.
-        image.markFailed();
+        next = FeedImageProcessingStatus.FAILED;
+      } else {
+        // 객체 없음 && 5분 이내는 PROCESSING을 유지해 다음 주기에 재확인한다.
+        return;
       }
-      // 객체 없음 && 5분 이내는 PROCESSING을 유지해 다음 주기에 재확인한다.
     } catch (RuntimeException e) {
       // 404가 아닌 S3 오류(권한·일시 장애 등)는 존재 여부를 단정할 수 없으므로 상태를 바꾸지 않고 다음 주기로 넘긴다.
       // 전제: variants 버킷에 대한 s3:ListBucket 권한이 있어야 부재 객체가 404로 돌아와 FAILED 판정이 동작한다.
@@ -84,6 +91,14 @@ public class FeedImageProcessingStatusScheduler {
       // (운영 IAM 정책: FEED_IMAGE_BLUR_PIPELINE.md §8-5)
       log.warn("블러본 존재 확인 실패. feedImageId={}, variantKey={}",
           image.getId(), image.getVariantKey(), e);
+      return;
+    }
+
+    int updated = feedImageRepository.transitionProcessingStatus(
+        image.getId(), image.getVariantKey(), FeedImageProcessingStatus.PROCESSING, next);
+    if (updated == 0) {
+      log.info("확인 중 사진이 재처리·삭제되어 상태 전이를 건너뜀. feedImageId={}, variantKey={}, next={}",
+          image.getId(), image.getVariantKey(), next);
     }
   }
 }

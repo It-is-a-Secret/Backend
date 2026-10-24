@@ -274,10 +274,12 @@ F-3 이후 화면을 다시 연 상황입니다. F-4 응답의 `id`만 사용하
   - 새 블러본을 이전 블러본과 나란히 열어 강도가 실제로 다른지 확인합니다(50/80/100으로 바꿔 비교 권장).
 - **단순 재정렬만**: `[{ "id": 1, "displayOrder": 2 }, { "id": 2, "displayOrder": 1 }]`처럼 1↔2를 맞바꿔도
   유니크 제약 오류 없이 `200`이고 두 사진 모두 상태가 유지됩니다.
-- **blurLevel 생략·동일 값**: 현재 값을 유지하며 재처리하지 않습니다.
+- **blurLevel 생략·동일 값**: 현재 값을 유지하며 재처리하지 않습니다. 새 사진은 `blurLevel`을 생략하면 업로드 때 지정한 값이 기록됩니다.
 - **오류**
   - `id`와 `objectKey`를 둘 다 보내거나 둘 다 생략 → `400 FEED_IMAGE_400_INVALID_REFERENCE`
   - 같은 `id`·`objectKey`를 두 번 보냄 → `400 FEED_IMAGE_400_DUPLICATE_REFERENCE`
+  - 새 사진 `blurLevel`이 F-1 발급·업로드 때 값과 다름(예: 50으로 올리고 100으로 저장) → `400 FEED_IMAGE_400_BLUR_LEVEL_MISMATCH`
+  - 아직 업로드하지 않은 `objectKey` → `400 FEED_IMAGE_400_ORIGINAL_NOT_UPLOADED`
   - 다른 회원 사진의 `id`, 없는 `id` → `404 FEED_IMAGE_404_NOT_FOUND`(아무것도 바뀌지 않음)
   - 재처리용 S3 복사 실패(IAM 등) → `500 SERVER_ERROR_500_INTERNAL_SERVER_ERROR`(DB 변경 없음, 서버 로그 확인)
 
@@ -372,6 +374,8 @@ F-3 이후 화면을 다시 연 상황입니다. F-4 응답의 `id`만 사용하
 | 다른 회원 prefix·형식 위반 objectKey | 400 | `FEED_IMAGE_400_INVALID_OBJECT_KEY` |
 | 항목에 id·objectKey가 모두 없음/모두 있음 | 400 | `FEED_IMAGE_400_INVALID_REFERENCE` |
 | 같은 id·objectKey 중복 지정 | 400 | `FEED_IMAGE_400_DUPLICATE_REFERENCE` |
+| 새 사진 blurLevel이 업로드 값과 다름 | 400 | `FEED_IMAGE_400_BLUR_LEVEL_MISMATCH` |
+| 업로드 안 된 objectKey | 400 | `FEED_IMAGE_400_ORIGINAL_NOT_UPLOADED` |
 | 다른 회원 사진 id / 없는 id | 404 | `FEED_IMAGE_404_NOT_FOUND` |
 | 재블러용 S3 복사 실패 | 500 | `SERVER_ERROR_500_INTERNAL_SERVER_ERROR` |
 | 피드 없음(저장/본인 조회) / 미완·0장 공개 피드 | 404 | `FEED_404_NOT_FOUND` |

@@ -48,8 +48,8 @@ public record FeedImageSaveRequest(
    * @param objectKey 새 사진의 원본 key(#49 Presigned 발급 응답의 {@code originalKey}). 기존 사진이면 생략한다.
    * @param displayOrder 피드 내 노출 순서(1~5, 1-base). 한 요청 내 중복은 서비스에서 검증한다.
    * @param blurLevel 블러 강도(50~100). 기존 사진에서 생략하면 현재 값을 유지하고, 현재 값과 다르면 서버가
-   *     블러본을 다시 만든다. 새 사진에서 생략하면 {@link FeedImage#DEFAULT_BLUR_LEVEL}이 적용되며, Presigned
-   *     발급 때 지정한 값과 같아야 한다.
+   *     블러본을 다시 만든다. 새 사진은 실제 업로드된 원본의 메타데이터 값이 기록되며, 보낸다면 Presigned 발급 때
+   *     지정한 값과 같아야 한다(다르면 {@code FEED_IMAGE_400_BLUR_LEVEL_MISMATCH}).
    */
   @Schema(name = "FeedImageSaveItem",
       description = "피드 사진 저장 요청의 사진 한 장. 기존 사진은 id, 새 사진은 objectKey 중 정확히 하나로 식별한다.")
@@ -70,8 +70,8 @@ public record FeedImageSaveRequest(
       @Max(value = FeedImage.MAX_DISPLAY_ORDER, message = "노출 순서는 5 이하여야 합니다.")
       Integer displayOrder,
 
-      @Schema(description = "블러 강도(50~100). 기존 사진은 생략 시 현재 값 유지(바뀌면 서버가 블러본 재생성), "
-          + "새 사진은 생략 시 80.", example = "80")
+      @Schema(description = "블러 강도(50~100). 기존 사진은 생략 시 현재 값 유지(바뀌면 서버가 블러본 재생성). "
+          + "새 사진은 Presigned 발급 때 지정한 값이 적용되며, 보낸다면 그 값과 같아야 한다.", example = "80")
       @Min(value = FeedImage.MIN_BLUR_LEVEL, message = "블러 강도는 50 이상이어야 합니다.")
       @Max(value = FeedImage.MAX_BLUR_LEVEL, message = "블러 강도는 100 이하여야 합니다.")
       Integer blurLevel

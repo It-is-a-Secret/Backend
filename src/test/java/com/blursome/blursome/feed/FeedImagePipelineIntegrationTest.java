@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willAnswer;
 import static org.mockito.BDDMockito.willReturn;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -45,6 +46,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -53,8 +55,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.sql.DataSource;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -144,6 +148,20 @@ class FeedImagePipelineIntegrationTest {
   @MockitoBean
   private S3Client s3Client;
 
+  /** 업로드를 마친 원본 key별 blur-level 메타데이터. 등록하지 않은 원본은 기본값(80)으로 업로드된 것으로 본다. */
+  private final Map<String, String> uploadedBlurLevels = new HashMap<>();
+
+  /**
+   * 저장 API는 새 사진의 원본을 HeadObject로 확인하므로(#105), 기본으로 originals는 "업로드됨 + 등록한 blur-level",
+   * variants는 "블러본 존재"로 응답한다. 테스트가 {@code given(s3Client.headObject(...))}로 덮어쓸 때 인자 없이 한 번
+   * 호출되므로 {@code null} 요청도 처리한다.
+   */
+  @BeforeEach
+  void stubUploadedOriginals() {
+    willAnswer(invocation -> headResponse(invocation.getArgument(0)))
+        .given(s3Client).headObject(any(HeadObjectRequest.class));
+  }
+
   @Test
   @DisplayName("업로드 Presigned PUT → 메타데이터 저장 → 스케줄러 READY → 공개 피드 노출까지 종단으로 동작한다")
   void fullPipeline_uploadToReadyToPublicFeed() {
@@ -169,6 +187,8 @@ class FeedImagePipelineIntegrationTest {
     });
     String keyA = issued.images().get(0).originalKey();
     String keyB = issued.images().get(1).originalKey();
+    // F-2 업로드 결과: 1번은 blur-level 70으로 PUT됐다(나머지는 기본값 80).
+    uploadedBlurLevels.put(keyA, "70");
 
     // 발급된 PUT 서명을 검증한다: 모두 originals 버킷, 앞 두 장의 key/contentType/blur-level(1번 70·2번 기본값 80).
     ArgumentCaptor<PutObjectPresignRequest> putCaptor =
@@ -401,8 +421,15 @@ class FeedImagePipelineIntegrationTest {
     Long feedId = saveProcessingImages(memberId, "a.png", "b.jpg");
     markAllReady(feedId);
     List<FeedImage> before = feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(feedId);
-    given(s3Client.headObject(any(HeadObjectRequest.class)))
-        .willThrow((S3Exception) S3Exception.builder().statusCode(403).build());
+    String reprocessSource = before.get(1).getOriginalKey();
+    // 새 사진 원본 확인은 통과하고, 재블러 대상 원본 조회만 권한 오류로 실패시킨다.
+    willAnswer(invocation -> {
+      HeadObjectRequest head = invocation.getArgument(0);
+      if (head != null && reprocessSource.equals(head.key())) {
+        throw S3Exception.builder().statusCode(403).build();
+      }
+      return headResponse(head);
+    }).given(s3Client).headObject(any(HeadObjectRequest.class));
 
     assertThatThrownBy(() -> feedImageService.replaceImages(memberId, new FeedImageSaveRequest(List.of(
         FeedImageSaveRequest.Image.existing(before.get(1).getId(), 1, 60),
@@ -418,6 +445,63 @@ class FeedImagePipelineIntegrationTest {
                 FeedImageProcessingStatus.READY),
             tuple(before.get(1).getId(), before.get(1).getOriginalKey(), 80,
                 FeedImageProcessingStatus.READY));
+  }
+
+  @Test
+  @DisplayName("스케줄러가 블러본을 확인하는 사이 저장 API가 재블러·재정렬하면 이전 세대 결과로 새 세대나 순서를 덮어쓰지 않는다(#105)")
+  void scheduler_doesNotOverwriteImageChangedDuringCheck() {
+    Long memberId = persistMemberWithFeed();
+    Long feedId = saveProcessingImages(memberId, "a.png", "b.jpg");
+    backdateProcessingStart(feedId, LocalDateTime.now().minusMinutes(1));
+    List<FeedImage> before = feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(feedId);
+    FeedImage a = before.get(0);
+    FeedImage b = before.get(1);
+
+    // 스케줄러가 a의 이전 블러본을 HeadObject하는 순간, 저장 API가 a를 95로 재블러하고 a↔b 순서를 바꿔 커밋한다.
+    AtomicBoolean saveDone = new AtomicBoolean();
+    willAnswer(invocation -> {
+      HeadObjectRequest head = invocation.getArgument(0);
+      if (head != null && a.getVariantKey().equals(head.key()) && saveDone.compareAndSet(false, true)) {
+        feedImageService.replaceImages(memberId, new FeedImageSaveRequest(List.of(
+            FeedImageSaveRequest.Image.existing(b.getId(), 1, null),
+            FeedImageSaveRequest.Image.existing(a.getId(), 2, 95))));
+      }
+      return headResponse(head);
+    }).given(s3Client).headObject(any(HeadObjectRequest.class));
+
+    scheduler.pollProcessingStatus();
+
+    assertThat(saveDone).isTrue();
+    // a: 이전 블러본이 있다는 확인 결과는 새 세대에 적용되지 않는다. 재처리 결과(key·blur·순서·PROCESSING)가 그대로다.
+    FeedImage reloadedA = findImage(a.getId());
+    assertThat(reloadedA.getVariantKey()).isNotEqualTo(a.getVariantKey());
+    assertThat(reloadedA.getBlurLevel()).isEqualTo(95);
+    assertThat(reloadedA.getDisplayOrder()).isEqualTo(2);
+    assertThat(reloadedA.getProcessingStatus()).isEqualTo(FeedImageProcessingStatus.PROCESSING);
+    // b: 같은 세대라 READY로 전이되지만, 스케줄러가 읽어 둔 이전 순서(2)로 되돌리지 않는다.
+    FeedImage reloadedB = findImage(b.getId());
+    assertThat(reloadedB.getProcessingStatus()).isEqualTo(FeedImageProcessingStatus.READY);
+    assertThat(reloadedB.getDisplayOrder()).isEqualTo(1);
+    assertThat(reloadedB.getVariantKey()).isEqualTo(b.getVariantKey());
+  }
+
+  @Test
+  @DisplayName("새 사진의 blurLevel이 실제 업로드된 원본 메타데이터와 다르면 거부하고, 생략하면 업로드 값을 기록한다(#105)")
+  void save_verifiesUploadedBlurLevel() {
+    Long memberId = persistMemberWithFeed();
+    String mismatched = ownedKey(memberId, "a.jpg");
+    String omitted = ownedKey(memberId, "b.jpg");
+    uploadedBlurLevels.put(mismatched, "50");
+    uploadedBlurLevels.put(omitted, "60");
+
+    assertThatThrownBy(() -> feedImageService.replaceImages(memberId, new FeedImageSaveRequest(List.of(
+        FeedImageSaveRequest.Image.upload(mismatched, 1, 100)))))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "FEED_IMAGE_400_BLUR_LEVEL_MISMATCH");
+
+    FeedImageResponse saved = feedImageService.replaceImages(memberId, new FeedImageSaveRequest(List.of(
+        FeedImageSaveRequest.Image.upload(omitted, 1, null))));
+    assertThat(saved.images()).extracting(FeedImageResponse.Image::blurLevel).containsExactly(60);
   }
 
   @Test
@@ -540,6 +624,17 @@ class FeedImagePipelineIntegrationTest {
     new JdbcTemplate(dataSource).update(
         "UPDATE feed_image SET created_at = ? WHERE feed_id = ?",
         Timestamp.valueOf(createdAt), feedId);
+  }
+
+  /** originals는 업로드된 원본(등록한 blur-level, 기본 80), variants는 존재하는 블러본으로 응답한다. */
+  private HeadObjectResponse headResponse(HeadObjectRequest request) {
+    if (request == null || !s3Properties.originalsBucket().equals(request.bucket())) {
+      return HeadObjectResponse.builder().build();
+    }
+    return HeadObjectResponse.builder()
+        .contentType("image/jpeg")
+        .metadata(Map.of("blur-level", uploadedBlurLevels.getOrDefault(request.key(), "80")))
+        .build();
   }
 
   private FeedImage findImage(Long imageId) {
