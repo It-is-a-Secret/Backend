@@ -46,12 +46,17 @@ public class ReportService {
    * 신고자 수를 집계해 임계치별 제재를 적용한다: 채팅방 신고가 3명에 도달하면 해당 방을 동결
    * ({@code REPORTED})하고, 5명에 도달하면 대상 회원을 임시 정지({@code SUSPENDED})한다(#75).
    *
-   * @throws BaseException 자기 신고({@link ReportErrorCode#REPORT_SELF_NOT_ALLOWED}), 대상 없음
+   * @throws BaseException 신규 신고에서 받지 않는 사유({@link ReportErrorCode#REPORT_REASON_NOT_SELECTABLE}),
+   *     자기 신고({@link ReportErrorCode#REPORT_SELF_NOT_ALLOWED}), 대상 없음
    *     ({@link MemberErrorCode#MEMBER_NOT_FOUND}), 방 없음({@link ChatErrorCode#ROOM_NOT_FOUND}),
    *     중복 신고({@link ReportErrorCode#REPORT_ALREADY_EXISTS})
    */
   @Transactional
   public void report(Long reporterId, ReportRequest request) {
+    // 화면에서 빠진 사유(HATE_SPEECH·PHOTO_THEFT)는 과거 행 조회용으로만 남아 있어 신규 신고로 받지 않는다(#102).
+    if (!request.reason().isSelectable()) {
+      throw BaseException.from(ReportErrorCode.REPORT_REASON_NOT_SELECTABLE);
+    }
     if (reporterId.equals(request.targetMemberId())) {
       throw BaseException.from(ReportErrorCode.REPORT_SELF_NOT_ALLOWED);
     }

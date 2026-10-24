@@ -11,6 +11,9 @@ import com.blursome.blursome.report.domain.Report;
 import com.blursome.blursome.report.domain.ReportReason;
 import com.blursome.blursome.support.TestcontainersConfiguration;
 import java.time.LocalDateTime;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,6 +40,9 @@ class ReportRepositoryTest {
 
   @Autowired
   private TestEntityManager em;
+
+  @Autowired
+  private JdbcTemplate jdbcTemplate;
 
   private Member persistMember(String suffix) {
     Member member = Member.createOAuthMember(
@@ -82,5 +88,29 @@ class ReportRepositoryTest {
     assertThatThrownBy(() -> reportRepository.saveAndFlush(
         Report.create(reporter, target, room, ReportReason.ETC, null)))
         .isInstanceOf(DataIntegrityViolationException.class);
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @EnumSource(ReportReason.class)
+  @DisplayName("모든 사유 코드(신규·과거 포함)를 저장하고 다시 읽을 수 있다(#102)")
+  void everyReason_isStoredAndLoaded(ReportReason reason) {
+    Member target = persistMember("t");
+    Member reporter = persistMember("r");
+    Long id = reportRepository.saveAndFlush(
+        Report.create(reporter, target, null, reason, null)).getId();
+    em.clear();
+
+    assertThat(reportRepository.findById(id).orElseThrow().getReason()).isEqualTo(reason);
+  }
+
+  @Test
+  @DisplayName("reason 컬럼은 네이티브 enum이 아니라 VARCHAR라 사유 추가에 DDL 변경이 필요 없다(#102)")
+  void reasonColumn_isVarchar() {
+    String type = jdbcTemplate.queryForObject(
+        "select data_type from information_schema.columns "
+            + "where table_schema = database() and table_name = 'report' and column_name = 'reason'",
+        String.class);
+
+    assertThat(type).isEqualToIgnoringCase("varchar");
   }
 }
