@@ -53,6 +53,7 @@ class ChatRoomControllerTest {
 
   private static final long MEMBER_ID = 100L;
   private static final long ROOM_ID = 10L;
+  private static final long PARTNER_ID = 200L;
 
   @Autowired
   private MockMvc mockMvc;
@@ -93,6 +94,7 @@ class ChatRoomControllerTest {
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.data[0].roomId").value(ROOM_ID))
         .andExpect(jsonPath("$.data[0].progressStatus").value("MATCHED"))
+        .andExpect(jsonPath("$.data[0].partnerId").value(PARTNER_ID))
         .andExpect(jsonPath("$.data[0].partnerNickname").value("상대닉"))
         .andExpect(jsonPath("$.data[0].lastMessage.content").value("마지막 메시지"))
         .andExpect(jsonPath("$.data[0].lastMessage.type").value("TEXT"))
@@ -108,7 +110,8 @@ class ChatRoomControllerTest {
     mockMvc.perform(get("/api/chat/rooms/{roomId}", ROOM_ID))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.data.roomId").value(ROOM_ID))
-        .andExpect(jsonPath("$.data.progressStatus").value("MATCHED"));
+        .andExpect(jsonPath("$.data.progressStatus").value("MATCHED"))
+        .andExpect(jsonPath("$.data.partnerId").value(PARTNER_ID));
   }
 
   @Test
@@ -194,7 +197,7 @@ class ChatRoomControllerTest {
     ChatMessageResponse lastMessage = new ChatMessageResponse(
         99L, ROOM_ID, 200L, ChatMessageType.TEXT, "마지막 메시지", LocalDateTime.now());
     return new ChatRoomSummaryResponse(
-        ROOM_ID, ChatRoomStatus.ACTIVE, progressStatus, "상대닉", 99L, lastMessage, 90L, 2L);
+        ROOM_ID, ChatRoomStatus.ACTIVE, progressStatus, PARTNER_ID, "상대닉", 99L, lastMessage, 90L, 2L);
   }
 
   /**

@@ -95,6 +95,9 @@ class ChatLeaveScenarioIntegrationTest {
 
     ChatRoomSummaryResponse summary = onlyRoomOf(f.bId(), f.roomId());
     assertThat(summary.roomStatus()).isEqualTo(ChatRoomStatus.CLOSED);
+    // 상대가 나가도 신고·차단 대상 지정을 위해 상대 회원 id는 계속 내려간다(#100).
+    assertThat(summary.partnerId()).isEqualTo(f.aId());
+    assertThat(chatRoomService.getRoom(f.roomId(), f.bId()).partnerId()).isEqualTo(f.aId());
     assertThat(summary.partnerNickname()).isEqualTo(f.aNick());
     assertThat(summary.progressStatus()).isEqualTo(ChatRoomProgressStatus.PHOTO_REVEAL_STEP_1);
 

@@ -128,6 +128,7 @@ public class ChatRoomService {
           RoomPartnerInfo partner = partnerByRoom.get(room.getId());
           return ChatRoomSummaryResponse.of(
               room,
+              partner == null ? null : partner.getPartnerId(),
               partner == null ? null : partner.getPartnerNickname(),
               lastMessage,
               partner == null ? null : partner.getLastReadMessageId(),
@@ -153,7 +154,7 @@ public class ChatRoomService {
   }
 
   /**
-   * 방 단건을 조회한다. 가시성·권한 검증 후 단건 안읽음 수·마지막 메시지 미리보기·상대 정보(닉네임·읽음 커서)를 계산한다.
+   * 방 단건을 조회한다. 가시성·권한 검증 후 단건 안읽음 수·마지막 메시지 미리보기·상대 정보(회원 id·닉네임·읽음 커서)를 계산한다.
    */
   public ChatRoomSummaryResponse getRoom(Long roomId, Long memberId) {
     ChatRoomMember membership = membershipReader.getVisibleMembership(roomId, memberId);
@@ -162,8 +163,8 @@ public class ChatRoomService {
         roomId, membership.getLastReadMessageId(), memberId);
     ChatMessageResponse lastMessage = chatMessageService.getLastMessage(room.getLastMessageId());
     ChatRoomMember partner = findOtherMembership(roomId, membership);
-    return ChatRoomSummaryResponse.of(room, partner.getMember().getNickName(), lastMessage,
-        partner.getLastReadMessageId(), unreadCount);
+    return ChatRoomSummaryResponse.of(room, partner.getMember().getId(),
+        partner.getMember().getNickName(), lastMessage, partner.getLastReadMessageId(), unreadCount);
   }
 
   /**

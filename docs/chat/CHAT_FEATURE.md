@@ -429,6 +429,9 @@ DiscoveryService(ChatStartService).startChat            ChatRoomService.openRoom
   `ChatRoomSummaryResponse.partnerLastReadMessageId`(상대 `lastReadMessageId`)를 함께 내려주며, 클라이언트는
   `내가 보낸 메시지 id <= partnerLastReadMessageId`인 메시지를 "읽음"으로 표시한다. 상대가 아직 아무것도 읽지 않았으면 null.
   목록 조회는 상대 정보(닉네임·읽음 커서)를 단일 배치 쿼리(`findPartnerInfos`)로 모아 N+1을 피한다.
+- ✅ **상대 회원 id**(이슈 #100): 단건·목록 조회 응답에 1:1 상대의 회원 id(`ChatRoomSummaryResponse.partnerId`)를 내려준다.
+  신고(`POST /api/reports`)·차단 요청의 `targetMemberId`로 그대로 쓴다. 메시지 `senderId`에 의존하지 않으므로 상대가 메시지를
+  한 번도 보내지 않은 방, 상대가 나간 방에서도 신고·차단할 수 있다. 목록은 `findPartnerInfos`, 단건은 상대 참여 행에서 가져온다.
 - ✅ **상대 닉네임**: 단건·목록 조회 응답에 1:1 상대의 닉네임(`ChatRoomSummaryResponse.partnerNickname`)을 함께 내려준다.
   목록은 위 배치 쿼리(`findPartnerInfos`)로, 단건은 상대 참여 행에서 가져온다(온보딩 전이면 null).
 - ✅ **실시간 읽음 확인**: `markAsRead` 성공 시 STOMP 컨트롤러가 `/topic/rooms/{roomId}`로 `READ` 이벤트
