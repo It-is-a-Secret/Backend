@@ -1,8 +1,10 @@
 package com.blursome.blursome.feed.controller;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -30,6 +32,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -176,6 +179,76 @@ class FeedImageControllerTest {
         .andExpect(jsonPath("$.data.images[0].displayOrder").value(1))
         .andExpect(jsonPath("$.data.images[0].variantUrl").value("https://cdn/variants/100/a.jpg"))
         .andExpect(jsonPath("$.data.images[0].processingStatus").value("PROCESSING"));
+  }
+
+  @Test
+  @DisplayName("기존 사진 id와 새 사진 objectKey를 섞은 저장 요청을 그대로 서비스에 전달한다(#105)")
+  void handleMixedSaveRequest() throws Exception {
+    given(feedImageService.replaceImages(eq(MEMBER_ID), any(FeedImageSaveRequest.class)))
+        .willReturn(new FeedImageResponse(List.of()));
+
+    String body = """
+        {"images":[
+          {"id":10,"displayOrder":1},
+          {"id":12,"displayOrder":2,"blurLevel":90},
+          {"objectKey":"originals/100/11111111-1111-1111-1111-111111111111.png","displayOrder":3}
+        ]}
+        """;
+
+    mockMvc.perform(post("/api/feeds/me/images")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isOk());
+
+    ArgumentCaptor<FeedImageSaveRequest> captor = ArgumentCaptor.forClass(FeedImageSaveRequest.class);
+    verify(feedImageService).replaceImages(eq(MEMBER_ID), captor.capture());
+    assertThat(captor.getValue().images()).containsExactly(
+        FeedImageSaveRequest.Image.existing(10L, 1, null),
+        FeedImageSaveRequest.Image.existing(12L, 2, 90),
+        FeedImageSaveRequest.Image.upload(
+            "originals/100/11111111-1111-1111-1111-111111111111.png", 3, null));
+  }
+
+  @Test
+  @DisplayName("id와 objectKey 조합이 잘못되면 서비스가 던진 FEED_IMAGE_400_INVALID_REFERENCE로 400을 반환한다")
+  void handleInvalidReference() throws Exception {
+    given(feedImageService.replaceImages(eq(MEMBER_ID), any(FeedImageSaveRequest.class)))
+        .willThrow(BaseException.from(FeedImageErrorCode.INVALID_REFERENCE));
+
+    mockMvc.perform(post("/api/feeds/me/images")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"images\":[{\"displayOrder\":1}]}"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("FEED_IMAGE_400_INVALID_REFERENCE"));
+  }
+
+  @Test
+  @DisplayName("다른 회원 사진 id면 서비스가 던진 FEED_IMAGE_404_NOT_FOUND로 404를 반환한다")
+  void handleForeignImageId() throws Exception {
+    given(feedImageService.replaceImages(eq(MEMBER_ID), any(FeedImageSaveRequest.class)))
+        .willThrow(BaseException.from(FeedImageErrorCode.NOT_FOUND));
+
+    mockMvc.perform(post("/api/feeds/me/images")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"images\":[{\"id\":999,\"displayOrder\":1}]}"))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.code").value("FEED_IMAGE_404_NOT_FOUND"));
+  }
+
+  @Test
+  @DisplayName("사진 id가 양수가 아니거나 blurLevel이 범위를 벗어나면 400을 반환한다")
+  void handleInvalidIdOrBlurLevel() throws Exception {
+    mockMvc.perform(post("/api/feeds/me/images")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"images\":[{\"id\":0,\"displayOrder\":1}]}"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("CLIENT_ERROR_400_METHOD_ARGUMENT_NOT_VALID"));
+
+    mockMvc.perform(post("/api/feeds/me/images")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"images\":[{\"id\":10,\"displayOrder\":1,\"blurLevel\":101}]}"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("CLIENT_ERROR_400_METHOD_ARGUMENT_NOT_VALID"));
   }
 
   @Test

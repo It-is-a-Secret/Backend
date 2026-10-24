@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 
 import com.blursome.blursome.global.storage.S3StorageService.PresignedUpload;
 import java.net.URI;
@@ -22,9 +24,11 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import software.amazon.awssdk.http.SdkHttpFullRequest;
 import software.amazon.awssdk.http.SdkHttpMethod;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.MetadataDirective;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
@@ -145,6 +149,48 @@ class S3StorageServiceTest {
 
     assertThatThrownBy(() -> s3StorageService.existsVariant(VARIANT_KEY))
         .isInstanceOf(S3Exception.class);
+  }
+
+  @Test
+  @DisplayName("reprocessOriginal은 originals 버킷 안에서 Content-Type을 유지하고 blur-level만 바꿔 새 key로 복사한다")
+  void reprocessOriginal_copiesWithReplacedBlurLevel() {
+    given(properties.originalsBucket()).willReturn(ORIGINALS_BUCKET);
+    given(s3Client.headObject(any(HeadObjectRequest.class))).willReturn(HeadObjectResponse.builder()
+        .contentType("image/png")
+        .metadata(Map.of("blur-level", "80", "uploaded-by", "frontend"))
+        .build());
+
+    s3StorageService.reprocessOriginal(OBJECT_KEY, "originals/100/new.png", 95);
+
+    ArgumentCaptor<HeadObjectRequest> headCaptor = ArgumentCaptor.forClass(HeadObjectRequest.class);
+    verify(s3Client).headObject(headCaptor.capture());
+    assertThat(headCaptor.getValue().bucket()).isEqualTo(ORIGINALS_BUCKET);
+    assertThat(headCaptor.getValue().key()).isEqualTo(OBJECT_KEY);
+
+    ArgumentCaptor<CopyObjectRequest> copyCaptor = ArgumentCaptor.forClass(CopyObjectRequest.class);
+    verify(s3Client).copyObject(copyCaptor.capture());
+    CopyObjectRequest copy = copyCaptor.getValue();
+    assertThat(copy.sourceBucket()).isEqualTo(ORIGINALS_BUCKET);
+    assertThat(copy.sourceKey()).isEqualTo(OBJECT_KEY);
+    assertThat(copy.destinationBucket()).isEqualTo(ORIGINALS_BUCKET);
+    assertThat(copy.destinationKey()).isEqualTo("originals/100/new.png");
+    assertThat(copy.metadataDirective()).isEqualTo(MetadataDirective.REPLACE);
+    assertThat(copy.contentType()).isEqualTo("image/png");
+    assertThat(copy.metadata())
+        .containsEntry("blur-level", "95")
+        .containsEntry("uploaded-by", "frontend");
+  }
+
+  @Test
+  @DisplayName("reprocessOriginal은 원본 조회가 실패하면 복사하지 않고 예외를 전파한다")
+  void reprocessOriginal_propagates_whenHeadFails() {
+    given(properties.originalsBucket()).willReturn(ORIGINALS_BUCKET);
+    given(s3Client.headObject(any(HeadObjectRequest.class)))
+        .willThrow((S3Exception) S3Exception.builder().statusCode(404).build());
+
+    assertThatThrownBy(() -> s3StorageService.reprocessOriginal(OBJECT_KEY, "originals/100/new.png", 95))
+        .isInstanceOf(S3Exception.class);
+    verify(s3Client, never()).copyObject(any(CopyObjectRequest.class));
   }
 
   private PresignedPutObjectRequest presignedWithUrl(String url) {

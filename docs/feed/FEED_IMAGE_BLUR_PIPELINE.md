@@ -76,11 +76,11 @@ CSS/canvas 블러는 클라이언트 화면 효과일 뿐이라 DevTools로 `fil
                     │
                     ▼
 ③-b 상태 폴링 (백엔드 스케줄러, B 방식 유지)
-   @Scheduled 1분마다, status = PROCESSING 행 중
-   created_at <= now - 30초 인 것만, created_at ASC, 최대 100개
+   @Scheduled 1분마다, status = PROCESSING 행 중  (started = COALESCE(processing_started_at, created_at), #105)
+   started <= now - 30초 인 것만, started ASC, 최대 100개
    → 각 행의 variant_key 에 대해 variants 버킷 HeadObject
    ├── 200 OK                       → status = READY
-   └── 404 && created_at <= now-5분 → status = FAILED
+   └── 404 && started <= now-5분 → status = FAILED
    (404 + 5분 이내 → 그대로 PROCESSING 유지, 다음 주기 재확인)
 
 ④-a 피드 조회 (항상 블러본)
@@ -235,12 +235,12 @@ public enum FeedImageProcessingStatus {
     FAILED
 }
 // PROCESSING → READY   (HeadObject 성공)
-// PROCESSING → FAILED  (created_at + 5분 초과까지 미확인)
+// PROCESSING → FAILED  (처리 시작 + 5분 초과까지 미확인)
 // FAILED → 재업로드      (사용자가 새 이미지 업로드)
 ```
 
-> **왜 횟수(`check_count`)가 아니라 시간(`created_at + 5분`)인가**
-> 횟수 기반은 스케줄러가 잠깐 죽으면 카운트가 멈춰 판정이 지연된다. 시간 기반은 스케줄러가 죽었다 다시 떠도 `created_at`만 보고 즉시 `FAILED` 판정이 가능해 더 안전하다. 별도 카운터 컬럼도 불필요하다.
+> **왜 횟수(`check_count`)가 아니라 시간(처리 시작 + 5분)인가**
+> 횟수 기반은 스케줄러가 잠깐 죽으면 카운트가 멈춰 판정이 지연된다. 시간 기반은 스케줄러가 죽었다 다시 떠도 시작 시각만 보고 즉시 `FAILED` 판정이 가능해 더 안전하다. 별도 카운터 컬럼도 불필요하다.
 
 **스케줄러 사양 (✅ 확정)**
 
@@ -248,12 +248,12 @@ public enum FeedImageProcessingStatus {
 |---|---|
 | 실행 주기 | **1분마다** (`@Scheduled`) |
 | 확인 대상 | `processing_status = PROCESSING` |
-| 최초 확인 지연 | `created_at <= now - 30초` (생성 직후 Lambda 미완료 구간 폴링 낭비 방지) |
+| 최초 확인 지연 | `started <= now - 30초` (생성 직후 Lambda 미완료 구간 폴링 낭비 방지) |
 | 한 번에 확인할 개수 | **100개** |
-| 정렬 | `created_at ASC` (오래된 것부터) |
+| 정렬 | `started ASC` (오래된 것부터) |
 | 존재 확인 | `variant_key`에 대해 variants 버킷 `HeadObject` |
 | `READY` 조건 | `HeadObject` 200 성공 |
-| `FAILED` 조건 | `HeadObject` 실패 && `created_at <= now - 5분` |
+| `FAILED` 조건 | `HeadObject` 실패 && `started <= now - 5분` |
 | 5분 이내 미확인 | `PROCESSING` 유지, 다음 주기 재확인 |
 | 중복 실행 방지 | 단일 서버 기준 단순 `@Scheduled` (다중 인스턴스 전환 시 락 도입 검토) |
 
@@ -270,23 +270,40 @@ public enum FeedImageProcessingStatus {
 
 Lambda는 S3 `ObjectCreated` 이벤트로 비동기 실행되므로, 사용자가 업로드 직후 사진 목록을 다시 저장하면 이전 원본에 대한 Lambda가 뒤늦게 완료될 수 있다. 이 경우 이전 variant 객체가 생성되더라도 해당 `FeedImage`가 DB 현재 목록에 없으면 피드 응답에 사용하지 않는다. **현재 피드 이미지의 기준은 S3 객체 존재 여부가 아니라 DB의 `FeedImage` 목록이다.**
 
-- full-replace는 유지한다.
-- 새 업로드는 항상 **새 `original_key` / `variant_key`** 를 사용한다. 기존 key에 원본·블러본을 덮어쓰지 않는다.
+- full-replace는 유지한다. 요청 항목은 기존 사진 `id` 또는 새 사진 `objectKey`로 식별하며, 현재 목록과 비교해 유지·삭제·추가·재정렬을 반영한다(#105, 요청 형식은 `FEED_IMAGE_DOMAIN.md` §4-3). 유지한 사진은 ID·key·처리 상태를 그대로 둔다.
+- 새 업로드와 blur 재처리(§8-3)는 항상 **새 `original_key` / `variant_key`** 를 사용한다. 기존 key에 원본·블러본을 덮어쓰지 않는다.
 - full-replace로 제거된 이미지의 S3 객체는 **즉시 삭제하지 않는다**. 제거된 originals/variants 객체는 고아 객체로 보고 S3 Lifecycle 또는 cleanup batch로 정리한다(§8-4).
 - Lambda가 늦게 완료해 이전 variant를 생성하더라도 DB에서 참조하지 않으므로 무시한다.
 - 공개 피드는 현재 DB 목록의 모든 이미지가 `READY`일 때만 노출한다(§8-1과 동일 게이트).
 
-### 8-3. blur_level 변경 시 재생성 정책 (✅ 확정)
+### 8-3. blur_level 변경 시 재생성 정책 (✅ 확정, #105로 변경)
 
 `blur_level`은 Lambda가 블러본을 생성할 때 쓰는 처리 파라미터로, 원본 업로드 시 `x-amz-meta-blur-level` 메타데이터로 S3 객체에 고정되어 Lambda에 전달된다.
 
-**v1은 기존 사진의 `blur_level`만 단독 변경하는 기능을 지원하지 않는다.** 변경하려면 사용자가 해당 사진을 새로 업로드해야 한다.
+**기존 사진의 `blur_level`을 바꿔 저장하면 서버가 블러본을 다시 만든다(copy-on-reprocess).** 프론트는 저장 API에 해당 사진의 `id`와 새 `blurLevel`을 보내기만 하면 되고, **별도 재처리 API나 재업로드는 필요 없다.**
 
-> **이유**: 기존 원본의 `blur_level`만 DB에서 바꿔도 S3 `ObjectCreated` 이벤트가 재발생하지 않아 Lambda가 자동 재실행되지 않는다. 재생성을 지원하려면 백엔드의 Lambda 직접 호출, SQS 재처리, copy-object 기반 이벤트 재발생 등 추가 구조가 필요하다. v1에서는 구현 난이도 대비 이득이 작아 도입하지 않는다.
+> **이전 정책(v1)**: DB의 `blur_level`만 바꾸면 S3 `ObjectCreated` 이벤트가 재발생하지 않아 Lambda가 실행되지 않으므로, 변경은 새 업로드로만 처리했다. #105에서 copy-object 기반 이벤트 재발생으로 바꿨다.
 
-- `blur_level` 단독 수정 API는 제공하지 않는다.
-- `blur_level` 변경은 새 이미지 업로드로 처리하며, 새 `original_key` / `variant_key`를 발급한다(기존 객체 비덮어쓰기).
-- 기존 이미지는 full-replace 과정에서 DB 목록에서 제거되고, 제거된 S3 객체는 cleanup 대상으로 둔다(§8-4).
+**동작**
+
+1. 저장 요청에서 기존 사진의 `blurLevel`이 현재 값과 다르면(생략은 현재 값 유지) 재처리 대상으로 본다. 같으면 아무것도 하지 않는다.
+2. 기존 원본의 확장자를 유지한 새 key `originals/{memberId}/{새 uuid}.{ext}`를 만든다. 대응 블러본 key `variants/{memberId}/{새 uuid}.jpg`도 새로 정해진다.
+3. 원본 `HeadObject`로 Content-Type·사용자 메타데이터를 읽고, originals 버킷 안에서 server-side `CopyObject`를 수행한다. 메타데이터 지시자는 `REPLACE`, `blur-level`만 새 값으로 바꾸고 Content-Type은 유지한다. 원본 바이트는 애플리케이션 서버를 거치지 않는다.
+4. 새 객체의 `ObjectCreated:Copy` 이벤트가 Lambda를 실행해 새 강도로 새 블러본을 만든다(알림 이벤트가 `s3:ObjectCreated:*`여야 한다, §8-5).
+5. 같은 `FeedImage` 행(ID 유지)의 `original_key`·`variant_key`·`blur_level`을 새 값으로 바꾸고 `PROCESSING`, `processing_started_at = now`로 되돌린다. 응답은 새 `variantUrl`과 `PROCESSING`이다. 스케줄러가 새 블러본을 확인하면 `READY`가 된다.
+
+**기존 key에 덮어쓰지 않는 이유**
+
+- 스케줄러가 이전 블러본의 존재를 보고 새 처리 완료로 잘못 판정할 수 있다.
+- 같은 URL을 쓰는 브라우저/CDN 캐시가 이전 블러본을 계속 보여줄 수 있다.
+- 재처리가 실패하면 기존 정상 블러본까지 잃는다.
+
+**실패·정리**
+
+- S3 조회·복사가 실패하면 DB를 바꾸지 않고 500으로 거부한다(서버 로그에 member/image/key 기록). 기존 행·URL·상태가 그대로 남는다.
+- 복사 성공 후 DB가 롤백되면 새 객체는 DB가 참조하지 않는 고아 객체로 남는다. 이전 original/variant도 즉시 삭제하지 않는다. 둘 다 cleanup 대상이다(§8-4).
+- 재처리 시작 시각을 `processing_started_at`으로 따로 추적하므로, 오래된 사진도 재처리 직후 `created_at` 때문에 `FAILED`가 되지 않는다(§8-1).
+- 기존 사진의 원본 key는 응답에 노출하지 않는다. 프론트는 `id`로만 기존 사진을 가리킨다.
 
 ### 8-4. S3 Lifecycle / 고아 객체 정리 (✅ v1 범위 확정)
 
@@ -305,13 +322,13 @@ Lambda는 S3 `ObjectCreated` 이벤트로 비동기 실행되므로, 사용자�
 | Lambda 런타임 | **Python 3.x + Pillow** |
 | 배포 방식 | **zip + Lambda Layer** (컨테이너 이미지 미사용) |
 | VPC 연결 | **하지 않음** (NAT Gateway 회피, S3만 IAM 접근) |
-| 트리거 | S3 `ObjectCreated` |
+| 트리거 | S3 `s3:ObjectCreated:*` + prefix `originals/` (PUT 업로드와 blur 재처리의 `ObjectCreated:Copy` 모두 포함, #105) |
 | Lambda 역할 | originals 객체 읽기 → variants 객체 쓰기 |
 | 블러 처리 | ① 작게 다운스케일 → ② Gaussian Blur(radius = blur_level 반영) → ③ 목표 크기로 업스케일 → ④ jpg 저장 |
 | `blur_level` 범위 | **50 ~ 100 정수**, 기본값 **80** (50=최소 허용 블러, 100=최강). 백엔드 DTO에서 50~100 강제. 정확한 수치는 샘플 이미지 테스트 후 보정 |
 | Presigned GET 만료 | **5분**. 대상=originals 원본. 채팅방 참여자 + progressStatus 공개 장수 충족 시 발급, 재조회 시 재발급 |
 | AWS 자격증명 | 운영 서버가 **access key / secret key를 `.env`로 보유**(구현 단순화 목적). IAM 역할 미사용 |
-| 운영 서버 IAM 권한 | originals: `s3:PutObject` + `s3:GetObject` (`/*`) · variants: 객체 `s3:GetObject` (`/*`) + **버킷 `s3:ListBucket`** (버킷 ARN). `ListBucket`은 `HeadObject`가 부재 객체를 404로 받기 위함 — **미부여 시 403으로 가려져 `PROCESSING` 고착**(§8-1·§5). 이 ListBucket은 백엔드 IAM에만 부여하며 퍼블릭/버킷 정책의 "ListBucket 비공개"와 별개다 |
+| 운영 서버 IAM 권한 | originals: `s3:PutObject` + `s3:GetObject` (`/*`) · variants: 객체 `s3:GetObject` (`/*`) + **버킷 `s3:ListBucket`** (버킷 ARN). originals의 `GetObject`·`PutObject`는 blur 재처리(#105)의 `HeadObject`·`CopyObject`(같은 버킷 내 복사)에도 쓰인다. `ListBucket`은 `HeadObject`가 부재 객체를 404로 받기 위함 — **미부여 시 403으로 가려져 `PROCESSING` 고착**(§8-1·§5). 이 ListBucket은 백엔드 IAM에만 부여하며 퍼블릭/버킷 정책의 "ListBucket 비공개"와 별개다 |
 
 ---
 

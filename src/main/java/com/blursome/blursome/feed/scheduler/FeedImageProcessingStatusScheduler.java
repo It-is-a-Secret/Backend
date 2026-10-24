@@ -9,6 +9,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Limit;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -18,11 +19,13 @@ import org.springframework.transaction.annotation.Transactional;
  * 폴링해 {@link FeedImage#getProcessingStatus()}를 전이시킨다.
  *
  * <p>v1은 SQS/DLQ 없이 시간 기반으로 {@code FAILED}를 판정한다. 1분 주기로 {@code PROCESSING} 상태이면서
- * 생성된 지 {@value #INITIAL_DELAY_SECONDS}초가 지난 이미지를 오래된 순으로 최대 100개 확인한다.
+ * 처리를 시작한 지 {@value #INITIAL_DELAY_SECONDS}초가 지난 이미지를 오래된 순으로 최대 100개 확인한다.
+ * 처리 시작 시각은 {@link FeedImage#getProcessingBaseTime()}으로, blur 재처리(#105)로 다시 시작한 행도
+ * 재처리 시점부터 잰다.
  *
  * <ul>
  *   <li>{@code HeadObject} 성공 → {@link FeedImage#markReady()}</li>
- *   <li>객체 없음(404) && {@code created_at <= now - 5분} → {@link FeedImage#markFailed()}</li>
+ *   <li>객체 없음(404) && 처리 시작 {@code <= now - 5분} → {@link FeedImage#markFailed()}</li>
  *   <li>객체 없음(404) && 5분 이내 → {@code PROCESSING} 유지, 다음 주기 재확인</li>
  * </ul>
  *
@@ -40,6 +43,8 @@ public class FeedImageProcessingStatusScheduler {
   private static final Duration FAILURE_TIMEOUT = Duration.ofMinutes(5);
   /** 실행 주기(밀리초). 1분마다 폴링한다. */
   private static final long POLL_INTERVAL_MS = 60_000;
+  /** 한 주기에 확인할 최대 이미지 수. */
+  private static final Limit BATCH_LIMIT = Limit.of(100);
 
   private final FeedImageRepository feedImageRepository;
   private final S3StorageService storageService;
@@ -55,9 +60,8 @@ public class FeedImageProcessingStatusScheduler {
     LocalDateTime checkThreshold = now.minusSeconds(INITIAL_DELAY_SECONDS);
     LocalDateTime failureThreshold = now.minus(FAILURE_TIMEOUT);
 
-    List<FeedImage> targets =
-        feedImageRepository.findTop100ByProcessingStatusAndCreatedAtLessThanEqualOrderByCreatedAtAsc(
-            FeedImageProcessingStatus.PROCESSING, checkThreshold);
+    List<FeedImage> targets = feedImageRepository.findPollingTargets(
+        FeedImageProcessingStatus.PROCESSING, checkThreshold, BATCH_LIMIT);
 
     for (FeedImage image : targets) {
       transition(image, failureThreshold);
@@ -68,8 +72,8 @@ public class FeedImageProcessingStatusScheduler {
     try {
       if (storageService.existsVariant(image.getVariantKey())) {
         image.markReady();
-      } else if (!image.getCreatedAt().isAfter(failureThreshold)) {
-        // 객체 없음 && created_at <= now - 5분 → 더 기다려도 생성될 가능성이 낮아 FAILED로 판정한다.
+      } else if (!image.getProcessingBaseTime().isAfter(failureThreshold)) {
+        // 객체 없음 && 처리 시작 <= now - 5분 → 더 기다려도 생성될 가능성이 낮아 FAILED로 판정한다.
         image.markFailed();
       }
       // 객체 없음 && 5분 이내는 PROCESSING을 유지해 다음 주기에 재확인한다.

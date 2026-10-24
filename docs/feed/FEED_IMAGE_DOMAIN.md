@@ -63,9 +63,10 @@ BlurSome의 피드 이미지(`FeedImage`) 도메인을 정의합니다. 회원�
 | `variantKey` | `String`, `nullable=false`, len 512, col `variant_key` | **공개** variants 버킷의 블러본 객체 key. 피드 노출 URL은 `baseUrl + variant_key`로 조립 |
 | `blurLevel` | `Integer`, `nullable=false`, col `blur_level` | Lambda 블러 강도 지정값 (**50 ~ 100**, 기본 80) |
 | `processingStatus` | `FeedImageProcessingStatus` enum, `nullable=false`, col `processing_status` | 블러본 생성 상태: `PROCESSING` → `READY` / `FAILED` |
+| `processingStartedAt` | `LocalDateTime`, **nullable**, col `processing_started_at` | 현재 블러본 생성을 시작한 시각(#105). 신규 저장·blur 재처리 때 갱신. 스케줄러의 30초 지연·5분 타임아웃 기준. 컬럼 도입 전 행은 `NULL`이며 `created_at`으로 대체 |
 | `createdAt`/`updatedAt` | `BaseEntity` | — |
 
-> **`nullable=false` 이유**: `FeedImage`는 프론트가 원본 S3 업로드를 마치고 메타데이터 저장을 요청한 시점에만 생성된다. 이때 `original_key`는 업로드 대상 key이고, `variant_key`는 원본 uuid 기반 **결정론적 규칙으로 계산**되며, `blur_level`은 요청에 포함되고, `processing_status`는 `PROCESSING`으로 시작하므로 모든 컬럼이 항상 값을 갖는다.
+> **`nullable=false` 이유**: `FeedImage`는 프론트가 원본 S3 업로드를 마치고 메타데이터 저장을 요청한 시점에만 생성된다. 이때 `original_key`는 업로드 대상 key이고, `variant_key`는 원본 uuid 기반 **결정론적 규칙으로 계산**되며, `blur_level`은 요청에 포함되고, `processing_status`는 `PROCESSING`으로 시작하므로 모든 컬럼이 항상 값을 갖는다. 예외는 `processing_started_at`으로, `ddl-auto: update`로 기존 행이 있는 테이블에 추가되므로 nullable로 둔다(§2-5 마이그레이션 참고).
 >
 > ⚠️ **`variant_key`가 non-null이라고 해서 블러본 객체가 S3에 존재함을 보장하지는 않는다.** key 문자열은 결정론적이라 즉시 알 수 있으나, 실제 블러본은 Lambda가 비동기로 생성한다. 이 미생성 윈도는 `processing_status` 컬럼으로 추적한다(§2-5).
 
@@ -101,29 +102,38 @@ BlurSome의 피드 이미지(`FeedImage`) 도메인을 정의합니다. 회원�
 public enum FeedImageProcessingStatus {
     PROCESSING,   // 메타데이터 저장 직후 기본값. 블러본 미확인
     READY,        // HeadObject 200 — 블러본 존재 확인, 공개 노출 가능
-    FAILED        // created_at + 5분 초과까지 블러본 미확인
+    FAILED        // 처리 시작 + 5분 초과까지 블러본 미확인
 }
 ```
 
-**라이프사이클 (시간 기반 판정)**
+**라이프사이클 (시간 기반 판정)** — 아래 `started`는 `COALESCE(processing_started_at, created_at)`이다.
 
 ```
-③ 메타데이터 저장        processing_status = PROCESSING
+③ 메타데이터 저장 / blur 재처리   processing_status = PROCESSING, processing_started_at = now
         │
         ▼  (@Scheduled 1분마다, PROCESSING 행 점검)
-   created_at <= now - 30초 인 행만, created_at ASC, 최대 100개
+   started <= now - 30초 인 행만, started ASC, 최대 100개
    → variant_key 에 HeadObject
-        ├── 200 OK                         → READY
-        └── 실패 && created_at <= now - 5분 → FAILED
+        ├── 200 OK                      → READY
+        └── 실패 && started <= now - 5분 → FAILED
         (실패 && 5분 이내 → PROCESSING 유지, 다음 주기 재확인)
 ```
 
-**스케줄러 사양**: 주기 1분 · 대상 `processing_status = PROCESSING` · 최초 확인 지연 `created_at <= now-30초` · 1회 최대 100개 · 정렬 `created_at ASC` · `READY` 조건 `HeadObject` 성공 · `FAILED` 조건 `HeadObject` 실패 && `created_at <= now-5분` · 중복 실행 방지는 단일 서버 기준 단순 `@Scheduled`.
+**스케줄러 사양**: 주기 1분 · 대상 `processing_status = PROCESSING` · 최초 확인 지연 `started <= now-30초` · 1회 최대 100개 · 정렬 `started ASC` · `READY` 조건 `HeadObject` 성공 · `FAILED` 조건 `HeadObject` 실패 && `started <= now-5분` · 중복 실행 방지는 단일 서버 기준 단순 `@Scheduled`.
 
-> **시간 기반(`created_at`)을 쓰는 이유**: 횟수(`check_count`) 기반은 스케줄러가 죽으면 카운트가 멈춰 판정이 지연되지만, 시간 기반은 스케줄러가 재시작돼도 `created_at`만 보고 즉시 `FAILED`를 판정할 수 있어 더 안전하다. 별도 카운터 컬럼을 두지 않는다.
+> **시간 기반을 쓰는 이유**: 횟수(`check_count`) 기반은 스케줄러가 죽으면 카운트가 멈춰 판정이 지연되지만, 시간 기반은 스케줄러가 재시작돼도 시작 시각만 보고 즉시 `FAILED`를 판정할 수 있어 더 안전하다. 별도 카운터 컬럼을 두지 않는다.
+>
+> **`created_at` 대신 `processing_started_at`을 쓰는 이유(#105)**: blur 재처리는 기존 행(ID)을 유지한 채 다시 `PROCESSING`으로 돌아가므로, `created_at` 기준이면 오래된 사진은 재처리 직후 곧바로 `FAILED`가 된다. 처리 시작 시각을 따로 두어 재처리 시점부터 잰다.
+>
+> **스키마 반영**: 개발·운영 모두 `ddl-auto: update`가 `processing_started_at DATETIME(6) NULL` 컬럼을 추가한다. 기존 행은 `NULL`이어도 `COALESCE`로 `created_at`을 쓰므로 별도 보정 없이 동작한다. 컬럼을 `NOT NULL`로 바꾸려면 먼저 아래를 실행한다.
+>
+> ```sql
+> UPDATE feed_image SET processing_started_at = created_at WHERE processing_started_at IS NULL;
+> ALTER TABLE feed_image MODIFY processing_started_at DATETIME(6) NOT NULL;
+> ```
 
 - **공개 피드 조회**(다른 회원이 보는 피드): 사진이 **정확히 5장이고 전부 `READY`일 때만** 피드를 노출한다(전부-또는-비노출, #72). 장수 미달/초과거나 하나라도 `PROCESSING`/`FAILED`면 비노출 — 깨진/불완전 블러본 노출 차단의 핵심 게이트. 이 판정은 `FeedImage.isPublishable(images)` 단일 메서드로 두고, 탐색 후보 질의(`DiscoveryRepository`)도 같은 규칙(`READY` 개수 = 5 + 비-`READY` 부재)을 JPQL 서브쿼리로 강제한다.
-- **본인 피드 관리 조회**(`/api/feeds/me/...`): `PROCESSING`·`FAILED`도 함께 내려 업로드 진행/실패를 보여준다. `FAILED`가 하나라도 있으면 **해당 사진 재업로드를 안내**한다(v1은 자동 재시도·Lambda 재트리거 없음).
+- **본인 피드 관리 조회**(`/api/feeds/me/...`): `PROCESSING`·`FAILED`도 함께 내려 업로드 진행/실패를 보여준다. `FAILED`가 하나라도 있으면 **해당 사진 재업로드를 안내**한다(자동 재시도·별도 재시도 API 없음. 같은 사진의 `blurLevel`을 바꿔 저장하면 재처리된다, §4-3).
 - 스케줄러는 `HeadObject`만 호출하므로 객체 바이트를 받지 않아 비용·전송이 거의 없다. Lambda 통지 없이 B 방식을 유지한다.
 - 운영 중 실패율·UX 문제가 커지면 SQS + DLQ + 자동 재처리를 v2로 도입한다. 상세 사양은 [`FEED_IMAGE_BLUR_PIPELINE.md`](./FEED_IMAGE_BLUR_PIPELINE.md) §8-1.
 
@@ -177,9 +187,9 @@ Feed (1) ──────────── (N) FeedImage
 
 > **엔드포인트 컨벤션**: 회원은 자신의 피드(회원:피드 1:1)에만 사진을 등록하므로, 경로에 `feedId`를 받지 않고 `/api/feeds/me/images`로 인증 주체에서 피드를 도출한다(`/api/members/me`와 동일 컨벤션). IDOR 여지를 없앤다.
 >
-> **저장 의미(full replace)**: 메타데이터 저장 요청의 `images` 목록을 해당 피드 사진의 **전체 집합**으로 간주한다. 저장 시 기존 이미지를 모두 삭제하고 요청 목록으로 대체하므로, 사진 추가·삭제·재정렬이 단일 요청으로 처리된다.
+> **저장 의미(full replace)**: 저장 요청의 `images` 목록을 해당 피드 사진의 **최종 전체 집합**으로 간주한다. 현재 목록과 비교해 유지·삭제·추가·재정렬·재블러를 한 요청으로 반영한다(#105, 요청 형식은 §4-3).
 >
-> ⚠️ **full-replace는 DB 행만 대체하고 S3 객체는 즉시 삭제하지 않는다.** 새 업로드는 항상 새 `original_key`/`variant_key`를 쓰고 기존 객체를 덮어쓰지 않는다(비동기 Lambda가 늦게 완료해도 DB 미참조 객체는 피드에 쓰지 않음). 제거된 객체는 고아로 두고 후속 cleanup batch/Lifecycle로 정리한다. `blur_level` 변경도 단독 수정 API 없이 새 업로드로 처리한다. → [`FEED_IMAGE_BLUR_PIPELINE.md`](./FEED_IMAGE_BLUR_PIPELINE.md) §8-2·§8-3
+> ⚠️ **full-replace는 DB 행만 대체하고 S3 객체는 즉시 삭제하지 않는다.** 새 업로드·재처리는 항상 새 `original_key`/`variant_key`를 쓰고 기존 객체를 덮어쓰지 않는다(비동기 Lambda가 늦게 완료해도 DB 미참조 객체는 피드에 쓰지 않음). 제거·재처리로 참조가 끊긴 객체는 고아로 두고 후속 cleanup batch/Lifecycle로 정리한다. → [`FEED_IMAGE_BLUR_PIPELINE.md`](./FEED_IMAGE_BLUR_PIPELINE.md) §8-2·§8-3
 
 ### 4-1. 책임 분리
 
@@ -198,6 +208,46 @@ Feed (1) ──────────── (N) FeedImage
 - **고아 객체 정리**: ②까지 성공하고 ③이 누락되면 S3에만 파일이 남는다. S3 Lifecycle 또는 배치 정리를 검토한다. (⏳)
 - **업로드 제약**: 허용 `contentType`(image/jpeg, image/png 등)·최대 파일 크기·피드당 최대 장수를 Presigned 발급 시점에 강제한다. (⏳)
 
+### 4-3. 기존·신규 혼합 저장 계약 (✅ #105)
+
+`POST /api/feeds/me/images`의 각 항목은 **기존 사진은 `id`, 새로 업로드한 사진은 `objectKey`** 로 식별한다. 기존 사진의 원본 key는 관리 조회 응답에 노출하지 않으므로, 프론트는 `GET /api/feeds/me/images` 응답의 `id`만으로 기존 사진을 다룬다. **별도 재처리 API는 없다.** 저장 API가 `blurLevel` 변경을 감지해 재처리한다.
+
+```json
+{
+  "images": [
+    { "id": 10, "displayOrder": 1 },
+    { "id": 12, "displayOrder": 2, "blurLevel": 90 },
+    { "objectKey": "originals/100/11111111-1111-1111-1111-111111111111.png", "displayOrder": 3, "blurLevel": 80 }
+  ]
+}
+```
+
+→ `id=10`은 유지하고 1번으로, `id=12`는 2번으로 옮기고 현재 값과 다르면 90으로 재블러, 새 사진은 3번에 추가, 요청에 없는 기존 사진은 삭제.
+
+| 필드 | 기존 사진 | 새 사진 |
+|---|---|---|
+| `id` | 필수 | 금지 |
+| `objectKey` | 금지 | 필수 (Presigned 발급 응답의 `originalKey`) |
+| `displayOrder` | 필수 (1~5, 요청 내 중복 불가) | 필수 |
+| `blurLevel` | 선택: 생략 시 현재 값 유지, 다르면 재처리 | 선택: 생략 시 80 (Presigned 발급 값과 같아야 함) |
+
+| 사용자 동작 | 요청 | 서버 동작 · 응답 |
+|---|---|---|
+| 유지·순서 변경 | 기존 `id` + 새 `displayOrder` | 같은 행의 순서만 변경. ID·`variantUrl`·`processingStatus` 유지, S3·Lambda 호출 없음 |
+| 일부 삭제 | 해당 `id`를 목록에서 제외 | 행 삭제(S3 객체는 cleanup 대상) |
+| 일부 교체 | 뺄 `id` 제외 + 새 `objectKey` 추가 | 기존 행 삭제 + 새 행 `PROCESSING` 생성 |
+| 블러 강도 변경 | 기존 `id` + 다른 `blurLevel` | 원본을 새 key로 복사 → Lambda 재실행. 같은 ID에 새 `variantUrl` + `PROCESSING` 응답 |
+
+**처리 순서와 보장**
+
+1. 피드 행을 비관적 락(`SELECT ... FOR UPDATE`)으로 잠가 같은 회원의 동시 저장을 직렬화한다.
+2. 요청을 검증한다: `id`/`objectKey` 정확히 하나, `displayOrder`·`id`·`objectKey` 중복 없음, `objectKey`는 회원 소유 형식, `id`는 현재 피드 소속, 새 `objectKey`가 유지하는 사진의 원본 key와 같지 않음.
+3. 재처리 대상의 원본을 S3 server-side `CopyObject`로 새 key에 복사한다(DB 변경 전). 실패하면 500으로 거부하고 DB는 바뀌지 않는다.
+4. 빠진 행 삭제 → 순서가 바뀌는 행을 임시 순서(음수)로 옮김 → 최종 순서·재처리 key 반영 → 새 행 저장. 각 단계 사이에 flush해 1↔2 교환에서도 `uk_feed_image_order`가 충돌하지 않는다.
+5. 최종 목록을 `displayOrder` 오름차순으로 응답한다.
+
+> 복사 성공 후 DB가 롤백되면 새로 복사한 원본과 Lambda가 만든 블러본은 DB가 참조하지 않는 고아 객체로 남는다. 피드 기준은 DB 목록이므로 노출되지 않고, cleanup 대상이 된다.
+
 ---
 
 ## 5. 패키지 구조
@@ -208,8 +258,8 @@ com.blursome.feed
 │   ├── Feed.java                     ✅ 생성됨
 │   └── FeedImage.java                ✅ 생성됨
 ├── repository/
-│   ├── FeedRepository.java           ✅ 생성됨
-│   └── FeedImageRepository.java      ✅ 생성됨 (findByFeedIdOrderByDisplayOrderAsc, deleteByFeedId)
+│   ├── FeedRepository.java           ✅ 생성됨 (findByMemberIdForUpdate: 저장 시 비관적 락)
+│   └── FeedImageRepository.java      ✅ 생성됨 (findByFeedIdOrderByDisplayOrderAsc, findPollingTargets)
 ├── service/
 │   ├── FeedService.java              ✅ 생성됨
 │   └── FeedImageService.java         ✅ 생성됨 (Presigned 발급 + 메타데이터 저장/조회)
@@ -239,7 +289,11 @@ com.blursome.global.storage           ✅ S3 인프라 (횡단 관심사)
 |---|---|---|
 | `FEED_IMAGE_400_INVALID_COUNT` | 사진 장수가 허용 범위(1~5)를 벗어남 | 400 |
 | `FEED_IMAGE_400_DUPLICATE_ORDER` | 한 요청 내 `displayOrder`가 중복됨 | 400 |
-| `FEED_IMAGE_404_NOT_FOUND` | 피드 이미지를 찾을 수 없음 | 404 |
+| `FEED_IMAGE_400_INVALID_OBJECT_KEY` | `objectKey`가 회원 소유 원본 key 형식이 아님 | 400 |
+| `FEED_IMAGE_400_INVALID_REFERENCE` | 항목에 `id`와 `objectKey`가 모두 없거나 모두 있음(#105) | 400 |
+| `FEED_IMAGE_400_DUPLICATE_REFERENCE` | 같은 `id`·`objectKey`를 두 번 지정했거나, 새 `objectKey`가 유지하는 사진의 원본 key와 같음(#105) | 400 |
+| `FEED_IMAGE_404_NOT_FOUND` | 기존 사진 `id`가 없거나 다른 회원 피드 소속(존재 여부 비노출) | 404 |
+| `SERVER_ERROR_500_INTERNAL_SERVER_ERROR` | blur 재처리용 S3 복사 실패(전역 코드, 서버 로그에 member/image/key 기록) | 500 |
 
 > 코드 네이밍은 기존 `FeedErrorCode`(`FEED_404_NOT_FOUND`)와 동일한 `<도메인>_<HTTP>_<사유>` 규칙을 따른다.
 >

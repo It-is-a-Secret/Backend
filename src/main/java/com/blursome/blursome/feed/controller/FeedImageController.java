@@ -39,10 +39,17 @@ public class FeedImageController {
         DataResponse.ok(feedImageService.issuePresignedUploadUrls(memberId, request)));
   }
 
-  @Operation(summary = "피드 이미지 메타데이터 저장 (full-replace)",
-      description = "프론트가 원본 S3 업로드를 마친 뒤 피드 이미지 메타데이터를 저장한다. 요청 목록을 피드 사진 전체 집합으로 "
-          + "보는 full-replace 방식이며(기존 DB 행 대체, S3 객체 즉시 삭제 안 함), 원본 key로부터 variant_key를 계산하고 "
-          + "processing_status=PROCESSING으로 시작한다. 인증 주체에서 피드를 도출하므로 feedId를 받지 않는다.")
+  @Operation(summary = "피드 이미지 저장 (full-replace, 기존·신규 혼합)",
+      description = "저장 후 피드에 남을 사진 전체 목록(1~5장)을 보낸다. 각 항목은 기존 사진이면 관리 조회 응답의 id, "
+          + "새로 업로드한 사진이면 Presigned 발급 응답의 originalKey를 objectKey로 보내며, 둘 중 정확히 하나만 지정한다. "
+          + "현재 피드에 있지만 목록에 없는 사진은 삭제된다(S3 객체는 즉시 삭제하지 않음).\n\n"
+          + "- 기존 사진 유지·재정렬: id와 새 displayOrder. ID·블러본 URL·처리 상태가 그대로 유지된다.\n"
+          + "- 기존 사진 블러 변경: id와 다른 blurLevel. 서버가 원본을 새 key로 복사해 블러본을 다시 만들며, "
+          + "응답은 새 variantUrl과 PROCESSING이다. 별도 재처리 API는 없다. blurLevel 생략 시 현재 값 유지.\n"
+          + "- 새 사진: objectKey. PROCESSING으로 생성되고 blurLevel 생략 시 80.\n\n"
+          + "인증 주체에서 피드를 도출하므로 feedId를 받지 않는다. 다른 회원 사진 id는 FEED_IMAGE_404_NOT_FOUND, "
+          + "id/objectKey 조합 오류는 FEED_IMAGE_400_INVALID_REFERENCE, 같은 사진 중복 지정은 "
+          + "FEED_IMAGE_400_DUPLICATE_REFERENCE다.")
   @PostMapping
   public ResponseEntity<DataResponse<FeedImageResponse>> saveImages(
       @AuthenticationPrincipal Long memberId,

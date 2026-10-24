@@ -19,6 +19,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Limit;
 import org.springframework.test.util.ReflectionTestUtils;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
@@ -57,7 +58,7 @@ class FeedImageProcessingStatusSchedulerTest {
   }
 
   @Test
-  @DisplayName("블러본이 없고 생성된 지 5분이 지났으면 FAILED로 전이한다")
+  @DisplayName("블러본이 없고 처리 시작 후 5분이 지났으면 FAILED로 전이한다")
   void transitionsToFailed_whenMissingAndExpired() {
     FeedImage image = feedImage("variants/2.webp", LocalDateTime.now().minusMinutes(6));
     givenTargets(image);
@@ -97,17 +98,43 @@ class FeedImageProcessingStatusSchedulerTest {
     assertThat(healthy.getProcessingStatus()).isEqualTo(FeedImageProcessingStatus.READY);
   }
 
+  @Test
+  @DisplayName("재처리로 다시 시작한 행은 createdAt이 오래돼도 처리 시작 5분 이내면 PROCESSING을 유지한다")
+  void staysProcessing_whenReprocessedRecentlyDespiteOldCreatedAt() {
+    FeedImage image = feedImage("variants/4.webp", LocalDateTime.now().minusMinutes(1));
+    ReflectionTestUtils.setField(image, "createdAt", LocalDateTime.now().minusDays(3));
+    givenTargets(image);
+    given(storageService.existsVariant("variants/4.webp")).willReturn(false);
+
+    scheduler.pollProcessingStatus();
+
+    assertThat(image.getProcessingStatus()).isEqualTo(FeedImageProcessingStatus.PROCESSING);
+  }
+
+  @Test
+  @DisplayName("처리 시작 시각이 없는 이전 행은 createdAt 기준으로 5분 타임아웃을 판정한다")
+  void transitionsToFailed_whenLegacyRowExpiredByCreatedAt() {
+    FeedImage image = feedImage("variants/5.webp", null);
+    ReflectionTestUtils.setField(image, "createdAt", LocalDateTime.now().minusMinutes(6));
+    givenTargets(image);
+    given(storageService.existsVariant("variants/5.webp")).willReturn(false);
+
+    scheduler.pollProcessingStatus();
+
+    assertThat(image.getProcessingStatus()).isEqualTo(FeedImageProcessingStatus.FAILED);
+  }
+
   private void givenTargets(FeedImage... images) {
-    given(feedImageRepository
-        .findTop100ByProcessingStatusAndCreatedAtLessThanEqualOrderByCreatedAtAsc(
-            eq(FeedImageProcessingStatus.PROCESSING), any(LocalDateTime.class)))
+    given(feedImageRepository.findPollingTargets(
+        eq(FeedImageProcessingStatus.PROCESSING), any(LocalDateTime.class), any(Limit.class)))
         .willReturn(List.of(images));
   }
 
-  private FeedImage feedImage(String variantKey, LocalDateTime createdAt) {
+  /** 처리 시작 시각이 {@code processingStartedAt}인 PROCESSING 이미지를 만든다. */
+  private FeedImage feedImage(String variantKey, LocalDateTime processingStartedAt) {
     FeedImage image = FeedImage.create(
         Mockito.mock(Feed.class), 1, "originals/x.jpg", variantKey, FeedImage.DEFAULT_BLUR_LEVEL);
-    ReflectionTestUtils.setField(image, "createdAt", createdAt);
+    ReflectionTestUtils.setField(image, "processingStartedAt", processingStartedAt);
     return image;
   }
 }

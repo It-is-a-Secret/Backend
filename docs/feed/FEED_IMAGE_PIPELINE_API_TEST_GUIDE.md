@@ -227,9 +227,59 @@ S3 업로드를 마친 뒤, 발급 응답의 `originalKey`를 그대로 보냅�
 }
 ```
 
-- **full-replace**: 같은 회원으로 다시 호출하면 기존 행을 대체합니다(추가·삭제·재정렬을 한 요청으로).
+- **full-replace**: 요청 목록이 저장 후 피드에 남을 전체 목록입니다. 기존 사진은 `id`로 유지하고, 새 사진은
+  `objectKey`로 추가합니다(F-3a).
 - **오류**: `displayOrder` 중복 → `400 FEED_IMAGE_400_DUPLICATE_ORDER`. 다른 회원 prefix/형식 위반 key →
   `400 FEED_IMAGE_400_INVALID_OBJECT_KEY`. 피드 없음 → `404 FEED_404_NOT_FOUND`.
+
+### 시나리오 F-3a. 기존 사진 유지·삭제·교체·재정렬·재블러 (#105)
+
+F-3 이후 화면을 다시 연 상황입니다. F-4 응답의 `id`만 사용하며, 기존 사진의 원본 key는 몰라도 됩니다.
+**별도 재처리 API는 없습니다.** 아래 요청 하나로 전부 처리됩니다.
+
+전제: F-4 응답이 `id=1`(1번, blur 70), `id=2`(2번, blur 80), `id=3`(3번) 세 장이고 모두 `READY`.
+새 사진 1장은 F-1·F-2로 미리 발급·업로드해 `originalKey`(`originals/1001/<uuid-4>.png`)를 받아 둡니다.
+
+- **요청**: `POST {{baseUrl}}/api/feeds/me/images`
+
+```json
+{
+  "images": [
+    { "id": 2, "displayOrder": 1 },
+    { "id": 1, "displayOrder": 2, "blurLevel": 95 },
+    { "objectKey": "originals/1001/<uuid-4>.png", "displayOrder": 3 }
+  ]
+}
+```
+
+의미: `id=2`는 1번으로(순서만 변경), `id=1`은 2번으로 옮기며 블러 70→95로 재처리, `id=3`은 목록에 없으므로 삭제,
+새 사진은 3번에 추가.
+
+- **기대**: `200`, 최종 목록을 `displayOrder` 순서로 반환합니다.
+
+```json
+{ "timestamp": "...", "data": { "images": [
+  { "id": 2, "displayOrder": 1, "variantUrl": "https://.../variants/1001/<uuid-2>.jpg",   "blurLevel": 80, "processingStatus": "READY" },
+  { "id": 1, "displayOrder": 2, "variantUrl": "https://.../variants/1001/<새 uuid>.jpg",   "blurLevel": 95, "processingStatus": "PROCESSING" },
+  { "id": 4, "displayOrder": 3, "variantUrl": "https://.../variants/1001/<uuid-4>.jpg",   "blurLevel": 80, "processingStatus": "PROCESSING" }
+] } }
+```
+
+- **검증 포인트**
+  - 순서만 바뀐 `id=2`는 `variantUrl`·`READY`가 그대로입니다(재업로드·Lambda 실행 없음).
+  - 재블러한 `id=1`은 **같은 id에 새 `variantUrl`**이 오고 `PROCESSING`으로 바뀝니다. 1~2분 뒤 F-4에서 `READY`.
+  - S3 콘솔: originals에 `<새 uuid>.jpg`(원본 확장자 유지) 객체가 생기고 메타데이터 `x-amz-meta-blur-level: 95`,
+    Content-Type이 원본과 같아야 합니다. variants에 `<새 uuid>.jpg`가 생기며, Lambda 로그(CloudWatch)에
+    `blur_level=95`가 찍힙니다. 이전 객체는 지워지지 않고 남습니다(cleanup 대상).
+  - 새 블러본을 이전 블러본과 나란히 열어 강도가 실제로 다른지 확인합니다(50/80/100으로 바꿔 비교 권장).
+- **단순 재정렬만**: `[{ "id": 1, "displayOrder": 2 }, { "id": 2, "displayOrder": 1 }]`처럼 1↔2를 맞바꿔도
+  유니크 제약 오류 없이 `200`이고 두 사진 모두 상태가 유지됩니다.
+- **blurLevel 생략·동일 값**: 현재 값을 유지하며 재처리하지 않습니다.
+- **오류**
+  - `id`와 `objectKey`를 둘 다 보내거나 둘 다 생략 → `400 FEED_IMAGE_400_INVALID_REFERENCE`
+  - 같은 `id`·`objectKey`를 두 번 보냄 → `400 FEED_IMAGE_400_DUPLICATE_REFERENCE`
+  - 다른 회원 사진의 `id`, 없는 `id` → `404 FEED_IMAGE_404_NOT_FOUND`(아무것도 바뀌지 않음)
+  - 재처리용 S3 복사 실패(IAM 등) → `500 SERVER_ERROR_500_INTERNAL_SERVER_ERROR`(DB 변경 없음, 서버 로그 확인)
 
 ### 시나리오 F-4. 본인 피드 관리 조회 (#52, PROCESSING 확인)
 
@@ -246,12 +296,12 @@ S3 업로드를 마친 뒤, 발급 응답의 `originalKey`를 그대로 보냅�
 
 ### 시나리오 F-5. 상태 폴링 → READY 전이 관찰 (#51)
 
-스케줄러가 **1분마다** `PROCESSING`이면서 생성 30초 경과한 행을 `HeadObject`로 확인합니다.
+스케줄러가 **1분마다** `PROCESSING`이면서 처리 시작(`processing_started_at`, 없으면 `created_at`) 후 30초 경과한 행을 `HeadObject`로 확인합니다.
 
 - 블러본이 정상 생성됐다면(③ 성공) **약 1~2분 내** 상태가 `READY`로 바뀝니다.
 - 확인: F-4(본인 조회)를 반복 호출해 `processingStatus`가 `PROCESSING → READY`로 변하는지 보거나, DB
   `SELECT processing_status FROM feed_image WHERE feed_id = 1;`로 확인.
-- **FAILED 경로**: 블러본이 끝내 안 생기면(트리거/권한 문제) `created_at + 5분` 초과 시 `FAILED`로 전이됩니다.
+- **FAILED 경로**: 블러본이 끝내 안 생기면(트리거/권한 문제) 처리 시작 + 5분 초과 시 `FAILED`로 전이됩니다.
   이때 F-4의 `reuploadRequired`가 `true`가 됩니다. → 부록 A의 IAM `ListBucket` 항목을 우선 점검.
 
 ### 시나리오 F-6. 공개 피드 조회 (#52·#72, 정확히-5장-전부-READY 게이트)
@@ -320,6 +370,10 @@ S3 업로드를 마친 뒤, 발급 응답의 `originalKey`를 그대로 보냅�
 | blurLevel 범위 밖 / contentType 비이미지 / 6장 이상 / 0장 저장 | 400 | (Bean Validation 메시지) |
 | displayOrder 중복 | 400 | `FEED_IMAGE_400_DUPLICATE_ORDER` |
 | 다른 회원 prefix·형식 위반 objectKey | 400 | `FEED_IMAGE_400_INVALID_OBJECT_KEY` |
+| 항목에 id·objectKey가 모두 없음/모두 있음 | 400 | `FEED_IMAGE_400_INVALID_REFERENCE` |
+| 같은 id·objectKey 중복 지정 | 400 | `FEED_IMAGE_400_DUPLICATE_REFERENCE` |
+| 다른 회원 사진 id / 없는 id | 404 | `FEED_IMAGE_404_NOT_FOUND` |
+| 재블러용 S3 복사 실패 | 500 | `SERVER_ERROR_500_INTERNAL_SERVER_ERROR` |
 | 피드 없음(저장/본인 조회) / 미완·0장 공개 피드 | 404 | `FEED_404_NOT_FOUND` |
 | 단계 조회: 비참여자 | 403 | `CHAT_403_NOT_PARTICIPANT` |
 | 단계 조회: 방 없음/내가 나간 방 | 404 | `CHAT_404_ROOM_NOT_FOUND` |
@@ -334,6 +388,7 @@ S3 업로드를 마친 뒤, 발급 응답의 `originalKey`를 그대로 보냅�
 2. **F-1** 발급 → **F-2** S3 PUT(2장) → AWS 콘솔에서 variants에 블러본 생성 확인(③).
 3. **F-3** 메타데이터 저장(`PROCESSING`) → **F-4** 본인 조회로 `PROCESSING` 확인.
 4. 1~2분 대기 후 **F-5/F-4**로 `READY` 전이 확인.
+4-1. **F-3a** 유지·삭제·교체·재정렬·재블러를 한 요청으로 저장 → 재블러 사진이 새 URL로 `READY`가 되는지 확인.
 5. **F-6** 공개 피드가 `200`으로 블러본을 노출하는지(전부 READY일 때만) 확인.
 6. 채팅 방 시드 → **F-7** 단계별 원본 공개: MATCHED(전부 블러) → 단계 상승 → 앞 N장 원본 GET 확인.
 7. 오류 케이스(오류표) 점검: 미완 상태 공개 피드 404, 종료된 방 단계 조회 409 등.
@@ -350,7 +405,9 @@ S3 업로드를 마친 뒤, 발급 응답의 `originalKey`를 그대로 보냅�
 | S3 PUT이 `403 SignatureDoesNotMatch` | `requiredHeaders`(`Content-Type`·`x-amz-meta-blur-level`)를 그대로 안 보냄. 값/철자/대소문자 그대로 전송 |
 | 메타데이터 저장이 `FEED_IMAGE_400_INVALID_OBJECT_KEY` | 발급받은 `originalKey`를 그대로 안 보냄(다른 회원 prefix·임의 경로). F-1 응답 값 그대로 사용 |
 | 상태가 영원히 `PROCESSING` | 블러본 미생성(트리거 미연결) **또는** variants `s3:ListBucket` 미부여로 부재 객체가 403으로 가려짐(404 필요). 부록 A IAM 점검 |
-| 상태가 `FAILED` | `created_at+5분`까지 블러본 미확인. Lambda 로그(CloudWatch)·트리거·실행 역할 권한 확인 후 해당 사진 재업로드 |
+| 상태가 `FAILED` | 처리 시작+5분까지 블러본 미확인. Lambda 로그(CloudWatch)·트리거·실행 역할 권한 확인 후 해당 사진 재업로드 |
+| 재블러 후 계속 `PROCESSING` → `FAILED` | S3 알림이 `s3:ObjectCreated:Put`만 걸려 있으면 CopyObject(`ObjectCreated:Copy`)로 Lambda가 안 돈다. `s3:ObjectCreated:*`로 설정 |
+| 재블러 저장이 `500` | 백엔드 IAM에 originals `s3:GetObject`(HeadObject)·`s3:PutObject`(CopyObject 대상) 권한 확인. 서버 로그에 image/member/key가 남음 |
 | 공개 피드가 계속 `404` | 일부가 아직 `PROCESSING`/`FAILED`이거나 0장(전부-또는-비노출 게이트). F-4로 전 상태 확인 |
 | 단계 조회가 전부 `revealed:false` | 방 단계가 아직 `MATCHED`이거나, 미공개 사진의 블러본이 `READY`가 아니어서 제외됨. 단계 상승·READY 확인 |
 | 단계 조회가 `409 ROOM_CLOSED` | 상대가 나가 방이 종료됨(원본 공개 차단 정책). 새 방을 시드 |
