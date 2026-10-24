@@ -13,6 +13,10 @@ public enum ReportErrorCode implements ErrorCode {
       "자기 자신은 신고할 수 없습니다.",
       "REPORT_400_SELF_NOT_ALLOWED"
   ),
+  REPORT_REASON_NOT_SELECTABLE(HttpStatus.BAD_REQUEST,
+      "지원하지 않는 신고 사유입니다.",
+      "REPORT_400_REASON_NOT_SELECTABLE"
+  ),
   REPORT_ALREADY_EXISTS(HttpStatus.CONFLICT,
       "이미 신고한 대상입니다.",
       "REPORT_409_ALREADY_EXISTS"
