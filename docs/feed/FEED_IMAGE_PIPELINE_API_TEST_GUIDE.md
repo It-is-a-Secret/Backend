@@ -77,7 +77,9 @@ SPRING_PROFILES_ACTIVE=local ./gradlew bootRun
 1. **originals 버킷** — BPA 전부 ON(완전 비공개), SSE-S3, `ap-northeast-2`, CORS(PUT 허용: 프론트 도메인).
 2. **variants 버킷** — BPA 해제(객체 GET만 공개), **ListBucket은 비공개**, SSE-S3, CORS(GET).
 3. **IAM 사용자 정책**(서명 주체가 대상 작업 권한을 보유해야 Presigned URL이 유효):
-   - originals: `s3:PutObject` + `s3:GetObject`
+   - originals: 객체 `s3:PutObject` + `s3:GetObject` + 버킷 `s3:ListBucket`
+     (새 사진 저장의 `HeadObject`가 미업로드 key를 **404**로 받아 `FEED_IMAGE_400_ORIGINAL_NOT_UPLOADED`로
+     응답하기 위함 — 없으면 403으로 가려져 500으로 처리됨)
    - variants: 객체 `s3:GetObject` + 버킷 `s3:ListBucket`
      (`HeadObject`가 부재 객체를 **404**로 받기 위함 — 없으면 403으로 가려져 스케줄러가 `PROCESSING`에 고착)
 4. **Lambda 실행 역할** — originals `s3:GetObject` + variants `s3:PutObject`.
@@ -444,6 +446,10 @@ F-3 이후 화면을 다시 연 상황입니다. F-4 응답의 `id`만 사용하
   "Statement": [
     { "Effect": "Allow", "Action": ["s3:PutObject", "s3:GetObject"],
       "Resource": "arn:aws:s3:::blursome-originals/*" },
+    // 새 사진 HeadObject가 미업로드 key를 404로 식별하기 위한 권한 (미부여 시 403 → 500)
+    { "Effect": "Allow", "Action": ["s3:ListBucket"],
+      "Resource": "arn:aws:s3:::blursome-originals",
+      "Condition": { "StringLike": { "s3:prefix": ["originals/*"] } } },
     { "Effect": "Allow", "Action": ["s3:GetObject"],
       "Resource": "arn:aws:s3:::blursome-variants/*" },
     // HeadObject가 부재 객체를 404로 받기 위해 버킷 ARN에 ListBucket 부여 (미부여 시 403 → PROCESSING 고착)
@@ -453,7 +459,7 @@ F-3 이후 화면을 다시 연 상황입니다. F-4 응답의 `id`만 사용하
 }
 ```
 
-- 이 `ListBucket`은 **백엔드 IAM에만** 부여하며, 퍼블릭/버킷 정책의 "ListBucket 비공개"와 별개입니다(§5·§8-5).
+- 두 `ListBucket`은 **백엔드 IAM에만** 부여하며, 퍼블릭/버킷 정책의 "ListBucket 비공개"와 별개입니다(§5·§8-5).
 - 발급한 access/secret key는 운영 서버 `.env`(`S3_ACCESS_KEY`/`S3_SECRET_KEY`)에 주입(IAM 역할 미사용).
 
 ### A-3. Lambda

@@ -37,7 +37,7 @@ public record FeedImageSaveRequest(
         max = FeedImage.MAX_DISPLAY_ORDER,
         message = "피드 이미지는 1장 이상 5장 이하로 저장할 수 있습니다.")
     @Valid
-    List<Image> images
+    List<@NotNull(message = "피드 이미지 항목은 null일 수 없습니다.") Image> images
 ) {
 
   /**

@@ -2,10 +2,12 @@ package com.blursome.blursome.feed.repository;
 
 import com.blursome.blursome.feed.domain.FeedImage;
 import com.blursome.blursome.feed.domain.FeedImageProcessingStatus;
+import jakarta.persistence.LockModeType;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -14,6 +16,17 @@ import org.springframework.transaction.annotation.Transactional;
 public interface FeedImageRepository extends JpaRepository<FeedImage, Long> {
 
   List<FeedImage> findByFeedIdOrderByDisplayOrderAsc(Long feedId);
+
+  /**
+   * 피드 이미지 full-replace가 현재 목록을 계산하는 동안 행을 비관적 쓰기 락으로 잠근다.
+   *
+   * <p>상태 스케줄러의 조건부 UPDATE가 재처리 시작보다 먼저 READY를 기록하면, 이미 PROCESSING이던 엔티티는
+   * 같은 값 대입이 dirty로 감지되지 않아 새 세대까지 READY로 남을 수 있다. 저장 경로가 기존 이미지 행을 잠그면
+   * 스케줄러 UPDATE는 커밋 뒤 새 variantKey 조건에서 0건이 되어 이전 세대 결과를 적용하지 않는다.
+   */
+  @Lock(LockModeType.PESSIMISTIC_WRITE)
+  @Query("select i from FeedImage i where i.feed.id = :feedId order by i.displayOrder asc")
+  List<FeedImage> findByFeedIdOrderByDisplayOrderAscForUpdate(@Param("feedId") Long feedId);
 
   /**
    * 블러본 생성 상태 폴링용 조회. 주어진 상태이면서 처리 시작 시각이 {@code threshold} 이전인 행을 오래된 순으로

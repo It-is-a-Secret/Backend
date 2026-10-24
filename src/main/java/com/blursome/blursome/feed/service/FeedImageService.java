@@ -119,7 +119,7 @@ public class FeedImageService {
     validateOwnedObjectKeys(memberId, uploads);
 
     List<FeedImage> currentImages =
-        feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(feed.getId());
+        feedImageRepository.findByFeedIdOrderByDisplayOrderAscForUpdate(feed.getId());
     List<KeptImage> keptImages = resolveKeptImages(items, currentImages);
     validateUploadsNotKept(uploads, keptImages);
     Map<String, Integer> uploadBlurLevels = resolveUploadedBlurLevels(memberId, uploads);

@@ -261,6 +261,16 @@ class FeedImageControllerTest {
   }
 
   @Test
+  @DisplayName("이미지 목록에 null 항목이 있으면 400을 반환한다")
+  void rejectNullImageItem() throws Exception {
+    mockMvc.perform(post("/api/feeds/me/images")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"images\":[null]}"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("CLIENT_ERROR_400_METHOD_ARGUMENT_NOT_VALID"));
+  }
+
+  @Test
   @DisplayName("displayOrder가 범위(1~5)를 벗어나면 400을 반환한다")
   void rejectDisplayOrderOutOfRange() throws Exception {
     String body = """

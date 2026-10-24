@@ -336,7 +336,7 @@ class FeedImageServiceTest {
     assertThatThrownBy(() -> feedImageService.replaceImages(MEMBER_ID, both))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", "FEED_IMAGE_400_INVALID_REFERENCE");
-    verify(feedImageRepository, never()).findByFeedIdOrderByDisplayOrderAsc(any());
+    verify(feedImageRepository, never()).findByFeedIdOrderByDisplayOrderAscForUpdate(any());
   }
 
   @Test
@@ -542,7 +542,8 @@ class FeedImageServiceTest {
   }
 
   private void givenCurrentImages(FeedImage... images) {
-    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(List.of(images));
+    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAscForUpdate(FEED_ID))
+        .willReturn(List.of(images));
   }
 
   private void givenSaveAllReturnsArgument() {
