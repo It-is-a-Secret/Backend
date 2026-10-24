@@ -21,6 +21,8 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import org.hibernate.annotations.Check;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 /**
  * 신고 한 건. {@code reporter}가 {@code target}을 신고한다. {@code chatRoom}이 있으면 채팅방 신고,
@@ -63,8 +65,12 @@ public class Report extends BaseEntity {
   @JoinColumn(name = "chat_room_id")
   private ChatRoom chatRoom;
 
+  // MySQL에서 Hibernate 6은 EnumType.STRING을 네이티브 enum(...) 컬럼으로 만든다. 그러면 사유를 추가할 때마다
+  // 컬럼 정의를 바꿔야 하고(ddl-auto: update는 기존 컬럼을 고치지 않음) 누락 시 INSERT가 실패하므로, VARCHAR로
+  // 저장해 사유 추가가 DDL 변경 없이 반영되게 한다(#102). 길이는 가장 긴 코드(34자)에 여유를 둔 40.
   @Enumerated(EnumType.STRING)
-  @Column(nullable = false, length = 30)
+  @JdbcTypeCode(SqlTypes.VARCHAR)
+  @Column(nullable = false, length = 40)
   private ReportReason reason;
 
   @Column(length = 500)

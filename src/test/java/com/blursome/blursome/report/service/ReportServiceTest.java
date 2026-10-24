@@ -27,6 +27,9 @@ import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -68,6 +71,33 @@ class ReportServiceTest {
 
     verify(reportRepository).saveAndFlush(any(Report.class));
     verify(chatRoomRepository, never()).findById(any());
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @EnumSource(value = ReportReason.class, names = {"INAPPROPRIATE_CHAT", "SEXUAL_HARASSMENT",
+      "COERCIVE_MEETING", "DANGEROUS_PERSON", "FINANCIAL_OR_PERSONAL_INFO_REQUEST", "SPAM", "ETC"})
+  @DisplayName("화면 7개 항목의 사유는 요청한 사유 그대로 저장된다(#102)")
+  void report_selectableReason_savesWithReason(ReportReason reason) {
+    given(memberRepository.findById(2L)).willReturn(Optional.of(member(2L)));
+    given(memberRepository.getReferenceById(1L)).willReturn(member(1L));
+    given(reportRepository.saveAndFlush(any(Report.class))).willAnswer(inv -> inv.getArgument(0));
+
+    reportService.report(1L, new ReportRequest(2L, null, reason, null));
+
+    ArgumentCaptor<Report> captor = ArgumentCaptor.forClass(Report.class);
+    verify(reportRepository).saveAndFlush(captor.capture());
+    assertThat(captor.getValue().getReason()).isEqualTo(reason);
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @EnumSource(value = ReportReason.class, names = {"HATE_SPEECH", "PHOTO_THEFT"})
+  @DisplayName("화면에서 빠진 과거 사유는 REPORT_REASON_NOT_SELECTABLE 예외로 저장하지 않는다(#102)")
+  void report_notSelectableReason_throws(ReportReason reason) {
+    assertThatThrownBy(() -> reportService.report(1L, new ReportRequest(2L, null, reason, null)))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code",
+            ReportErrorCode.REPORT_REASON_NOT_SELECTABLE.getCode());
+    verify(reportRepository, never()).saveAndFlush(any());
   }
 
   @Test

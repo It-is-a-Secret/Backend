@@ -86,6 +86,17 @@ class OpenApiSchemaTest {
   }
 
   @Test
+  @DisplayName("신고 요청의 reason enum은 화면 항목 7개 코드만 노출한다(#102)")
+  void reportReason_exposesOnlySelectableCodes() {
+    List<String> values = new ArrayList<>();
+    schemas.path("ReportRequest").path("properties").path("reason").path("enum")
+        .forEach(v -> values.add(v.asText()));
+
+    assertThat(values).containsExactlyInAnyOrder("INAPPROPRIATE_CHAT", "SEXUAL_HARASSMENT",
+        "COERCIVE_MEETING", "DANGEROUS_PERSON", "FINANCIAL_OR_PERSONAL_INFO_REQUEST", "SPAM", "ETC");
+  }
+
+  @Test
   @DisplayName("본문 없는 엔드포인트는 실제 상태 코드(204/302)로 명세된다")
   void noBodyEndpoints_documentActualStatus() {
     assertResponseCodes("/api/auth/oauth/kakao/authorize", "get", "302");
