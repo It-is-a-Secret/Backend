@@ -60,7 +60,7 @@ class OpenApiSchemaTest {
     assertThat(schemas.has("Image")).isFalse();
 
     assertImagesItem("FeedImageSaveRequest", "FeedImageSaveItem",
-        "objectKey", "displayOrder", "blurLevel");
+        "id", "objectKey", "displayOrder", "blurLevel");
     assertImagesItem("FeedImageResponse", "FeedImageItem",
         "id", "displayOrder", "variantUrl", "blurLevel", "processingStatus");
     assertImagesItem("MyFeedImagesResponse", "FeedImageItem",
@@ -69,6 +69,26 @@ class OpenApiSchemaTest {
         "displayOrder", "variantUrl");
     assertImagesItem("RevealedFeedImagesResponse", "RevealedFeedImageItem",
         "role", "displayOrder", "revealed", "imageUrl");
+  }
+
+  @Test
+  @DisplayName("피드 사진 저장 명세는 id|objectKey 혼합 계약의 설명과 예시를 노출한다(#105)")
+  void feedImageSaveSchema_documentsMixedReferences() {
+    JsonNode item = schemas.path("FeedImageSaveItem").path("properties");
+    assertThat(item.path("id").path("type").asText()).isEqualTo("integer");
+    assertThat(item.path("id").path("description").asText()).contains("기존 사진");
+    assertThat(item.path("objectKey").path("description").asText()).contains("새로 업로드");
+    assertThat(item.path("blurLevel").path("description").asText()).contains("재생성");
+    // id/objectKey는 둘 중 하나만 보내므로 어느 쪽도 필수로 명세하지 않는다.
+    assertThat(schemas.path("FeedImageSaveItem").path("required").toString())
+        .doesNotContain("\"id\"").doesNotContain("\"objectKey\"").contains("displayOrder");
+
+    JsonNode exampleNode = schemas.path("FeedImageSaveRequest").path("example");
+    String example = exampleNode.isTextual() ? exampleNode.asText() : exampleNode.toString();
+    assertThat(example).contains("\"id\"").contains("\"objectKey\"");
+
+    String description = paths.path("/api/feeds/me/images").path("post").path("description").asText();
+    assertThat(description).contains("objectKey").contains("별도 재처리 API는 없다");
   }
 
   @Test

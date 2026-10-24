@@ -97,6 +97,30 @@ class S3ObjectKeyGeneratorTest {
   }
 
   @Test
+  @DisplayName("재처리용 원본 key는 기존 확장자를 유지하고 uuid만 새로 발급한다")
+  void generateReprocessedOriginalKey_keepsExtensionWithNewUuid() {
+    String source = "originals/7/11111111-1111-1111-1111-111111111111.png";
+
+    String reprocessed = generator.generateReprocessedOriginalKey(7L, source);
+
+    assertThat(reprocessed).isNotEqualTo(source).endsWith(".png");
+    assertThat(generator.isOwnedOriginalKey(7L, reprocessed)).isTrue();
+    assertThat(generator.toVariantKey(reprocessed)).isNotEqualTo(generator.toVariantKey(source));
+  }
+
+  @ParameterizedTest(name = "[{index}] {0}")
+  @CsvSource({
+      "originals/7/11111111-1111-1111-1111-111111111111",
+      "originals/7/11111111-1111-1111-1111-111111111111.",
+      "originals/7.d/11111111-1111-1111-1111-111111111111"
+  })
+  @DisplayName("확장자가 없는 원본 key로는 재처리 key를 만들 수 없다")
+  void generateReprocessedOriginalKey_rejectsKeyWithoutExtension(String source) {
+    assertThatThrownBy(() -> generator.generateReprocessedOriginalKey(7L, source))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
   @DisplayName("memberId나 key가 null이면 소유로 인정하지 않는다")
   void isOwnedOriginalKey_rejectsNull() {
     assertThat(generator.isOwnedOriginalKey(null, "originals/7/x.png")).isFalse();
