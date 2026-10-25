@@ -144,7 +144,7 @@ BlurSome의 채팅(Chat) 도메인 전체 로직을 정의합니다. WebSocket +
               └─────────┘
 ```
 
-- `ACTIVE → CLOSED`: 한 명이 "채팅방 나가기"를 하거나(`leave()`), 명시적으로 대화를 종료할 때.
+- `ACTIVE → CLOSED`: 한 명이 "채팅방 나가기"를 하거나(`leave()`), 명시적으로 대화를 종료할 때. 참여 회원이 탈퇴하면 `ACTIVE`·`BLOCKED` 방이 `CLOSED`로 바뀐다(`closeOnMemberWithdrawal()`, #107, §7-7).
 - ✅ **`CLOSED`는 종료(terminal) 상태** — 재입장 불가. 다시 `ACTIVE`로 되돌리지 않는다. 이슈 #87로 `CLOSED`는 **A-B 관계의 영구 종료**를 뜻한다 — `close()`가 `pairKey`를 비우지 않아 같은 페어는 새 방을 열 수 없다(대화 시작 시 `RELATIONSHIP_CLOSED` 409).
 - ✅ **앱 종료 / 연결 끊김은 상태 변화가 아니다** — 상대 접속 상태(presence)를 제공하지 않으므로, 단순 연결 종료는 DB를 건드리지 않고 재연결 시 그대로
   대화를 이어간다.
@@ -497,6 +497,28 @@ DiscoveryService(ChatStartService).startChat            ChatRoomService.openRoom
 - ✅ **종료된 방의 안읽음 집계 일치**: 목록이 종료된 방도 포함하므로, 배치 안읽음 집계(`countUnreadByRoom`)도 방 상태로 거르지 않고 `leftAt IS NULL`만 본다.
   방 상태 조건을 넣으면 목록은 `unreadCount = 0`, 단건 조회는 실측이 되어 불일치하기 때문이다(단건 `countUnreadInRoom`과 동일 기준).
 
+### 7-7. 회원 탈퇴 시 대화 종료 (✅ 이슈 #107)
+
+`DELETE /api/members/me`(회원 탈퇴)는 같은 트랜잭션에서 `ChatRoomService.closeRoomsOnMemberWithdrawal(memberId)`를 호출해 탈퇴 회원의
+모든 대화를 끝낸다(설계: [`MEMBER_DOMAIN.md`](../member/MEMBER_DOMAIN.md) §6-4).
+
+```
+closeRoomsOnMemberWithdrawal(memberId)
+   └─ findJoinedRoomIdsOrderByRoomId(memberId)        (leftAt IS NULL, roomId 오름차순)
+        └─ 방마다 findByIdForUpdate(roomId)            (송신·나가기와 같은 방 행 락)
+             ├─ 락 이후 멤버십 재조회 — 그사이 직접 나갔으면 건너뜀
+             ├─ 탈퇴 회원 멤버십 leave()                (목록·이력·구독·송신 차단)
+             └─ room.closeOnMemberWithdrawal()
+                  ├─ ACTIVE·BLOCKED → CLOSED           (BLOCKED는 차단 해제로 다시 열릴 수 있으므로 함께 종료)
+                  └─ REPORTED → 그대로                  (신고 검토·감사 상태 보존. 이미 송신 차단 상태)
+```
+
+- ✅ **상대 회원**: 기존 나가기와 같이 종료된 방과 과거 이력을 계속 볼 수 있지만 새 메시지는 `ROOM_CLOSED`(409)로 막힌다. 상대가 원하면 `/leave`로 목록에서 지울 수 있다.
+- ✅ **탈퇴 ↔ 송신 동시성**: 탈퇴도 방 행 비관적 쓰기 락을 먼저 잡으므로, 탈퇴가 먼저 커밋되면 송신은 `CLOSED`를 보고 막힌다(§7-6과 같은 원리).
+- ✅ **교착 방지**: 탈퇴의 잠금 순서는 "회원 행 → 방 행(roomId 오름차순)"이다. 송신·나가기는 방 행만, 신고는 "회원 → 방" 순서라 순서가 엇갈리지 않는다.
+- ✅ **탈퇴 전 연결한 STOMP 세션**: 송신·읽음은 멤버십 종료로 `ROOM_CLOSED`, 방 토픽 재구독은 `MEMBER_403_INACTIVE`로 막히고, 새 `CONNECT`는 거절된다(§9).
+- ✅ **개인 알림**: 새 메시지 개인 알림 팬아웃(`findOtherMemberIds`)은 방을 나간 참여자(`leftAt` 존재)를 제외한다.
+
 ---
 
 ## 8. 데이터 접근 & 성능
@@ -524,6 +546,9 @@ DiscoveryService(ChatStartService).startChat            ChatRoomService.openRoom
 5. ✅ **인가/처리 실패 통지**: REST는 `BaseException.from(ChatErrorCode.*)` → `GlobalExceptionHandler`가 `ErrorResponse` 변환.
    STOMP 경로는 `/user/queue/errors`로 개인 통지하며, 같은 계정의 다른 세션에 새지 않도록 해당 세션(`simpSessionId`)에만 보낸다.
    STOMP 핸들러는 도메인 예외(`BaseException`)·입력 오류(`@Valid`·변환 → `INVALID_MESSAGE`)·그 밖의 예외(기록 후 500)를 분리 처리한다.
+6. ✅ **탈퇴 회원 차단(#107)**: Access Token은 탈퇴 직후에도 만료 전까지 서명상 유효하므로, `StompAuthChannelInterceptor`가 `CONNECT`와 방 토픽
+   `SUBSCRIBE`에서 `MemberAccessValidator`로 탈퇴 여부를 확인한다. 탈퇴 회원의 `CONNECT`는 거절되고, 탈퇴 전 연결한 세션의 방 토픽 구독은
+   `/user/queue/errors`로 `MEMBER_403_INACTIVE`를 통지한 뒤 차단된다. REST도 `JwtAuthenticationFilter`가 같은 검증으로 `403`을 응답한다.
 
 ---
 

@@ -8,6 +8,7 @@ import com.blursome.blursome.global.exception.code.JwtErrorCode;
 import com.blursome.blursome.global.response.ErrorResponse;
 import com.blursome.blursome.global.security.JwtAuthentication;
 import com.blursome.blursome.global.security.JwtTokenProvider;
+import com.blursome.blursome.global.security.MemberAccessValidator;
 import java.security.Principal;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -36,6 +37,9 @@ import org.springframework.stereotype.Component;
  *       남은 참여자는 읽음 표시 등 실시간 이벤트를 받을 수 있어야 하므로 구독은 허용한다(송신은 쓰기 경로에서 별도로 막힌다).</li>
  * </ul>
  *
+ * <p>탈퇴 회원(#107)은 토큰이 아직 유효해도 {@code CONNECT}가 거절되고 방 토픽 구독도 막힌다. 탈퇴 전에 연결한 세션의
+ * 송신·읽음은 탈퇴 시 모든 방 멤버십이 종료되므로 쓰기 경로({@code getWritableMembership})가 {@code ROOM_CLOSED}로 막는다.
+ *
  * <p>{@code CONNECT} 인증 실패는 예외로 연결을 거절한다. 반면 {@code SUBSCRIBE} 권한 실패는 연결 전체를 끊지 않고
  * 개인 오류 큐({@code /user/queue/errors})로 통지한 뒤 해당 프레임만 드롭한다(설계 §6-2·§9, {@code preSend}가 null을
  * 반환하면 그 메시지는 브로커로 전달되지 않아 구독이 성립하지 않는다).
@@ -50,6 +54,7 @@ public class StompAuthChannelInterceptor implements ChannelInterceptor {
 
   private final JwtTokenProvider jwtTokenProvider;
   private final ChatRoomMembershipReader membershipReader;
+  private final MemberAccessValidator memberAccessValidator;
   // SimpMessagingTemplate은 브로커 설정이 만들고, 그 설정은 이 인터셉터가 등록되는 인바운드 채널 구성에 의존한다.
   // 생성자에서 바로 주입하면 순환 의존이 되므로 ObjectProvider로 사용 시점에 지연 해석한다.
   private final ObjectProvider<SimpMessagingTemplate> messagingTemplate;
@@ -69,10 +74,14 @@ public class StompAuthChannelInterceptor implements ChannelInterceptor {
     return message;
   }
 
-  /** CONNECT 프레임의 Bearer 토큰을 검증해 principal을 세션에 심는다. 실패 시 연결 거절. */
+  /**
+   * CONNECT 프레임의 Bearer 토큰을 검증해 principal을 세션에 심는다. 실패 시 연결 거절. 서명·만료가 유효해도 탈퇴한 회원의
+   * 토큰이면 연결을 거절한다(#107).
+   */
   private void authenticate(StompHeaderAccessor accessor) {
     String token = resolveToken(accessor);
     JwtAuthentication authentication = jwtTokenProvider.parseAccess(token);
+    memberAccessValidator.validateAccess(authentication.getPrincipal());
     accessor.setUser(authentication);
   }
 
@@ -101,6 +110,9 @@ public class StompAuthChannelInterceptor implements ChannelInterceptor {
     Long roomId = Long.valueOf(matcher.group(1));
     Long memberId = currentMemberId(accessor);
     try {
+      // 탈퇴 전에 열어 둔 세션도 탈퇴 후에는 방 토픽을 새로 구독하지 못하게 한다(#107). 탈퇴 시 모든 멤버십에 leftAt이
+      // 기록되므로 아래 가시성 검증도 막지만, 회원 상태를 먼저 확인해 사유를 분명히 한다.
+      memberAccessValidator.validateAccess(memberId);
       membershipReader.getVisibleMembership(roomId, memberId);
       return message;
     } catch (BaseException e) {

@@ -2,6 +2,7 @@ package com.blursome.blursome.member.verification;
 
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.member.exception.MemberErrorCode;
+import java.util.Locale;
 import org.springframework.stereotype.Component;
 
 /**
@@ -27,6 +28,16 @@ public class SchoolEmailPolicy {
     if (!isAllowed(email)) {
       throw BaseException.from(MemberErrorCode.MEMBER_INVALID_SCHOOL_EMAIL_DOMAIN);
     }
+  }
+
+  /**
+   * 학교 이메일 비교·저장 기준값으로 정규화한다(#107): 앞뒤 공백 제거 + 소문자. 같은 주소를 대소문자만 바꿔 30일 재가입
+   * 제한을 우회하지 못하도록, 인증 코드 저장·검증·회원 저장 모두 이 값을 쓴다.
+   *
+   * @return 정규화한 이메일. {@code null}이면 {@code null}
+   */
+  public String normalize(String email) {
+    return email == null ? null : email.strip().toLowerCase(Locale.ROOT);
   }
 
   private boolean isAllowed(String email) {

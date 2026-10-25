@@ -131,6 +131,17 @@ public class ChatRoom extends BaseEntity {
     }
   }
 
+  /**
+   * 참여 회원 탈퇴로 방을 종료한다(#107). 진행 중({@code ACTIVE})이거나 차단 해제로 다시 진행될 수 있는
+   * ({@code BLOCKED}) 방만 비가역 {@code CLOSED}로 바꾼다. 신고 검토 중({@code REPORTED}) 방은 운영 검토·감사 상태를
+   * 잃지 않도록 그대로 두며(이미 송신이 막힌 상태), 이미 종료된 방은 멱등하게 무시한다.
+   */
+  public void closeOnMemberWithdrawal() {
+    if (this.roomStatus == ChatRoomStatus.ACTIVE || this.roomStatus == ChatRoomStatus.BLOCKED) {
+      this.roomStatus = ChatRoomStatus.CLOSED;
+    }
+  }
+
   public boolean isActive() {
     return this.roomStatus == ChatRoomStatus.ACTIVE;
   }

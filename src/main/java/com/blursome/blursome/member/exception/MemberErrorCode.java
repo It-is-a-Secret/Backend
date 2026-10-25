@@ -66,6 +66,11 @@ public enum MemberErrorCode implements ErrorCode {
       "이미 탈퇴한 회원입니다.",
       "MEMBER_409_ALREADY_WITHDRAWN"
   ),
+  // 이슈 #107: 탈퇴 후 30일 동안 같은 카카오 계정·학교 이메일 재가입 제한. 서비스는 재가입 가능 시각을 메시지에 담는다.
+  MEMBER_REJOIN_RESTRICTED(HttpStatus.CONFLICT,
+      "탈퇴 후 30일 동안은 같은 계정이나 학교 이메일로 다시 가입할 수 없습니다.",
+      "MEMBER_409_REJOIN_RESTRICTED"
+  ),
   MEMBER_ALREADY_ACTIVE(HttpStatus.CONFLICT,
       "이미 활성 상태인 회원입니다.",
       "MEMBER_409_ALREADY_ACTIVE"

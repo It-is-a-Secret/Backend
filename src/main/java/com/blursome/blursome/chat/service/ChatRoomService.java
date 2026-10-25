@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -197,6 +198,35 @@ public class ChatRoomService {
   }
 
   /**
+   * 회원 탈퇴 시 그 회원이 참여 중인 모든 대화를 끝낸다(#107). 회원 탈퇴 유스케이스({@code MemberWithdrawalService})가
+   * 같은 트랜잭션 안에서 호출한다(Service → Service).
+   *
+   * <ul>
+   *   <li>탈퇴 회원의 멤버십에 {@code leftAt}을 기록해 목록·이력·송신·구독을 막는다.</li>
+   *   <li>{@code ACTIVE}·{@code BLOCKED} 방은 비가역 {@code CLOSED}로 종료한다. 상대는 기존 나가기 정책과 같이 종료된 방과
+   *       과거 이력을 볼 수 있지만 새 메시지는 보낼 수 없다.</li>
+   *   <li>{@code REPORTED} 방은 신고 검토 상태를 유지하고 탈퇴 회원의 멤버십만 종료한다.</li>
+   * </ul>
+   *
+   * <p>각 방은 송신·퇴장 경로와 같은 방 행 비관적 쓰기 락을 먼저 잡아, 탈퇴가 커밋된 뒤에는 동시 송신이 종료된 방을 보고
+   * 막히게 한다. 여러 방을 잠그므로 {@code roomId} 오름차순으로 잠가 교착을 막는다. 락을 잡은 뒤 멤버십을 다시 읽어, 그사이
+   * 직접 나간 방은 건너뛴다.
+   */
+  @Transactional
+  public void closeRoomsOnMemberWithdrawal(Long memberId) {
+    for (Long roomId : chatRoomMemberRepository.findJoinedRoomIdsOrderByRoomId(memberId)) {
+      ChatRoom room = chatRoomRepository.findByIdForUpdate(roomId)
+          .orElseThrow(() -> BaseException.from(ChatErrorCode.ROOM_NOT_FOUND));
+      chatRoomMemberRepository.findMembership(roomId, memberId)
+          .filter(membership -> !membership.hasLeft())
+          .ifPresent(membership -> {
+            membership.leave();
+            room.closeOnMemberWithdrawal();
+          });
+    }
+  }
+
+  /**
    * 차단 발생 시 두 회원 사이 진행 중 방을 동결한다(이슈 #77). 차단 도메인({@code BlockService})이 차단 등록
    * 직후 호출하는 진입점이다(Service → Service). ACTIVE 방이 있으면 {@code BLOCKED}로 전환해 양쪽 송신·원본
    * 공개·단계 진행을 멈춘다. 동결할 방이 없거나(과거 종료/미개설) 이미 동결된 방은 멱등하게 무시한다. 클래스 기본값
@@ -204,8 +234,7 @@ public class ChatRoomService {
    */
   @Transactional
   public void freezeRoomOnBlock(Long memberAId, Long memberBId) {
-    chatRoomMemberRepository.findActiveOrBlockedRoomBetween(memberAId, memberBId)
-        .ifPresent(ChatRoom::markBlocked);
+    lockActiveOrBlockedRoomBetween(memberAId, memberBId).ifPresent(ChatRoom::markBlocked);
   }
 
   /**
@@ -216,8 +245,18 @@ public class ChatRoomService {
    */
   @Transactional
   public void restoreRoomOnUnblock(Long memberAId, Long memberBId) {
-    chatRoomMemberRepository.findActiveOrBlockedRoomBetween(memberAId, memberBId)
-        .ifPresent(ChatRoom::unblockToActive);
+    lockActiveOrBlockedRoomBetween(memberAId, memberBId).ifPresent(ChatRoom::unblockToActive);
+  }
+
+  /**
+   * 두 회원 사이 ACTIVE·BLOCKED 방의 행을 비관적 쓰기 락으로 읽는다(#107). 송신·퇴장·탈퇴 종료와 같은 방 행 락으로
+   * 직렬화하므로, 탈퇴가 먼저 {@code CLOSED}를 커밋했으면 락을 얻은 뒤 최신 상태를 보고 {@code markBlocked}·
+   * {@code unblockToActive}가 no-op이 된다(비가역 종료가 BLOCKED·ACTIVE로 되살아나지 않음). 차단이 먼저면 탈퇴가 락 해제 후
+   * BLOCKED를 보고 CLOSED로 종료한다.
+   */
+  private Optional<ChatRoom> lockActiveOrBlockedRoomBetween(Long memberAId, Long memberBId) {
+    return chatRoomMemberRepository.findActiveOrBlockedRoomIdBetween(memberAId, memberBId)
+        .flatMap(chatRoomRepository::findByIdForUpdate);
   }
 
   /**

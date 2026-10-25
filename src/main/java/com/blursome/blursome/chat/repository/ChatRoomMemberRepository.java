@@ -42,16 +42,19 @@ public interface ChatRoomMemberRepository extends JpaRepository<ChatRoomMember, 
   /**
    * 두 회원이 모두 참여 중인 동결 가능/해제 가능 방(=ACTIVE 또는 BLOCKED)을 조회한다(이슈 #77). 차단 동결
    * ({@code markBlocked})·해제 복구({@code unblockToActive})가 같은 방을 찾아 상태를 전이하는 데 쓴다. 종료
-   * ({@code CLOSED})는 페어 키가 비워져 새 방 대상이고 비가역이므로 제외한다.
+   * ({@code CLOSED})는 비가역이므로 제외한다.
+   *
+   * <p>엔티티가 아니라 id만 돌려준다(#107). 호출 측은 이 id로 방 행을 쓰기 락으로 다시 읽은 뒤 상태를 전이한다. 엔티티를
+   * 먼저 적재하면 이후 잠금 조회가 영속성 컨텍스트의 이전 상태를 돌려줘, 그사이 탈퇴가 커밋한 {@code CLOSED}를 덮어쓸 수 있다.
    */
-  @Query("select r from ChatRoom r "
+  @Query("select r.id from ChatRoom r "
       + "join ChatRoomMember crm on crm.chatRoom = r "
       + "where r.roomStatus in (com.blursome.blursome.chat.domain.ChatRoomStatus.ACTIVE, "
       + "com.blursome.blursome.chat.domain.ChatRoomStatus.BLOCKED) "
       + "and crm.member.id in (:memberAId, :memberBId) "
-      + "group by r "
+      + "group by r.id "
       + "having count(distinct crm.member.id) = 2")
-  Optional<ChatRoom> findActiveOrBlockedRoomBetween(@Param("memberAId") Long memberAId,
+  Optional<Long> findActiveOrBlockedRoomIdBetween(@Param("memberAId") Long memberAId,
       @Param("memberBId") Long memberBId);
 
   /**
@@ -98,11 +101,20 @@ public interface ChatRoomMemberRepository extends JpaRepository<ChatRoomMember, 
   /**
    * 방에서 나를 제외한 다른 참여자들의 회원 id를 조회한다(이슈 #88, 새 메시지 개인 알림 팬아웃 대상). 1:1 방이라
    * 보통 상대 1명이며, 발신자 본인은 제외하므로 자기 메시지로 자기 개인 큐가 울리지 않는다. {@code member_id}
-   * 컬럼만 투영해 가볍게 조회한다({@code chat_room_id} 선두 유니크 인덱스를 탄다).
+   * 컬럼만 투영해 가볍게 조회한다({@code chat_room_id} 선두 유니크 인덱스를 탄다). 방을 나간 참여자(탈퇴 회원 포함,
+   * #107)는 개인 알림 대상에서 뺀다.
    */
   @Query("select crm.member.id from ChatRoomMember crm "
-      + "where crm.chatRoom.id = :roomId and crm.member.id <> :memberId")
+      + "where crm.chatRoom.id = :roomId and crm.member.id <> :memberId and crm.leftAt is null")
   List<Long> findOtherMemberIds(@Param("roomId") Long roomId, @Param("memberId") Long memberId);
+
+  /**
+   * 회원이 아직 나가지 않은 방의 id를 오름차순으로 조회한다(#107 탈퇴 시 대화 종료). 여러 방을 잠글 때 항상 같은 순서로
+   * 잠가 교착을 막기 위해 정렬해서 돌려준다.
+   */
+  @Query("select crm.chatRoom.id from ChatRoomMember crm "
+      + "where crm.member.id = :memberId and crm.leftAt is null order by crm.chatRoom.id asc")
+  List<Long> findJoinedRoomIdsOrderByRoomId(@Param("memberId") Long memberId);
 
   /**
    * 주어진 방들에서 나를 제외한 상대 참여자 정보(회원 id + 닉네임 + 읽음 커서)를 한 번에 조회한다(목록 조회 N+1 회피).

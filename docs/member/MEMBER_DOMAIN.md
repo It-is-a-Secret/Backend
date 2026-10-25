@@ -18,7 +18,7 @@ BlurSome의 회원(Member) 도메인을 정의합니다. 소셜 로그인으로 
 - 소셜 로그인(현재 Kakao)으로 진입한 사용자를 회원으로 식별·생성한다.
 - 회원을 **가입 단계(`registrationStatus`)** 로 관리한다: 소셜만 한 상태 → 학교 인증 완료 → 온보딩 완료.
 - 학교 이메일 인증과 온보딩(닉네임·성별 입력)을 **순차적으로 강제**한다.
-- 탈퇴를 소프트삭제(`activityStatus = WITHDRAWN`)로 처리해 감사·재가입 추적을 유지한다.
+- 탈퇴를 소프트삭제(`activityStatus = WITHDRAWN`)로 처리해 감사 이력을 유지하고, 같은 카카오 계정·학교 이메일의 재가입을 30일 동안 제한한다(#107).
 - 위 상태 전이 규칙(불변식)을 **엔티티 도메인 메서드 안**에 캡슐화한다(Rich Domain).
 
 ### 핵심 결정 (✅ 확정)
@@ -27,10 +27,10 @@ BlurSome의 회원(Member) 도메인을 정의합니다. 소셜 로그인으로 
 |---|---|---|
 | 엔티티 모델 | **새 스키마로 전면 재설계** | 소셜 제공 `name`과 온보딩 `nickName`을 **분리**. 기존 `nickname`/`status`는 마이그레이션 대상(§9) |
 | 가입 단계 전이 | **학교인증 → 온보딩 순차 강제** | `UNVERIFIED → VERIFIED → COMPLETED` 단조 전진, 되돌리기 없음 |
-| 탈퇴 처리 | **소프트삭제** (`ACTIVE/WITHDRAWN`) | 행 유지, `providerId` 보존으로 재가입/감사 추적. `SUSPENDED`는 후순위 |
+| 탈퇴 처리 | **소프트삭제** (`ACTIVE/WITHDRAWN`) + `DELETE /api/members/me` (#107) | 행 유지(채팅·신고 FK 이력 보존). 탈퇴와 함께 진행 중 대화 종료·토큰 무효화 |
 | 학교 이메일 | **유니크 제약** | 학교 이메일 1개당 계정 1개 보장(부분 유니크/NULL 허용) |
 | 닉네임 | **유니크 제약** | 온보딩 `nickName` 중복 금지(부분 유니크/NULL 허용) |
-| 재가입 | **기존 행 재활성화** | 탈퇴자 재로그인 시 WITHDRAWN 행을 `reactivate()` — 직전 상태 그대로 복구 |
+| 재가입 | **30일 제한 후 새 회원으로 가입** (#107) | 탈퇴 후 30일 미만이면 같은 카카오 계정·학교 이메일 거부(`MEMBER_409_REJOIN_RESTRICTED`). 30일 후에는 이전 행의 식별자를 해제(익명화)하고 새 행으로 가입(학교 인증·온보딩부터 다시). 예전의 `reactivate()` 즉시 복구는 폐지 |
 
 ### 전제 / 선행
 
@@ -60,7 +60,8 @@ BlurSome의 회원(Member) 도메인을 정의합니다. 소셜 로그인으로 
 | `role` | `MemberRole`, `nullable=false`, len 20, default `USER` | 권한 |
 | `activityStatus` | `ActivityStatus`, `nullable=false`, len 20, default `ACTIVE` | 탈퇴 등 활동 상태 |
 | `registrationStatus` | `RegistrationStatus`, `nullable=false`, len 30, default `UNVERIFIED` | 가입 단계 |
-| `withdrawnAt` | `LocalDateTime`, nullable | 탈퇴 시각. `withdraw()`에서 세팅·`reactivate()`에서 해제. **탈퇴 후 30일 보존·영구 삭제 배치의 기준** |
+| `withdrawnAt` | `LocalDateTime`, nullable | 탈퇴 시각. `withdraw(now)`에서 세팅·`reactivate()`에서 해제. **30일 재가입 제한(`withdrawnAt + 30일` 미만이면 제한)과 식별자 해제의 기준** (#107) |
+| `identifiersReleasedAt` | `LocalDateTime`, nullable, col `identifiers_released_at` | 30일이 지나 카카오 식별자·학교 이메일·개인정보를 해제(익명화)한 시각(#107). `null`이면 해제 전 |
 | `lastActiveAt` | `LocalDateTime`, nullable | 마지막 접속·주요 활동 시각. 로그인 시 갱신. "최근 접속 우선 노출" 정렬 기준 |
 | `createdAt`/`updatedAt` | `BaseEntity` | 감사 필드. ⚠️ `updatedAt`은 프로필 갱신 등 임의 수정에도 변하므로 **탈퇴 시각 대용으로 쓰지 않는다**(→ `withdrawnAt` 사용) |
 
@@ -119,25 +120,28 @@ createOAuthMember()
 - 단계 비교는 enum 선언 순서(ordinal)를 이용한다. **따라서 값 순서 변경·중간 삽입 금지(append만 허용)**.
 - 단계 비교 헬퍼(🧩): `RegistrationStatus.isAtLeast(other)` — 서비스가 ordinal을 직접 다루지 않도록 한다.
 
-### 3-2. ActivityStatus — 탈퇴 / 재가입 (✅ 확정: 소프트삭제 + 재활성화)
+### 3-2. ActivityStatus — 탈퇴 / 재가입 (✅ 확정: 소프트삭제 + 30일 제한 후 새 가입, #107)
 
 ```
   createOAuthMember()
         │
         ▼
-   ┌────────┐   withdraw()    ┌───────────┐
-   │ ACTIVE │ ──────────────▶ │ WITHDRAWN │
-   └────────┘                 └───────────┘
-        ▲                          │
-        └──── reactivate() ────────┘
-          (같은 소셜 계정 재로그인)
+   ┌────────┐   withdraw(now)   ┌───────────┐  30일 경과 후 releaseIdentifiers(now)  ┌─────────────────────────┐
+   │ ACTIVE │ ────────────────▶ │ WITHDRAWN │ ─────────────────────────────────────▶ │ WITHDRAWN (식별자 해제) │
+   └────────┘                   └───────────┘   (로그인·학교 인증 시 즉시 / 정리 배치)  └─────────────────────────┘
+                                                                                         같은 카카오 계정·학교 이메일로
+                                                                                         새 Member 행을 만들 수 있음
 ```
 
-- `WITHDRAWN`은 소프트삭제 상태. 행을 삭제하지 않고 `providerId`를 보존해 감사·재가입 추적이 가능하다.
-- `WITHDRAWN` 회원은 가입 단계 전이(`verifySchoolEmail`/`completeOnboarding`)·서비스 진입이 모두 차단된다.
-- **재가입(✅ 결정: 기존 행 재활성화)**: 탈퇴자가 같은 소셜 계정으로 재로그인하면 `findByProviderAndProviderId`가 기존 WITHDRAWN 행을 찾는다(새 행 생성은 `uk_member_provider` 충돌이라 불가). 이때 `reactivate()`로 `activityStatus`를 `ACTIVE`로 되돌리고 `withdrawnAt`을 해제하며, **`registrationStatus`·온보딩 필드(`nickName`/`schoolEmail`)는 보존된 값 그대로 복구**한다(닉네임·학교인증 재수행 불필요). 공개 프로필을 담은 `Feed`도 그대로 유지된다.
-- **탈퇴 시각 기록(✅ 추가, 이슈 #39)**: `withdraw()`는 `withdrawnAt = now()`를 기록한다. `BaseEntity.updatedAt`은 임의 수정에도 갱신되어 탈퇴 시각으로 부정확하므로, 보존·정렬 판정은 전용 컬럼 `withdrawnAt`을 쓴다.
-- **30일 보존 후 영구 삭제(🧩 설계 반영, 스케줄러는 후속 이슈)**: 탈퇴 회원은 30일간 소프트삭제 상태로 보존했다가 영구 삭제한다. 배치는 `activityStatus = WITHDRAWN AND withdrawnAt < now() - 30일` 대상을 주기적으로 하드 삭제(또는 익명화)한다. 30일 내 재로그인하면 `reactivate()`로 살아나며 `withdrawnAt`이 비워져 삭제 대상에서 빠진다. 실제 스케줄러 구현은 후속 이슈로 분리한다.
+- `WITHDRAWN`은 소프트삭제 상태다. 행을 삭제하지 않아 채팅·신고·차단 이력의 FK가 유지된다. 피드·사진·메시지·S3 객체도 지우지 않는다.
+- `WITHDRAWN` 회원은 가입 단계 전이(`verifySchoolEmail`/`completeOnboarding`)·서비스 진입이 모두 차단된다. 탐색 후보·카드 상세·공개 피드·채팅 개설 게이트도 활성 회원만 통과시키므로 자연히 빠진다.
+- **탈퇴 시각 기록(이슈 #39)**: `withdraw(now)`는 `withdrawnAt`을 기록한다. 서비스는 테스트 가능한 `Clock` 기준 시각을 넘긴다. `BaseEntity.updatedAt`은 임의 수정에도 갱신되어 탈퇴 시각으로 부정확하므로 전용 컬럼을 쓴다.
+- **30일 재가입 제한(#107)**: 기준은 `withdrawnAt + 30일`(`Member.REJOIN_RESTRICTION`)이며, 그 시각 **미만**이면 제한하고 정확히 그 시각부터 허용한다(`isRejoinRestricted(now)`). 두 식별자에 각각 적용한다.
+  - **같은 카카오 계정**: 로그인 시 탈퇴 회원을 찾고 제한 기간이면 재활성화·토큰 발급 없이 `MEMBER_409_REJOIN_RESTRICTED`로 거부한다. 메시지에 가입 가능 시각(`yyyy-MM-dd HH:mm`)을 담는다. 예전의 즉시 `reactivate()`는 제거했다.
+  - **같은 학교 이메일**: 다른 카카오 계정이라도, 이메일 보유자가 제한 기간의 탈퇴 회원이면 인증 코드 발송과 최종 검증 모두 `MEMBER_409_REJOIN_RESTRICTED`로 거부한다. 활성(또는 정지) 회원이 쓰고 있으면 기존대로 `MEMBER_409_SCHOOL_EMAIL_DUPLICATED`. 이메일은 공백 제거·소문자로 정규화해 비교·저장한다.
+- **30일 후 식별자 해제(#107)**: 탈퇴 행이 `(provider, provider_id)`·`school_email` 유니크 값을 계속 쥐면 30일 후에도 재가입할 수 없으므로, 제한이 끝난 탈퇴 회원은 `releaseIdentifiers(now)`로 익명화한다: `providerId = "withdrawn:{id}"`, `schoolEmail`·`email`·`profileImageUrl = null`, `name = "탈퇴한 회원"`, `identifiersReleasedAt = now`. 닉네임은 지난 채팅 이력에서 상대를 식별하는 표시명이라 남긴다.
+  - **해제 시점**: 정리 배치(`WithdrawnMemberCleanupScheduler`, 1시간마다 최대 100명)가 주기적으로 해제하고, 배치가 늦어도 로그인·학교 이메일 검증 경로가 30일 지난 탈퇴 회원을 만나면 그 자리에서 해제한다(lazy cleanup). 정확성은 배치에 의존하지 않는다.
+  - **재가입 = 새 회원**: 30일 후 같은 카카오 계정으로 로그인하면 이전 행은 익명화된 채 남고 새 `Member` 행이 `UNVERIFIED`로 생성된다(학교 인증·온보딩부터 다시). 이전 피드·키워드는 새 회원과 연결되지 않는다.
 - **`SUSPENDED`(신고 제재 임시 정지, ✅ #75)**: 대상의 고유 신고자가 7일 내 **5명**에 도달하면 `ReportService`가 `suspend()`로 `ACTIVE → SUSPENDED` 자동 전이한다. 정지 회원은 `isActive()`가 `false`라 OAuth 로그인(`MEMBER_403_SUSPENDED`로 거부, 재활성화 안 함)·채팅·탐색이 모두 차단된다. 해제는 운영자 수동 `reactivate()`(관리자 도구는 후속 이슈). 탈퇴(`WITHDRAWN`)는 되살리지 않으려 `suspend()`가 `ACTIVE`일 때만 전이한다.
 
 ---
@@ -183,14 +187,25 @@ void updateProfileFromOAuth(String name, String profileImageUrl)
 ### 4-4. 탈퇴 / 재활성화
 
 ```java
-void withdraw()
-//   불변식: ACTIVE 여야 함. 이미 WITHDRAWN이면 예외.
-//   activityStatus = WITHDRAWN, withdrawnAt = now(). (registrationStatus·온보딩 필드는 보존)
+void withdraw(LocalDateTime now)   // withdraw()는 현재 시각으로 위임
+//   불변식: 이미 WITHDRAWN이면 MEMBER_409_ALREADY_WITHDRAWN.
+//   activityStatus = WITHDRAWN, withdrawnAt = now. (registrationStatus·온보딩 필드는 보존)
+
+LocalDateTime rejoinAvailableAt()           // withdrawnAt + 30일. 탈퇴 회원이 아니면 null
+boolean isRejoinRestricted(LocalDateTime now)  // now < rejoinAvailableAt()
+
+void releaseIdentifiers(LocalDateTime now)
+//   불변식: WITHDRAWN이고 재가입 제한이 끝났어야 함(아니면 IllegalStateException). 이미 해제했으면 no-op.
+//   providerId = "withdrawn:{id}", schoolEmail·email·profileImageUrl = null, name = "탈퇴한 회원",
+//   identifiersReleasedAt = now. nickName은 유지.
 
 void reactivate()
-//   불변식: WITHDRAWN 여야 함. 이미 ACTIVE면 예외.
-//   activityStatus = ACTIVE, withdrawnAt = null. registrationStatus·nickName·schoolEmail은 건드리지 않는다(직전 상태 복구).
+//   불변식: 이미 ACTIVE면 예외.
+//   activityStatus = ACTIVE, withdrawnAt = null. 신고 정지(SUSPENDED)의 운영자 수동 해제용이다.
+//   탈퇴 회원의 재가입 경로에서는 더 이상 호출하지 않는다(#107).
 ```
+
+> `Member`는 `@DynamicUpdate`로 바뀐 컬럼만 UPDATE한다. 탈퇴·학교 인증·로그인 활동 기록·신고 정지가 같은 행을 서로 다른 트랜잭션에서 고칠 수 있어, 전체 컬럼을 쓰면 먼저 읽어 둔 이전 활동 상태로 탈퇴를 덮어쓸 수 있기 때문이다. 이 경로들은 모두 회원 행을 쓰기 락(`findByIdForUpdate`)으로 읽어 직렬화한다.
 
 ### 4-6. 활동 시각 갱신 (단계와 무관)
 
@@ -257,10 +272,13 @@ com.blursome.member
         │
         ▼
 MemberService.findOrCreateByOAuth(userInfo)            @Transactional
-   ├─ findByProviderAndProviderId 존재
-   │     ├─ WITHDRAWN 이면 → member.reactivate()        (재가입: 직전 상태 복구)
-   │     └─ updateProfileFromOAuth(name, image)
-   └─ 없음 → Member.createOAuthMember(...)  (saveAndFlush, 유니크 충돌 시 도메인 예외)
+   ├─ findIdByProviderAndProviderId 존재 → findByIdForUpdate(id)   (행이 있을 때만 잠금: 갭 락 교착 회피)
+   │     ├─ SUSPENDED → MEMBER_403_SUSPENDED
+   │     ├─ WITHDRAWN
+   │     │     ├─ 30일 미만 → MEMBER_409_REJOIN_RESTRICTED (토큰 발급 없음, 메시지에 가입 가능 시각)
+   │     │     └─ 30일 이상 → releaseIdentifiers(now) + flush → 새 회원 생성(아래)
+   │     └─ ACTIVE → updateProfileFromOAuth(name, image) + recordActivity()
+   └─ 없음 → Member.createOAuthMember(...)  (saveAndFlush, 유니크 충돌 시 MEMBER_409_OAUTH_CONFLICT)
         │
         ▼
    Member 반환 (registrationStatus로 후속 단계 분기)
@@ -269,13 +287,25 @@ MemberService.findOrCreateByOAuth(userInfo)            @Transactional
 ### 6-2. 학교 이메일 인증
 
 ```
-[인증 서비스가 학교 이메일 소유 검증 완료]
-        │
-        ▼
-MemberService.verifySchoolEmail(memberId, schoolEmail)  @Transactional
-   ├─ findActiveMember(memberId)
-   ├─ member.verifySchoolEmail(schoolEmail)   (UNVERIFIED → VERIFIED)
-   └─ 유니크 충돌(DataIntegrityViolation) → MEMBER_409_SCHOOL_EMAIL_DUPLICATED
+POST /api/members/me/school-email/verification-codes {schoolEmail}
+MemberOnboardingService.sendSchoolEmailVerificationCode
+   ├─ email = normalize(schoolEmail)          (strip + lowercase)
+   ├─ 도메인 정책(@gs.anyang.ac.kr) 검증
+   ├─ memberService.validateSchoolEmailAvailable(memberId, email)
+   │     ├─ 다른 활성·정지 회원 보유 → MEMBER_409_SCHOOL_EMAIL_DUPLICATED
+   │     └─ 30일 미만 탈퇴 회원 보유 → MEMBER_409_REJOIN_RESTRICTED
+   └─ Redis에 (email, code) 저장 + 발송
+
+POST /api/members/me/school-email/verifications {schoolEmail, code}
+MemberOnboardingService.verifySchoolEmail                @Transactional
+   ├─ findActiveMemberForUpdate(memberId)     (본인 행 잠금: 동시 탈퇴와 직렬화)
+   ├─ Redis 코드·이메일 일치 확인
+   ├─ memberService.releaseSchoolEmailForReuse(memberId, email)   (저장 직전 재검증)
+   │     ├─ 보유자 id 조회 → findByIdForUpdate(보유자)
+   │     ├─ 활성·정지 회원 → DUPLICATED / 30일 미만 탈퇴 → REJOIN_RESTRICTED
+   │     └─ 30일 지난 탈퇴 회원 → releaseIdentifiers(now) + flush
+   ├─ member.verifySchoolEmail(email)         (UNVERIFIED → VERIFIED)
+   └─ 유니크 충돌(DataIntegrityViolation, 동시 인증) → MEMBER_409_SCHOOL_EMAIL_DUPLICATED
 ```
 
 ### 6-3. 온보딩 완료
@@ -296,12 +326,35 @@ MemberOnboardingService.completeOnboarding(memberId, request)     @Transactional
 ### 6-4. 탈퇴
 
 ```
-DELETE /api/members/me
+DELETE /api/members/me        (본문 없음, 204 + refreshToken 쿠키 Max-Age=0)
         │
         ▼
-MemberService.withdraw(memberId)                        @Transactional
-   └─ member.withdraw()   (ACTIVE → WITHDRAWN, 소프트삭제)
+MemberWithdrawalService.withdraw(memberId)               @Transactional (한 트랜잭션)
+   ├─ memberService.findActiveMemberForUpdate(memberId)  (회원 행 잠금. 탈퇴·정지 회원은 MEMBER_403_INACTIVE)
+   ├─ member.withdraw(now)                               (ACTIVE → WITHDRAWN)
+   ├─ chatRoomService.closeRoomsOnMemberWithdrawal(memberId)
+   │     └─ leftAt IS NULL 멤버십의 방을 roomId 오름차순으로 findByIdForUpdate
+   │           ├─ 탈퇴 회원 멤버십 leave()
+   │           └─ ACTIVE·BLOCKED → CLOSED, REPORTED는 상태 유지
+   └─ publish MemberWithdrawnEvent
+        │ AFTER_COMMIT
+        ├─ RefreshTokenRevocationListener   → Redis RT 삭제
+        └─ MemberWithdrawalCleanupListener  → Redis 학교 이메일 인증 코드 삭제
 ```
+
+**정책 정리 (#107)**
+
+| 항목 | 동작 |
+|---|---|
+| 응답 | `204 No Content`, `Set-Cookie: refreshToken=; Max-Age=0; Path=/api/auth` |
+| 기존 Access Token | REST 인증 필터가 토큰 검증 뒤 `MemberAccessValidator`로 탈퇴 여부를 확인해 `403 MEMBER_403_INACTIVE` |
+| 중복 탈퇴 | 같은 토큰으로 다시 요청하면 필터가 `403 MEMBER_403_INACTIVE`. 동시 요청 경합에서도 서비스가 잠금 뒤 비활성으로 보고 같은 `403`이다(정책 단일화) |
+| 정지 회원 | 탈퇴 불가(`403 MEMBER_403_INACTIVE`). 탈퇴 후 30일 뒤 새 계정으로 제재를 우회하지 못하게 한다 |
+| Refresh | 커밋 후 Redis RT를 지우고, 삭제가 실패해 RT가 남아도 refresh가 회원 활성 상태를 다시 확인해 거부 |
+| STOMP | `CONNECT`에서 탈퇴 회원 거절, 방 토픽 `SUBSCRIBE` 차단. 탈퇴 전 연결한 세션의 송신·읽음은 멤버십 종료로 `ROOM_CLOSED` |
+| 개인 알림 | 방을 나간 참여자는 새 메시지 개인 알림 대상(`findOtherMemberIds`)에서 제외 |
+| 노출 | 탐색 후보·카드 상세·채팅 개설은 기존 활성 회원 게이트로 제외, 공개 피드 사진(`GET /api/feeds/{id}/images`)은 주인 활성 여부를 추가로 확인 |
+| 동시성 | 잠금 순서는 "회원 → 방(roomId 오름차순)". 송신·나가기는 방만, 프로필·로그인·학교 인증은 회원만, 신고는 "회원 → 방"으로 같은 순서 |
 
 ### 6-5. 프로필 수정 (✅ 구현, 이슈 #95)
 
@@ -360,14 +413,15 @@ GET /api/members/me/nickname-availability?nickName=...   → 200 { nickName, ava
 | 코드 | 상황 | HTTP |
 |---|---|---|
 | `MEMBER_404_NOT_FOUND` | 회원 없음 | 404 | ✅ |
-| `MEMBER_403_INACTIVE` | 탈퇴/비활성 회원 | 403 | ✅ |
+| `MEMBER_403_INACTIVE` | 탈퇴/비활성 회원. 탈퇴 후 기존 Access Token·STOMP 접근, 중복 탈퇴, 정지 회원 탈퇴 요청(#107) | 403 | ✅ |
+| `MEMBER_409_REJOIN_RESTRICTED` | 탈퇴 후 30일 미만에 같은 카카오 계정 로그인 또는 같은 학교 이메일 인증(#107). 메시지에 가입 가능 시각 | 409 | ✅ |
 | `MEMBER_403_SUSPENDED` | 신고 제재로 정지된 회원(로그인 차단, #75) | 403 | ✅ |
 | `MEMBER_409_OAUTH_CONFLICT` | 소셜 가입 동시 요청 충돌 | 409 | ✅ |
 | `MEMBER_409_SCHOOL_EMAIL_DUPLICATED` | 학교 이메일 중복 | 409 | 🧩 |
 | `MEMBER_409_SCHOOL_VERIFICATION_REQUIRED` | 인증 전 온보딩 시도 | 409 | 🧩 |
 | `MEMBER_409_ALREADY_VERIFIED` | 이미 학교 인증됨 | 409 | 🧩 |
 | `MEMBER_409_ALREADY_ONBOARDED` | 이미 온보딩 완료 | 409 | 🧩 |
-| `MEMBER_409_ALREADY_WITHDRAWN` | 이미 탈퇴한 회원 | 409 | 🧩 |
+| `MEMBER_409_ALREADY_WITHDRAWN` | 이미 탈퇴한 회원에 대한 도메인 `withdraw()` 직접 호출(API는 `MEMBER_403_INACTIVE`로 응답) | 409 | ✅ |
 | `MEMBER_409_NICKNAME_DUPLICATED` | 닉네임 중복 | 409 | 🧩 |
 
 ---
