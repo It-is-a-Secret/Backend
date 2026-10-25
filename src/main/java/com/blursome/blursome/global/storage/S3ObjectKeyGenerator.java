@@ -44,6 +44,27 @@ public class S3ObjectKeyGenerator {
   }
 
   /**
+   * 블러 재처리(#105)에 쓸 새 원본 키를 생성한다. 기존 원본의 확장자를 유지하고 uuid만 새로 발급하므로, 대응하는
+   * 블러본 키도 새로 정해져 이전 블러본·캐시와 겹치지 않는다.
+   *
+   * @param memberId 소유 회원 id
+   * @param sourceOriginalKey 복사할 기존 원본 키({@code originals/{memberId}/{uuid}.{ext}})
+   * @return {@code originals/{memberId}/{새 uuid}.{기존 ext}}
+   * @throws IllegalArgumentException 원본 키에 확장자가 없는 경우
+   */
+  public String generateReprocessedOriginalKey(Long memberId, String sourceOriginalKey) {
+    if (sourceOriginalKey == null) {
+      throw new IllegalArgumentException("원본 키는 필수입니다.");
+    }
+    int lastDot = sourceOriginalKey.lastIndexOf('.');
+    if (lastDot < 0 || lastDot == sourceOriginalKey.length() - 1
+        || sourceOriginalKey.indexOf('/', lastDot) >= 0) {
+      throw new IllegalArgumentException("확장자가 없는 원본 키입니다: " + sourceOriginalKey);
+    }
+    return generateOriginalKey(memberId, sourceOriginalKey.substring(lastDot + 1));
+  }
+
+  /**
    * 주어진 원본 키가 {@code memberId} 소유의 정상 형식({@code originals/{memberId}/{uuid}.{ext}})인지 검증한다.
    * 메타데이터 저장 시 클라이언트가 보낸 key를 신뢰하기 전에 호출해, 다른 회원 prefix나 임의 경로·형식 위반을
    * 걸러낸다(IDOR·깨진 key 차단). 실제 S3 객체 존재 여부는 검증하지 않는다(블러본 존재는 스케줄러가 추적).

@@ -14,11 +14,13 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
+import java.time.LocalDateTime;
 import java.util.List;
 import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.DynamicUpdate;
 
 /**
  * 피드에 노출되는 사진 1장. {@link Feed}와 N:1로 대응한다.
@@ -26,12 +28,16 @@ import lombok.NoArgsConstructor;
  * <p>사진 바이너리는 백엔드를 거치지 않고 프론트엔드가 S3 Presigned URL로 직접 업로드한다. 본 엔티티는
  * S3 객체 key(비공개 원본·공개 블러본)와 노출 순서·블러 강도·블러본 생성 상태만 보관한다.
  *
- * <p>모든 컬럼은 {@code nullable=false}로 두어 행이 존재하면 항상 완전한 정보를 갖도록 한다.
- * {@code variantKey}가 non-null이라고 해서 블러본 객체가 S3에 존재함을 보장하지는 않으며, 실제 존재는
- * {@link FeedImageProcessingStatus}로 추적한다.
+ * <p>{@code processingStartedAt}을 제외한 모든 컬럼은 {@code nullable=false}로 두어 행이 존재하면 항상 완전한
+ * 정보를 갖도록 한다. {@code variantKey}가 non-null이라고 해서 블러본 객체가 S3에 존재함을 보장하지는 않으며,
+ * 실제 존재는 {@link FeedImageProcessingStatus}로 추적한다.
+ *
+ * <p>{@code @DynamicUpdate}로 바뀐 컬럼만 UPDATE한다. 저장 API(순서·key)와 상태 스케줄러(처리 상태)가 같은 행을
+ * 다른 트랜잭션에서 고칠 수 있어, 전체 컬럼을 쓰면 한쪽이 읽어 둔 이전 값으로 다른 쪽 변경을 덮어쓸 수 있다.
  */
 @Entity
 @Getter
+@DynamicUpdate
 @Table(
     name = "feed_image",
     uniqueConstraints = {
@@ -87,15 +93,28 @@ public class FeedImage extends BaseEntity {
   @Column(name = "processing_status", nullable = false, length = 20)
   private FeedImageProcessingStatus processingStatus;
 
+  /**
+   * 현재 블러본 생성이 시작된 시각. 신규 저장과 blur 재처리(#105) 때 갱신되며, 스케줄러의 최초 확인 지연·5분
+   * 타임아웃 기준이 된다. 재처리는 기존 행(ID)을 유지하므로 {@code createdAt}을 기준으로 쓰면 재처리 직후
+   * 바로 FAILED가 될 수 있어 별도로 둔다.
+   *
+   * <p>컬럼 도입 전에 저장된 행은 값이 없을 수 있어 nullable이며, 이때는 {@link #getProcessingBaseTime()}이
+   * {@code createdAt}으로 대체한다.
+   */
+  @Column(name = "processing_started_at")
+  private LocalDateTime processingStartedAt;
+
   @Builder(access = AccessLevel.PRIVATE)
   private FeedImage(Feed feed, Integer displayOrder, String originalKey, String variantKey,
-      Integer blurLevel, FeedImageProcessingStatus processingStatus) {
+      Integer blurLevel, FeedImageProcessingStatus processingStatus,
+      LocalDateTime processingStartedAt) {
     this.feed = feed;
     this.displayOrder = displayOrder;
     this.originalKey = originalKey;
     this.variantKey = variantKey;
     this.blurLevel = blurLevel;
     this.processingStatus = processingStatus;
+    this.processingStartedAt = processingStartedAt;
   }
 
   /**
@@ -123,7 +142,58 @@ public class FeedImage extends BaseEntity {
         .variantKey(variantKey)
         .blurLevel(resolvedBlurLevel)
         .processingStatus(FeedImageProcessingStatus.PROCESSING)
+        .processingStartedAt(LocalDateTime.now())
         .build();
+  }
+
+  /**
+   * 노출 순서를 바꾼다. 단순 재정렬이므로 key·블러 강도·처리 상태는 그대로 둔다.
+   *
+   * @throws IllegalArgumentException 순서가 1~5 범위를 벗어난 경우
+   */
+  public void changeDisplayOrder(Integer displayOrder) {
+    requireDisplayOrder(displayOrder);
+    this.displayOrder = displayOrder;
+  }
+
+  /**
+   * 순서 교환(예: 1↔2) 중 {@code uk_feed_image_order} 충돌을 피하려고 순서를 잠시 유효 범위 밖(음수)으로 옮긴다.
+   * 같은 피드의 현재 순서는 서로 다르므로 음수로 바꾼 값도 서로 겹치지 않는다. 호출자는 같은 트랜잭션 안에서
+   * 반드시 {@link #changeDisplayOrder(Integer)}로 최종 순서를 다시 지정해야 한다.
+   */
+  public void moveToTemporaryDisplayOrder() {
+    this.displayOrder = -Math.abs(this.displayOrder);
+  }
+
+  /** 요청한 블러 강도가 현재 값과 달라 블러본을 다시 만들어야 하는지 여부. */
+  public boolean needsReprocessing(int requestedBlurLevel) {
+    return this.blurLevel != requestedBlurLevel;
+  }
+
+  /**
+   * 블러 강도 변경으로 블러본 재생성을 시작한다(#105 copy-on-reprocess). 원본은 새 key로 이미 복사된 상태여야
+   * 한다. 행의 ID는 유지한 채 key·블러 강도를 새 값으로 바꾸고 {@code PROCESSING}부터 다시 추적한다. 이전 key의
+   * 객체는 덮어쓰지 않고 고아로 남겨 cleanup 대상으로 둔다.
+   *
+   * @throws IllegalArgumentException key가 비어 있거나 블러 강도가 허용 범위를 벗어난 경우
+   */
+  public void startReprocessing(String newOriginalKey, String newVariantKey, int newBlurLevel) {
+    requireKey(newOriginalKey, "originalKey");
+    requireKey(newVariantKey, "variantKey");
+    requireBlurLevel(newBlurLevel);
+    this.originalKey = newOriginalKey;
+    this.variantKey = newVariantKey;
+    this.blurLevel = newBlurLevel;
+    this.processingStatus = FeedImageProcessingStatus.PROCESSING;
+    this.processingStartedAt = LocalDateTime.now();
+  }
+
+  /**
+   * 스케줄러가 처리 경과 시간을 잴 기준 시각. 컬럼 도입 전 행은 {@code processingStartedAt}이 없으므로
+   * {@code createdAt}으로 대체한다.
+   */
+  public LocalDateTime getProcessingBaseTime() {
+    return processingStartedAt != null ? processingStartedAt : getCreatedAt();
   }
 
   private static void requireFeed(Feed feed) {
@@ -176,12 +246,38 @@ public class FeedImage extends BaseEntity {
     return images.size() == REQUIRED_PUBLISH_COUNT && images.stream().allMatch(FeedImage::isReady);
   }
 
-  /** 블러본 존재가 확인되어 공개 노출 가능 상태로 전이한다. (HeadObject 200) */
+  /**
+   * 원본 객체 메타데이터({@code x-amz-meta-blur-level}) 값으로 블러 Lambda가 실제로 적용할 블러 강도를 계산한다.
+   * Lambda({@code lambda/blur/handler.py}의 {@code resolve_blur_level})와 같은 규칙이어야 한다: 값이 없거나
+   * 정수가 아니면 {@link #DEFAULT_BLUR_LEVEL}, 범위를 벗어나면 가까운 경계값.
+   *
+   * @param metadataValue 원본 객체의 {@code blur-level} 메타데이터 원문({@code null} 허용)
+   * @return Lambda가 블러본에 적용하는 블러 강도(50~100)
+   */
+  public static int resolveAppliedBlurLevel(String metadataValue) {
+    if (metadataValue == null) {
+      return DEFAULT_BLUR_LEVEL;
+    }
+    int value;
+    try {
+      value = Integer.parseInt(metadataValue.strip());
+    } catch (NumberFormatException e) {
+      return DEFAULT_BLUR_LEVEL;
+    }
+    return Math.min(MAX_BLUR_LEVEL, Math.max(MIN_BLUR_LEVEL, value));
+  }
+
+  /**
+   * 블러본 존재가 확인되어 공개 노출 가능 상태로 전이한다. (HeadObject 200)
+   *
+   * <p>운영 스케줄러는 다른 트랜잭션과의 경합을 피하려고 엔티티 대신 조건부 UPDATE
+   * ({@code FeedImageRepository#transitionProcessingStatus})로 전이한다.
+   */
   public void markReady() {
     this.processingStatus = FeedImageProcessingStatus.READY;
   }
 
-  /** 생성 제한 시간(created_at + 5분) 내 블러본이 확인되지 않아 실패 상태로 전이한다. */
+  /** 처리 제한 시간(처리 시작 + 5분) 내 블러본이 확인되지 않아 실패 상태로 전이한다. */
   public void markFailed() {
     this.processingStatus = FeedImageProcessingStatus.FAILED;
   }

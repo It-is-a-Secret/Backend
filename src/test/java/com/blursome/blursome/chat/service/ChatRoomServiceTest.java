@@ -222,24 +222,57 @@ class ChatRoomServiceTest {
   void freezeRoomOnBlock_whenActiveRoom_thenBlocked() {
     // given
     ChatRoom room = activeRoom(ROOM_ID);
-    given(chatRoomMemberRepository.findActiveOrBlockedRoomBetween(MEMBER_ID, OTHER_ID))
-        .willReturn(Optional.of(room));
+    givenLockedRoomBetweenPair(room);
 
     // when
     chatRoomService.freezeRoomOnBlock(MEMBER_ID, OTHER_ID);
 
     // then — CLOSED/REPORTED가 아닌 BLOCKED로 동결됐는지 직접 검증한다
     assertThat(ReflectionTestUtils.getField(room, "roomStatus")).isEqualTo(ChatRoomStatus.BLOCKED);
+    verify(chatRoomRepository).findByIdForUpdate(ROOM_ID);
   }
 
   @Test
   @DisplayName("차단 동결: 동결할 방이 없으면 멱등하게 무시한다")
   void freezeRoomOnBlock_whenNoRoom_thenNoOp() {
-    given(chatRoomMemberRepository.findActiveOrBlockedRoomBetween(MEMBER_ID, OTHER_ID))
+    given(chatRoomMemberRepository.findActiveOrBlockedRoomIdBetween(MEMBER_ID, OTHER_ID))
         .willReturn(Optional.empty());
 
     chatRoomService.freezeRoomOnBlock(MEMBER_ID, OTHER_ID);
-    // 예외 없이 통과하면 성공(no-op)
+
+    verify(chatRoomRepository, never()).findByIdForUpdate(anyLong());
+  }
+
+  @Test
+  @DisplayName("차단 동결(#107): 락을 얻고 보니 탈퇴로 이미 CLOSED면 BLOCKED로 덮어쓰지 않는다")
+  void freezeRoomOnBlock_whenClosedAfterLock_thenStaysClosed() {
+    ChatRoom room = activeRoom(ROOM_ID);
+    room.closeOnMemberWithdrawal();
+    givenLockedRoomBetweenPair(room);
+
+    chatRoomService.freezeRoomOnBlock(MEMBER_ID, OTHER_ID);
+
+    assertThat(room.getRoomStatus()).isEqualTo(ChatRoomStatus.CLOSED);
+  }
+
+  @Test
+  @DisplayName("차단 해제 복구(#107): 락을 얻고 보니 탈퇴로 이미 CLOSED면 ACTIVE로 되살리지 않는다")
+  void restoreRoomOnUnblock_whenClosedAfterLock_thenStaysClosed() {
+    ChatRoom room = activeRoom(ROOM_ID);
+    room.markBlocked();
+    room.closeOnMemberWithdrawal();
+    givenLockedRoomBetweenPair(room);
+
+    chatRoomService.restoreRoomOnUnblock(MEMBER_ID, OTHER_ID);
+
+    assertThat(room.getRoomStatus()).isEqualTo(ChatRoomStatus.CLOSED);
+  }
+
+  /** 두 회원 사이 방 id 조회 → 방 행 쓰기 락 조회가 {@code room}을 돌려주도록 한다. */
+  private void givenLockedRoomBetweenPair(ChatRoom room) {
+    given(chatRoomMemberRepository.findActiveOrBlockedRoomIdBetween(MEMBER_ID, OTHER_ID))
+        .willReturn(Optional.of(ROOM_ID));
+    given(chatRoomRepository.findByIdForUpdate(ROOM_ID)).willReturn(Optional.of(room));
   }
 
   @Test
@@ -248,8 +281,7 @@ class ChatRoomServiceTest {
     // given
     ChatRoom room = activeRoom(ROOM_ID);
     room.markBlocked();
-    given(chatRoomMemberRepository.findActiveOrBlockedRoomBetween(MEMBER_ID, OTHER_ID))
-        .willReturn(Optional.of(room));
+    givenLockedRoomBetweenPair(room);
 
     // when
     chatRoomService.restoreRoomOnUnblock(MEMBER_ID, OTHER_ID);
@@ -349,6 +381,67 @@ class ChatRoomServiceTest {
     // then
     assertThat(result).isSameAs(history);
     verify(chatMessageService).getHistory(ROOM_ID, 50L, 30);
+  }
+
+  // ---------- closeRoomsOnMemberWithdrawal (#107) ----------
+
+  @Test
+  @DisplayName("탈퇴 시 ACTIVE·BLOCKED 방은 CLOSED로 끝내고 REPORTED 방은 상태를 유지하며, 모든 멤버십에 leftAt을 남긴다")
+  void closeRoomsOnMemberWithdrawal_closesActiveAndBlocked_keepsReported() {
+    // given
+    ChatRoom active = activeRoom(11L);
+    ChatRoom blocked = activeRoom(12L);
+    blocked.markBlocked();
+    ChatRoom reported = activeRoom(13L);
+    reported.markReported();
+    ChatRoomMember inActive = membership(1L, active);
+    ChatRoomMember inBlocked = membership(2L, blocked);
+    ChatRoomMember inReported = membership(3L, reported);
+    given(chatRoomMemberRepository.findJoinedRoomIdsOrderByRoomId(MEMBER_ID))
+        .willReturn(List.of(11L, 12L, 13L));
+    givenLockedRoomWithMembership(active, inActive);
+    givenLockedRoomWithMembership(blocked, inBlocked);
+    givenLockedRoomWithMembership(reported, inReported);
+
+    // when
+    chatRoomService.closeRoomsOnMemberWithdrawal(MEMBER_ID);
+
+    // then
+    assertThat(active.getRoomStatus()).isEqualTo(ChatRoomStatus.CLOSED);
+    assertThat(blocked.getRoomStatus()).isEqualTo(ChatRoomStatus.CLOSED);
+    assertThat(reported.getRoomStatus()).isEqualTo(ChatRoomStatus.REPORTED);
+    assertThat(List.of(inActive, inBlocked, inReported)).allMatch(ChatRoomMember::hasLeft);
+  }
+
+  @Test
+  @DisplayName("탈퇴 시 방을 roomId 오름차순으로 잠그고, 락 이후 이미 나간 방은 건너뛴다")
+  void closeRoomsOnMemberWithdrawal_locksInRoomIdOrder_andSkipsLeftRooms() {
+    // given
+    ChatRoom first = activeRoom(11L);
+    ChatRoom second = activeRoom(12L);
+    ChatRoomMember leftAlready = membership(1L, first);
+    leftAlready.leave();
+    ChatRoomMember joined = membership(2L, second);
+    given(chatRoomMemberRepository.findJoinedRoomIdsOrderByRoomId(MEMBER_ID))
+        .willReturn(List.of(11L, 12L));
+    givenLockedRoomWithMembership(first, leftAlready);
+    givenLockedRoomWithMembership(second, joined);
+
+    // when
+    chatRoomService.closeRoomsOnMemberWithdrawal(MEMBER_ID);
+
+    // then
+    org.mockito.InOrder order = org.mockito.Mockito.inOrder(chatRoomRepository);
+    order.verify(chatRoomRepository).findByIdForUpdate(11L);
+    order.verify(chatRoomRepository).findByIdForUpdate(12L);
+    assertThat(first.getRoomStatus()).isEqualTo(ChatRoomStatus.ACTIVE);
+    assertThat(second.getRoomStatus()).isEqualTo(ChatRoomStatus.CLOSED);
+  }
+
+  private void givenLockedRoomWithMembership(ChatRoom room, ChatRoomMember membership) {
+    given(chatRoomRepository.findByIdForUpdate(room.getId())).willReturn(Optional.of(room));
+    given(chatRoomMemberRepository.findMembership(room.getId(), MEMBER_ID))
+        .willReturn(Optional.of(membership));
   }
 
   // ---------- leaveRoom ----------

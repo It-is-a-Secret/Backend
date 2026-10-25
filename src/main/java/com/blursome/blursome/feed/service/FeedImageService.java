@@ -17,23 +17,34 @@ import com.blursome.blursome.feed.exception.FeedImageErrorCode;
 import com.blursome.blursome.feed.repository.FeedImageRepository;
 import com.blursome.blursome.feed.repository.FeedRepository;
 import com.blursome.blursome.global.exception.BaseException;
+import com.blursome.blursome.global.exception.code.GlobalErrorCode;
 import com.blursome.blursome.global.storage.S3ObjectKeyGenerator;
 import com.blursome.blursome.global.storage.S3StorageService;
+import com.blursome.blursome.global.storage.S3StorageService.OriginalObject;
 import com.blursome.blursome.global.storage.S3StorageService.PresignedUpload;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import software.amazon.awssdk.core.exception.SdkException;
 
 /**
- * 피드 이미지 도메인 서비스. 현재는 원본 업로드용 Presigned PUT URL 발급을 담당한다.
+ * 피드 이미지 도메인 서비스. 원본 업로드용 Presigned PUT 발급, 피드 사진 저장(full-replace)·블러 재처리,
+ * 본인·공개·채팅 공개용 조회를 담당한다.
  *
  * <p>발급은 DB를 거치지 않는다. 회원 id로 결정론적 원본 key를 만들고({@link S3ObjectKeyGenerator}),
  * blur_level을 메타데이터로 박은 Presigned PUT을 발급한다({@link S3StorageService}). 실제 {@link FeedImage}
  * 행은 프론트가 S3 업로드를 마친 뒤 {@link #replaceImages} 메타데이터 저장 API에서 생성된다.
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class FeedImageService {
@@ -66,50 +77,199 @@ public class FeedImageService {
   }
 
   /**
-   * 회원 피드의 이미지를 요청 목록으로 <b>전체 대체(full-replace)</b>한다. 요청 목록을 피드 사진의 전체 집합으로
-   * 보고 기존 DB 행을 삭제한 뒤 새로 저장하므로, 추가·삭제·재정렬이 한 요청으로 처리된다.
+   * 회원 피드의 이미지를 요청 목록으로 <b>전체 대체(full-replace)</b>한다. 요청 목록을 피드 사진의 최종 전체 집합으로
+   * 보고 현재 목록과 비교해 반영하므로, 유지·삭제·교체·재정렬·추가·블러 변경이 한 요청으로 처리된다(#105).
    *
-   * <p>각 사진의 {@code variantKey}는 {@code objectKey}(원본 key)에서 결정론적으로 계산하고, 상태는
-   * {@link com.blursome.blursome.feed.domain.FeedImageProcessingStatus#PROCESSING}으로 시작한다. 블러본은
-   * Lambda가 비동기로 생성하므로 저장 시점에는 아직 존재하지 않을 수 있다.
+   * <ul>
+   *   <li>{@code id} 항목: 기존 행을 유지한다. ID·key·처리 상태는 그대로 두고 순서만 바꾼다.</li>
+   *   <li>{@code id} 항목 + 다른 {@code blurLevel}: 원본을 새 key로 복사해 Lambda를 다시 실행하고, 같은 행의
+   *       key·블러 강도를 바꿔 {@code PROCESSING}부터 다시 추적한다(copy-on-reprocess).</li>
+   *   <li>{@code objectKey} 항목: 새 행을 {@code PROCESSING}으로 만든다. {@code variantKey}는 원본 key에서
+   *       결정론적으로 계산한다. 블러 강도는 실제 업로드된 원본의 메타데이터(Lambda가 적용할 값)로 기록하며, 요청에
+   *       {@code blurLevel}을 보냈다면 그 값과 같아야 한다.</li>
+   *   <li>현재 목록에 있지만 요청에 없는 행: 삭제한다.</li>
+   * </ul>
    *
-   * <p>full-replace는 <b>DB 행만 대체</b>하며 기존 S3 객체를 즉시 삭제하지 않는다. 제거된 객체는 고아로 두고
-   * 후속 cleanup으로 정리한다. (설계: {@code FEED_IMAGE_BLUR_PIPELINE.md} §8-2·§8-3)
+   * <p>피드 행을 비관적 락으로 먼저 잠가 같은 회원의 동시 저장을 직렬화한다. S3 복사는 DB를 바꾸기 전에 모두 마치므로,
+   * 복사가 실패하면 DB는 그대로다. 복사 후 DB가 롤백되면 새 객체는 참조되지 않는 고아로 남는다. 저장은
+   * <b>DB 행만 대체</b>하며 기존 S3 객체를 즉시 삭제하지 않는다. 제거·재처리로 참조가 끊긴 객체는 후속 cleanup으로
+   * 정리한다. (설계: {@code FEED_IMAGE_BLUR_PIPELINE.md} §8-2·§8-3)
    *
-   * @param memberId 인증된 회원 id. 본인 피드(회원:피드 1:1)를 도출하므로 별도 소유권 검증이 불필요하다.
-   * @param request 저장할 사진 목록(원본 key·순서·블러 강도). 장수(1~5)·순서/블러 범위는 DTO에서 검증된다.
-   * @return 저장된 사진을 노출 순서대로 담은 응답
-   * @throws BaseException 피드가 없거나({@code FEED_404_NOT_FOUND}) 순서가 중복된 경우
-   *     ({@code FEED_IMAGE_400_DUPLICATE_ORDER})
+   * @param memberId 인증된 회원 id. 본인 피드(회원:피드 1:1)를 도출하고, 기존 사진 id는 이 피드 소속인지 검증한다.
+   * @param request 저장할 사진 목록. 장수(1~5)·순서/블러 범위는 DTO에서 검증된다.
+   * @return 저장 후 피드 사진 전체를 노출 순서대로 담은 응답
+   * @throws BaseException 피드가 없거나({@code FEED_404_NOT_FOUND}), id/objectKey 조합이 잘못됐거나
+   *     ({@code FEED_IMAGE_400_INVALID_REFERENCE}), 순서·참조가 중복됐거나({@code FEED_IMAGE_400_DUPLICATE_ORDER},
+   *     {@code FEED_IMAGE_400_DUPLICATE_REFERENCE}), 원본 key가 회원 소유가 아니거나
+   *     ({@code FEED_IMAGE_400_INVALID_OBJECT_KEY}), 원본이 업로드되지 않았거나({@code FEED_IMAGE_400_ORIGINAL_NOT_UPLOADED})
+   *     요청 블러 강도가 업로드 값과 다르거나({@code FEED_IMAGE_400_BLUR_LEVEL_MISMATCH}), 기존 사진 id가 이 피드에 없는
+   *     경우({@code FEED_IMAGE_404_NOT_FOUND})
    */
   @Transactional
   public FeedImageResponse replaceImages(Long memberId, FeedImageSaveRequest request) {
-    Feed feed = feedRepository.findByMemberId(memberId)
+    Feed feed = feedRepository.findByMemberIdForUpdate(memberId)
         .orElseThrow(() -> BaseException.from(FeedErrorCode.FEED_NOT_FOUND));
-    validateNoDuplicateOrder(request.images());
-    validateOwnedObjectKeys(memberId, request.images());
+    List<FeedImageSaveRequest.Image> items = request.images();
+    validateSingleReference(items);
+    validateNoDuplicateOrder(items);
+    validateNoDuplicateReference(items);
+    List<FeedImageSaveRequest.Image> uploads = items.stream()
+        .filter(item -> !item.isExisting())
+        .toList();
+    validateOwnedObjectKeys(memberId, uploads);
 
-    // 기존 행을 먼저 DB에 반영(flush)해야, 같은 트랜잭션에서 동일 displayOrder를 다시 저장할 때
-    // uk_feed_image_order 유니크 제약과 충돌하지 않는다.
-    feedImageRepository.deleteByFeedId(feed.getId());
+    List<FeedImage> currentImages =
+        feedImageRepository.findByFeedIdOrderByDisplayOrderAscForUpdate(feed.getId());
+    List<KeptImage> keptImages = resolveKeptImages(items, currentImages);
+    validateUploadsNotKept(uploads, keptImages);
+    Map<String, Integer> uploadBlurLevels = resolveUploadedBlurLevels(memberId, uploads);
+
+    // S3 복사를 DB 변경보다 먼저 끝내, 복사 실패 시 DB가 바뀌지 않게 한다.
+    Map<Long, ReprocessedKeys> reprocessed = copyOriginalsForReprocessing(memberId, keptImages);
+
+    deleteDroppedImages(currentImages, keptImages);
+    reorderKeptImages(keptImages);
+    keptImages.forEach(kept -> {
+      ReprocessedKeys keys = reprocessed.get(kept.image().getId());
+      if (keys != null) {
+        kept.image().startReprocessing(keys.originalKey(), keys.variantKey(), kept.blurLevel());
+      }
+    });
+    // 유지 행의 최종 순서를 먼저 반영해야, 신규 행이 비워진 순서를 받을 때 유니크 제약과 충돌하지 않는다.
     feedImageRepository.flush();
 
     List<FeedImage> saved = feedImageRepository.saveAll(
-        request.images().stream()
-            .map(image -> FeedImage.create(
+        uploads.stream()
+            .map(upload -> FeedImage.create(
                 feed,
-                image.displayOrder(),
-                image.objectKey(),
-                keyGenerator.toVariantKey(image.objectKey()),
-                image.blurLevel()))
+                upload.displayOrder(),
+                upload.objectKey(),
+                keyGenerator.toVariantKey(upload.objectKey()),
+                uploadBlurLevels.get(upload.objectKey())))
             .toList());
 
-    // 응답은 노출 순서(displayOrder)대로 내려준다. saveAll 반환 순서는 요청 순서라 정렬을 보장하지 않는다.
-    return new FeedImageResponse(saved.stream()
+    List<FeedImage> finalImages = new ArrayList<>(keptImages.size() + saved.size());
+    keptImages.forEach(kept -> finalImages.add(kept.image()));
+    finalImages.addAll(saved);
+    return new FeedImageResponse(finalImages.stream()
         .sorted(Comparator.comparing(FeedImage::getDisplayOrder))
         .map(image -> FeedImageResponse.Image.of(image,
             storageService.toPublicVariantUrl(image.getVariantKey())))
         .toList());
+  }
+
+  /**
+   * 요청의 {@code id} 항목을 현재 피드 이미지와 짝짓는다. 다른 피드(다른 회원)의 id나 없는 id는 존재 여부를 드러내지
+   * 않도록 모두 {@code FEED_IMAGE_404_NOT_FOUND}로 거부한다. {@code blurLevel}을 생략하면 현재 값을 유지한다.
+   */
+  private List<KeptImage> resolveKeptImages(
+      List<FeedImageSaveRequest.Image> items, List<FeedImage> currentImages) {
+    Map<Long, FeedImage> currentById = new HashMap<>();
+    currentImages.forEach(image -> currentById.put(image.getId(), image));
+
+    List<KeptImage> keptImages = new ArrayList<>();
+    for (FeedImageSaveRequest.Image item : items) {
+      if (!item.isExisting()) {
+        continue;
+      }
+      FeedImage image = currentById.get(item.id());
+      if (image == null) {
+        throw BaseException.from(FeedImageErrorCode.NOT_FOUND);
+      }
+      int blurLevel = item.blurLevel() != null ? item.blurLevel() : image.getBlurLevel();
+      keptImages.add(new KeptImage(image, item.displayOrder(), blurLevel));
+    }
+    return keptImages;
+  }
+
+  /**
+   * 새 사진마다 실제로 업로드된 원본을 조회해, 블러 Lambda가 적용할 블러 강도를 정한다. 원본 메타데이터가 기준이므로
+   * DB·응답의 {@code blurLevel}이 실제 블러본과 어긋나지 않는다. 요청에 {@code blurLevel}을 보냈다면 그 값과 같아야 하고,
+   * 생략했다면 메타데이터 값을 그대로 쓴다. 요청에서 뺀 기존 사진의 key를 새 사진으로 다시 보내며 강도를 바꾸는 경우도
+   * 원본 메타데이터가 그대로라 여기서 걸러진다(강도 변경은 기존 사진 {@code id}로 해야 재처리된다).
+   *
+   * @return 원본 key별 기록할 블러 강도
+   */
+  private Map<String, Integer> resolveUploadedBlurLevels(
+      Long memberId, List<FeedImageSaveRequest.Image> uploads) {
+    Map<String, Integer> blurLevels = new HashMap<>();
+    for (FeedImageSaveRequest.Image upload : uploads) {
+      Optional<OriginalObject> original;
+      try {
+        original = storageService.findOriginal(upload.objectKey());
+      } catch (SdkException e) {
+        log.error("새 사진 원본 조회 실패. memberId={}, objectKey={}", memberId, upload.objectKey(), e);
+        throw BaseException.from(GlobalErrorCode.INTERNAL_SERVER_ERROR);
+      }
+      if (original.isEmpty()) {
+        throw BaseException.from(FeedImageErrorCode.ORIGINAL_NOT_UPLOADED);
+      }
+      int appliedBlurLevel = FeedImage.resolveAppliedBlurLevel(original.get().blurLevelMetadata());
+      if (upload.blurLevel() != null && upload.blurLevel() != appliedBlurLevel) {
+        throw BaseException.from(FeedImageErrorCode.BLUR_LEVEL_MISMATCH);
+      }
+      blurLevels.put(upload.objectKey(), appliedBlurLevel);
+    }
+    return blurLevels;
+  }
+
+  /**
+   * 블러 강도가 바뀐 유지 사진의 원본을 새 key로 복사해 Lambda를 다시 실행시킨다. 기존 key에 덮어쓰면 스케줄러가
+   * 이전 블러본을 보고 완료로 오판하거나 캐시가 이전 블러본을 계속 보여줄 수 있어 항상 새 key를 쓴다.
+   *
+   * @return 재처리 대상 이미지 id별 새 원본·블러본 key
+   */
+  private Map<Long, ReprocessedKeys> copyOriginalsForReprocessing(
+      Long memberId, List<KeptImage> keptImages) {
+    Map<Long, ReprocessedKeys> reprocessed = new HashMap<>();
+    for (KeptImage kept : keptImages) {
+      FeedImage image = kept.image();
+      if (!image.needsReprocessing(kept.blurLevel())) {
+        continue;
+      }
+      String newOriginalKey =
+          keyGenerator.generateReprocessedOriginalKey(memberId, image.getOriginalKey());
+      try {
+        storageService.reprocessOriginal(image.getOriginalKey(), newOriginalKey, kept.blurLevel());
+      } catch (SdkException e) {
+        log.error("블러 재처리용 원본 복사 실패. memberId={}, feedImageId={}, sourceKey={}, targetKey={}",
+            memberId, image.getId(), image.getOriginalKey(), newOriginalKey, e);
+        throw BaseException.from(GlobalErrorCode.INTERNAL_SERVER_ERROR);
+      }
+      reprocessed.put(image.getId(),
+          new ReprocessedKeys(newOriginalKey, keyGenerator.toVariantKey(newOriginalKey)));
+    }
+    return reprocessed;
+  }
+
+  /** 요청에 포함되지 않은 현재 사진만 삭제한다. 비워진 순서를 다른 행이 받을 수 있도록 바로 DB에 반영한다. */
+  private void deleteDroppedImages(List<FeedImage> currentImages, List<KeptImage> keptImages) {
+    Set<Long> keptIds = new HashSet<>();
+    keptImages.forEach(kept -> keptIds.add(kept.image().getId()));
+    List<FeedImage> dropped = currentImages.stream()
+        .filter(image -> !keptIds.contains(image.getId()))
+        .toList();
+    if (dropped.isEmpty()) {
+      return;
+    }
+    feedImageRepository.deleteAll(dropped);
+    feedImageRepository.flush();
+  }
+
+  /**
+   * 유지 사진의 순서를 바꾼다. 1↔2 교환처럼 서로의 순서를 맞바꾸면 중간 상태에서 {@code uk_feed_image_order}가
+   * 충돌하므로, 순서가 바뀌는 행을 먼저 임시 순서(음수)로 옮겨 DB에 반영한 뒤 최종 순서를 지정한다.
+   */
+  private void reorderKeptImages(List<KeptImage> keptImages) {
+    List<KeptImage> moved = keptImages.stream()
+        .filter(kept -> !kept.image().getDisplayOrder().equals(kept.displayOrder()))
+        .toList();
+    if (moved.isEmpty()) {
+      return;
+    }
+    moved.forEach(kept -> kept.image().moveToTemporaryDisplayOrder());
+    feedImageRepository.flush();
+    moved.forEach(kept -> kept.image().changeDisplayOrder(kept.displayOrder()));
   }
 
   /**
@@ -128,8 +288,12 @@ public class FeedImageService {
    */
   @Transactional(readOnly = true)
   public PublicFeedImagesResponse getPublicFeedImages(Long feedId) {
+    // 탈퇴·정지 회원의 피드는 사진이 남아 있어도 공개하지 않는다(#107). 사유는 드러내지 않고 피드 없음과 같게 응답한다.
+    boolean ownerActive = feedRepository.findById(feedId)
+        .map(feed -> feed.getMember().isActive())
+        .orElse(false);
     List<FeedImage> images = feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(feedId);
-    if (!FeedImage.isPublishable(images)) {
+    if (!ownerActive || !FeedImage.isPublishable(images)) {
       throw BaseException.from(FeedErrorCode.FEED_NOT_FOUND);
     }
     return new PublicFeedImagesResponse(images.stream()
@@ -208,6 +372,41 @@ public class FeedImageService {
     return new RevealedFeedImagesResponse(result);
   }
 
+  /**
+   * 각 항목이 {@code id}와 {@code objectKey} 중 정확히 하나만 가졌는지 검증한다. Bean Validation으로 막으면 전역
+   * 검증 오류 코드로 응답되므로, 클라이언트가 구별할 수 있도록 도메인 오류 코드로 서비스에서 거부한다.
+   */
+  private void validateSingleReference(List<FeedImageSaveRequest.Image> images) {
+    if (!images.stream().allMatch(FeedImageSaveRequest.Image::hasSingleReference)) {
+      throw BaseException.from(FeedImageErrorCode.INVALID_REFERENCE);
+    }
+  }
+
+  /** 한 요청에서 같은 {@code id}나 같은 {@code objectKey}를 두 번 쓰지 않았는지 검증한다. */
+  private void validateNoDuplicateReference(List<FeedImageSaveRequest.Image> images) {
+    Set<Long> ids = new HashSet<>();
+    Set<String> objectKeys = new HashSet<>();
+    for (FeedImageSaveRequest.Image image : images) {
+      boolean added = image.isExisting() ? ids.add(image.id()) : objectKeys.add(image.objectKey());
+      if (!added) {
+        throw BaseException.from(FeedImageErrorCode.DUPLICATE_REFERENCE);
+      }
+    }
+  }
+
+  /**
+   * 새 사진의 {@code objectKey}가 함께 유지하는 기존 사진의 원본 key와 같지 않은지 검증한다. 같으면 한 원본을 두 행이
+   * 참조하게 되므로 중복 참조로 거부한다. 요청에서 빠진(삭제되는) 사진의 key를 다시 보내는 것은 허용한다.
+   */
+  private void validateUploadsNotKept(
+      List<FeedImageSaveRequest.Image> uploads, List<KeptImage> keptImages) {
+    Set<String> keptKeys = new HashSet<>();
+    keptImages.forEach(kept -> keptKeys.add(kept.image().getOriginalKey()));
+    if (uploads.stream().anyMatch(upload -> keptKeys.contains(upload.objectKey()))) {
+      throw BaseException.from(FeedImageErrorCode.DUPLICATE_REFERENCE);
+    }
+  }
+
   /** 한 요청 내 {@code displayOrder} 중복을 검증한다. DTO로 표현하기 어려운 도메인 규칙이라 서비스에서 다룬다. */
   private void validateNoDuplicateOrder(List<FeedImageSaveRequest.Image> images) {
     long distinctOrders = images.stream()
@@ -238,5 +437,13 @@ public class FeedImageService {
       throw new IllegalArgumentException("파일명에 확장자가 없습니다: " + fileName);
     }
     return fileName.substring(lastDot + 1);
+  }
+
+  /** 요청에서 유지하기로 한 기존 사진과 그 최종 순서·블러 강도. */
+  private record KeptImage(FeedImage image, int displayOrder, int blurLevel) {
+  }
+
+  /** 블러 재처리로 새로 정한 원본·블러본 key. */
+  private record ReprocessedKeys(String originalKey, String variantKey) {
   }
 }

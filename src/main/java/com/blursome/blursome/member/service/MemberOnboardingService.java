@@ -50,20 +50,25 @@ public class MemberOnboardingService {
    * 학교 이메일로 6자리 인증 코드를 발송한다.
    *
    * <p>도메인 정책(@gs.anyang.ac.kr) 검증 후 코드를 생성해 Redis에 TTL과 함께 저장하고 발송한다.
-   * 이미 학교 인증을 마친 회원이면 재발송하지 않는다.
+   * 이미 학교 인증을 마친 회원이면 재발송하지 않는다. 이메일은 공백 제거·소문자로 정규화한 값을 쓰며, 다른 회원이
+   * 사용 중이거나 탈퇴 후 30일 재가입 제한 중인 이메일이면 코드를 보내지 않는다(#107). 최종 저장 직전에도 다시
+   * 검증한다({@link #verifySchoolEmail}).
    *
-   * @throws BaseException 회원이 비활성이거나, 도메인이 부적합하거나, 이미 인증을 마친 경우
+   * @throws BaseException 회원이 비활성이거나, 도메인이 부적합하거나, 이미 인증을 마쳤거나, 이메일이 사용 중
+   *     ({@code MEMBER_409_SCHOOL_EMAIL_DUPLICATED})·재가입 제한 중({@code MEMBER_409_REJOIN_RESTRICTED})인 경우
    */
   public void sendSchoolEmailVerificationCode(Long memberId, String schoolEmail) {
     Member member = memberService.findActiveMember(memberId);
     if (member.isSchoolVerified()) {
       throw BaseException.from(MemberErrorCode.MEMBER_ALREADY_VERIFIED);
     }
-    schoolEmailPolicy.validate(schoolEmail);
+    String email = schoolEmailPolicy.normalize(schoolEmail);
+    schoolEmailPolicy.validate(email);
+    memberService.validateSchoolEmailAvailable(memberId, email);
 
     String code = verificationCodeGenerator.generate();
-    verificationStore.save(memberId, schoolEmail, code, SchoolEmailVerificationStore.CODE_TTL);
-    emailVerificationSender.send(schoolEmail, code);
+    verificationStore.save(memberId, email, code, SchoolEmailVerificationStore.CODE_TTL);
+    emailVerificationSender.send(email, code);
   }
 
   /**
@@ -72,19 +77,25 @@ public class MemberOnboardingService {
    * <p>저장된 코드·대상 이메일이 요청과 일치하면 {@link Member#verifySchoolEmail(String)}로 단계를
    * 전진시키고 코드를 폐기한다. 학교 이메일 유니크 충돌은 도메인 예외로 변환한다.
    *
-   * @throws BaseException 코드 부재/만료, 이메일·코드 불일치, 단계 위반, 학교 이메일 중복인 경우
+   * <p>저장 직전에 이메일 보유자를 다시 확인한다(#107). 다른 활성 회원이 쓰면 중복, 탈퇴 후 30일 미만인 회원이 쥐고 있으면
+   * 재가입 제한으로 거부하고, 30일이 지난 탈퇴 회원이면 정리 배치를 기다리지 않고 그 자리에서 해제한 뒤 저장한다. 본인 행을
+   * 쓰기 락으로 읽어 같은 회원의 동시 탈퇴와 직렬화한다(탈퇴가 먼저 커밋되면 비활성으로 막힌다).
+   *
+   * @throws BaseException 코드 부재/만료, 이메일·코드 불일치, 단계 위반, 학교 이메일 중복·재가입 제한인 경우
    */
   @Transactional
   public void verifySchoolEmail(Long memberId, String schoolEmail, String code) {
-    Member member = memberService.findActiveMember(memberId);
+    Member member = memberService.findActiveMemberForUpdate(memberId);
+    String email = schoolEmailPolicy.normalize(schoolEmail);
 
     VerificationEntry entry = verificationStore.find(memberId)
         .orElseThrow(() -> BaseException.from(MemberErrorCode.MEMBER_VERIFICATION_CODE_NOT_FOUND));
-    if (!entry.email().equalsIgnoreCase(schoolEmail) || !entry.code().equals(code)) {
+    if (!entry.email().equalsIgnoreCase(email) || !entry.code().equals(code)) {
       throw BaseException.from(MemberErrorCode.MEMBER_VERIFICATION_CODE_MISMATCH);
     }
 
-    member.verifySchoolEmail(schoolEmail);
+    memberService.releaseSchoolEmailForReuse(memberId, email);
+    member.verifySchoolEmail(email);
     try {
       memberRepository.flush();
     } catch (DataIntegrityViolationException e) {
@@ -105,7 +116,8 @@ public class MemberOnboardingService {
    */
   @Transactional
   public MemberProfileResponse completeOnboarding(Long memberId, OnboardingRequest request) {
-    Member member = memberService.findActiveMember(memberId);
+    // 동시 탈퇴(#107)와 직렬화한다. 탈퇴가 먼저 커밋되면 비활성으로 막혀 탈퇴 회원에게 피드가 새로 생기지 않는다.
+    Member member = memberService.findActiveMemberForUpdate(memberId);
 
     List<KeywordTag> selectedTags =
         memberKeywordService.resolveSelection(request.keywordTagIds(), Set.of());

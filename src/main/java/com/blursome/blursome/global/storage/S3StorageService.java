@@ -2,11 +2,15 @@ package com.blursome.blursome.global.storage;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.MetadataDirective;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
@@ -16,7 +20,7 @@ import software.amazon.awssdk.services.s3.presigner.model.PresignedPutObjectRequ
 import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest;
 
 /**
- * S3 Presigned URL 발급 책임을 가지는 스토리지 서비스. 버킷·메타데이터 규칙 등 S3 세부를 캡슐화해,
+ * S3 Presigned URL 발급·블러본 존재 확인·블러 재처리용 원본 복사를 담당하는 스토리지 서비스. 버킷·메타데이터 규칙 등 S3 세부를 캡슐화해,
  * 도메인 서비스는 key/콘텐츠 타입/블러 강도만 다루도록 한다.
  *
  * <p>Presigned URL 발급은 AWS 호출 없는 서명 계산이라 추가 비용이 없다.
@@ -138,6 +142,74 @@ public class S3StorageService {
       }
       throw e;
     }
+  }
+
+  /**
+   * originals 버킷의 원본 객체를 {@code HeadObject}로 조회해 블러 Lambda가 읽을 {@code blur-level} 메타데이터를 돌려준다.
+   * 저장 API가 새 사진의 요청 블러 강도를 실제로 업로드된 값과 대조하는 데 쓴다(#105). 객체 바이트는 받지 않는다.
+   *
+   * @param objectKey originals 버킷의 원본 객체 key
+   * @return 객체가 있으면 메타데이터 정보, 없으면(HTTP 404) 빈 값
+   * @throws S3Exception 404가 아닌 S3 오류
+   */
+  public Optional<OriginalObject> findOriginal(String objectKey) {
+    try {
+      HeadObjectResponse head = s3Client.headObject(HeadObjectRequest.builder()
+          .bucket(properties.originalsBucket())
+          .key(objectKey)
+          .build());
+      return Optional.of(new OriginalObject(head.metadata().get(BLUR_LEVEL_METADATA_KEY)));
+    } catch (S3Exception e) {
+      if (e.statusCode() == HTTP_NOT_FOUND) {
+        return Optional.empty();
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * 블러 강도를 바꿔 블러본을 다시 만들도록 원본을 새 key로 복사한다(#105 copy-on-reprocess).
+   *
+   * <p>originals 버킷 안에서 server-side {@code CopyObject}만 수행하므로 원본 바이트가 애플리케이션 서버를 거치지
+   * 않는다. 메타데이터 지시자를 {@code REPLACE}로 두고 {@code blur-level}을 새 값으로 기록하며, REPLACE는
+   * Content-Type까지 초기화하므로 먼저 {@code HeadObject}로 기존 Content-Type·사용자 메타데이터를 읽어 그대로
+   * 옮긴다. 새 객체의 {@code ObjectCreated:Copy} 이벤트가 블러 Lambda를 다시 실행한다(알림 이벤트가
+   * {@code s3:ObjectCreated:*}여야 한다).
+   *
+   * <p>기존 원본은 덮어쓰거나 삭제하지 않는다. 재처리가 실패해도 이전 객체가 남고, 이후 고아 객체 cleanup 대상이 된다.
+   *
+   * @param sourceKey 복사할 기존 원본 key
+   * @param targetKey 새 원본 key
+   * @param blurLevel 새 블러 강도(50~100). {@code x-amz-meta-blur-level}로 기록된다.
+   * @throws software.amazon.awssdk.core.exception.SdkException S3 조회·복사 실패
+   */
+  public void reprocessOriginal(String sourceKey, String targetKey, int blurLevel) {
+    String bucket = properties.originalsBucket();
+    HeadObjectResponse source = s3Client.headObject(HeadObjectRequest.builder()
+        .bucket(bucket)
+        .key(sourceKey)
+        .build());
+
+    Map<String, String> metadata = new LinkedHashMap<>(source.metadata());
+    metadata.put(BLUR_LEVEL_METADATA_KEY, String.valueOf(blurLevel));
+
+    s3Client.copyObject(CopyObjectRequest.builder()
+        .sourceBucket(bucket)
+        .sourceKey(sourceKey)
+        .destinationBucket(bucket)
+        .destinationKey(targetKey)
+        .metadataDirective(MetadataDirective.REPLACE)
+        .contentType(source.contentType())
+        .metadata(metadata)
+        .build());
+  }
+
+  /**
+   * 업로드된 원본 객체의 메타데이터.
+   *
+   * @param blurLevelMetadata {@code x-amz-meta-blur-level} 원문. 메타데이터가 없으면 {@code null}
+   */
+  public record OriginalObject(String blurLevelMetadata) {
   }
 
   /**

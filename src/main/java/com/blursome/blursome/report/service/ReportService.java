@@ -60,7 +60,9 @@ public class ReportService {
     if (reporterId.equals(request.targetMemberId())) {
       throw BaseException.from(ReportErrorCode.REPORT_SELF_NOT_ALLOWED);
     }
-    Member target = memberRepository.findById(request.targetMemberId())
+    // 신고 대상 행을 쓰기 락으로 읽어 대상의 동시 탈퇴(#107)와 직렬화한다. 락 없이 읽으면 탈퇴 직전 상태(ACTIVE)를 들고
+    // suspend()가 탈퇴 회원을 SUSPENDED로 덮어쓸 수 있다. 탈퇴와 같은 "회원 → 방" 잠금 순서다.
+    Member target = memberRepository.findByIdForUpdate(request.targetMemberId())
         .orElseThrow(() -> BaseException.from(MemberErrorCode.MEMBER_NOT_FOUND));
 
     ChatRoom chatRoom = null;

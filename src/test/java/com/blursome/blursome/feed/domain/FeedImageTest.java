@@ -163,4 +163,135 @@ class FeedImageTest {
       assertThat(FeedImage.isPublishable(java.util.List.of())).isFalse();
     }
   }
+
+  @Nested
+  @DisplayName("순서 변경·재처리 (#105)")
+  class ReorderAndReprocess {
+
+    @Test
+    @DisplayName("생성 시 처리 시작 시각을 기록한다")
+    void create_recordsProcessingStartedAt() {
+      // given
+      java.time.LocalDateTime before = java.time.LocalDateTime.now();
+
+      // when
+      FeedImage image = create(1, 80);
+
+      // then
+      assertThat(image.getProcessingStartedAt()).isAfterOrEqualTo(before);
+      assertThat(image.getProcessingBaseTime()).isEqualTo(image.getProcessingStartedAt());
+    }
+
+    @Test
+    @DisplayName("순서만 바꾸면 key·블러 강도·상태는 그대로다")
+    void changeDisplayOrder_whenValid_keepsOtherFields() {
+      // given
+      FeedImage image = create(1, 80);
+      image.markReady();
+
+      // when
+      image.changeDisplayOrder(3);
+
+      // then
+      assertThat(image.getDisplayOrder()).isEqualTo(3);
+      assertThat(image.getOriginalKey()).isEqualTo("originals/uuid.jpg");
+      assertThat(image.getProcessingStatus()).isEqualTo(FeedImageProcessingStatus.READY);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 6, -1})
+    @DisplayName("범위 밖 순서로는 바꿀 수 없다")
+    void changeDisplayOrder_whenOutOfRange_throwsException(int displayOrder) {
+      // given
+      FeedImage image = create(1, 80);
+
+      // when & then
+      assertThatThrownBy(() -> image.changeDisplayOrder(displayOrder))
+          .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("임시 순서는 현재 순서의 음수라 같은 피드 안에서 겹치지 않는다")
+    void moveToTemporaryDisplayOrder_whenCalled_movesOutOfValidRange() {
+      // given
+      FeedImage first = create(1, 80);
+      FeedImage second = create(2, 80);
+
+      // when
+      first.moveToTemporaryDisplayOrder();
+      second.moveToTemporaryDisplayOrder();
+
+      // then
+      assertThat(first.getDisplayOrder()).isEqualTo(-1);
+      assertThat(second.getDisplayOrder()).isEqualTo(-2);
+    }
+
+    @Test
+    @DisplayName("블러 강도가 현재 값과 다를 때만 재처리가 필요하다")
+    void needsReprocessing_whenBlurLevelDiffers_returnsTrue() {
+      // given
+      FeedImage image = create(1, 80);
+
+      // when & then
+      assertThat(image.needsReprocessing(80)).isFalse();
+      assertThat(image.needsReprocessing(90)).isTrue();
+    }
+
+    @Test
+    @DisplayName("재처리를 시작하면 새 key·블러 강도로 바꾸고 PROCESSING과 처리 시작 시각을 갱신한다")
+    void startReprocessing_whenCalled_resetsToProcessingWithNewKeys() {
+      // given
+      FeedImage image = create(2, 80);
+      image.markReady();
+      java.time.LocalDateTime before = java.time.LocalDateTime.now();
+
+      // when
+      image.startReprocessing("originals/new.jpg", "variants/new.jpg", 95);
+
+      // then
+      assertThat(image.getDisplayOrder()).isEqualTo(2);
+      assertThat(image.getOriginalKey()).isEqualTo("originals/new.jpg");
+      assertThat(image.getVariantKey()).isEqualTo("variants/new.jpg");
+      assertThat(image.getBlurLevel()).isEqualTo(95);
+      assertThat(image.getProcessingStatus()).isEqualTo(FeedImageProcessingStatus.PROCESSING);
+      assertThat(image.getProcessingStartedAt()).isAfterOrEqualTo(before);
+    }
+
+    @Test
+    @DisplayName("범위 밖 블러 강도나 빈 key로는 재처리를 시작할 수 없다")
+    void startReprocessing_whenInvalid_throwsException() {
+      // given
+      FeedImage image = create(1, 80);
+
+      // when & then
+      assertThatThrownBy(() -> image.startReprocessing("originals/new.jpg", "variants/new.jpg", 49))
+          .isInstanceOf(IllegalArgumentException.class);
+      assertThatThrownBy(() -> image.startReprocessing(" ", "variants/new.jpg", 90))
+          .isInstanceOf(IllegalArgumentException.class);
+      assertThat(image.getBlurLevel()).isEqualTo(80);
+    }
+
+    @ParameterizedTest(name = "[{index}] 메타데이터 {0} → 적용 강도 {1}")
+    @org.junit.jupiter.params.provider.CsvSource(value = {
+        "70, 70", " 95 , 95", "49, 50", "101, 100", "abc, 80", "NULL, 80"
+    }, nullValues = "NULL")
+    @DisplayName("원본 메타데이터로 Lambda가 적용할 블러 강도를 Lambda와 같은 규칙으로 계산한다")
+    void resolveAppliedBlurLevel_followsLambdaRule(String metadataValue, int expected) {
+      // when & then
+      assertThat(FeedImage.resolveAppliedBlurLevel(metadataValue)).isEqualTo(expected);
+    }
+
+    @Test
+    @DisplayName("처리 시작 시각이 없는 이전 행은 createdAt을 기준 시각으로 쓴다")
+    void getProcessingBaseTime_whenLegacyRow_fallsBackToCreatedAt() {
+      // given
+      FeedImage image = create(1, 80);
+      java.time.LocalDateTime createdAt = java.time.LocalDateTime.of(2026, 1, 1, 0, 0);
+      org.springframework.test.util.ReflectionTestUtils.setField(image, "processingStartedAt", null);
+      org.springframework.test.util.ReflectionTestUtils.setField(image, "createdAt", createdAt);
+
+      // when & then
+      assertThat(image.getProcessingBaseTime()).isEqualTo(createdAt);
+    }
+  }
 }
