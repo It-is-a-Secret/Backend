@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -233,8 +234,7 @@ public class ChatRoomService {
    */
   @Transactional
   public void freezeRoomOnBlock(Long memberAId, Long memberBId) {
-    chatRoomMemberRepository.findActiveOrBlockedRoomBetween(memberAId, memberBId)
-        .ifPresent(ChatRoom::markBlocked);
+    lockActiveOrBlockedRoomBetween(memberAId, memberBId).ifPresent(ChatRoom::markBlocked);
   }
 
   /**
@@ -245,8 +245,18 @@ public class ChatRoomService {
    */
   @Transactional
   public void restoreRoomOnUnblock(Long memberAId, Long memberBId) {
-    chatRoomMemberRepository.findActiveOrBlockedRoomBetween(memberAId, memberBId)
-        .ifPresent(ChatRoom::unblockToActive);
+    lockActiveOrBlockedRoomBetween(memberAId, memberBId).ifPresent(ChatRoom::unblockToActive);
+  }
+
+  /**
+   * 두 회원 사이 ACTIVE·BLOCKED 방의 행을 비관적 쓰기 락으로 읽는다(#107). 송신·퇴장·탈퇴 종료와 같은 방 행 락으로
+   * 직렬화하므로, 탈퇴가 먼저 {@code CLOSED}를 커밋했으면 락을 얻은 뒤 최신 상태를 보고 {@code markBlocked}·
+   * {@code unblockToActive}가 no-op이 된다(비가역 종료가 BLOCKED·ACTIVE로 되살아나지 않음). 차단이 먼저면 탈퇴가 락 해제 후
+   * BLOCKED를 보고 CLOSED로 종료한다.
+   */
+  private Optional<ChatRoom> lockActiveOrBlockedRoomBetween(Long memberAId, Long memberBId) {
+    return chatRoomMemberRepository.findActiveOrBlockedRoomIdBetween(memberAId, memberBId)
+        .flatMap(chatRoomRepository::findByIdForUpdate);
   }
 
   /**

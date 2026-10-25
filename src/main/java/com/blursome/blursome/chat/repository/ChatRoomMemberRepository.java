@@ -42,16 +42,19 @@ public interface ChatRoomMemberRepository extends JpaRepository<ChatRoomMember, 
   /**
    * 두 회원이 모두 참여 중인 동결 가능/해제 가능 방(=ACTIVE 또는 BLOCKED)을 조회한다(이슈 #77). 차단 동결
    * ({@code markBlocked})·해제 복구({@code unblockToActive})가 같은 방을 찾아 상태를 전이하는 데 쓴다. 종료
-   * ({@code CLOSED})는 페어 키가 비워져 새 방 대상이고 비가역이므로 제외한다.
+   * ({@code CLOSED})는 비가역이므로 제외한다.
+   *
+   * <p>엔티티가 아니라 id만 돌려준다(#107). 호출 측은 이 id로 방 행을 쓰기 락으로 다시 읽은 뒤 상태를 전이한다. 엔티티를
+   * 먼저 적재하면 이후 잠금 조회가 영속성 컨텍스트의 이전 상태를 돌려줘, 그사이 탈퇴가 커밋한 {@code CLOSED}를 덮어쓸 수 있다.
    */
-  @Query("select r from ChatRoom r "
+  @Query("select r.id from ChatRoom r "
       + "join ChatRoomMember crm on crm.chatRoom = r "
       + "where r.roomStatus in (com.blursome.blursome.chat.domain.ChatRoomStatus.ACTIVE, "
       + "com.blursome.blursome.chat.domain.ChatRoomStatus.BLOCKED) "
       + "and crm.member.id in (:memberAId, :memberBId) "
-      + "group by r "
+      + "group by r.id "
       + "having count(distinct crm.member.id) = 2")
-  Optional<ChatRoom> findActiveOrBlockedRoomBetween(@Param("memberAId") Long memberAId,
+  Optional<Long> findActiveOrBlockedRoomIdBetween(@Param("memberAId") Long memberAId,
       @Param("memberBId") Long memberBId);
 
   /**

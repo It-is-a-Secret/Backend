@@ -13,6 +13,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.blursome.blursome.auth.service.AuthService;
 import com.blursome.blursome.auth.token.RefreshTokenStore;
+import com.blursome.blursome.block.service.BlockService;
 import com.blursome.blursome.chat.domain.ChatMessageType;
 import com.blursome.blursome.chat.domain.ChatRoom;
 import com.blursome.blursome.chat.domain.ChatRoomMember;
@@ -23,6 +24,7 @@ import com.blursome.blursome.chat.repository.ChatMessageRepository;
 import com.blursome.blursome.chat.repository.ChatRoomMemberRepository;
 import com.blursome.blursome.chat.repository.ChatRoomRepository;
 import com.blursome.blursome.chat.service.ChatMessageService;
+import com.blursome.blursome.chat.service.ChatRoomService;
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.global.security.JwtTokenProvider;
 import com.blursome.blursome.member.domain.ActivityStatus;
@@ -101,6 +103,12 @@ class MemberWithdrawalIntegrationTest {
 
   @Autowired
   private ChatMessageService chatMessageService;
+
+  @Autowired
+  private ChatRoomService chatRoomService;
+
+  @Autowired
+  private BlockService blockService;
 
   @Autowired
   private MemberRepository memberRepository;
@@ -304,6 +312,105 @@ class MemberWithdrawalIntegrationTest {
       assertThat(failures).hasSize(1);
       assertThat(failures.get(0)).isInstanceOf(BaseException.class)
           .hasFieldOrPropertyWithValue("code", "MEMBER_409_SCHOOL_EMAIL_DUPLICATED");
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
+  @Test
+  @DisplayName("탈퇴와 상대의 신규 채팅 생성이 동시에 일어나도 탈퇴 회원의 ACTIVE 방이 남지 않는다")
+  void withdrawAndOpenRoomConcurrently_thenNoActiveRoomRemains() throws Exception {
+    ExecutorService pool = Executors.newFixedThreadPool(2);
+    try {
+      for (int i = 0; i < RACE_TRIALS; i++) {
+        Member me = saveMember("open-me");
+        Member partner = saveMember("open-partner");
+
+        List<Future<Object>> results = runConcurrently(pool,
+            () -> {
+              withdrawalService.withdraw(me.getId());
+              return "withdrawn";
+            },
+            () -> chatRoomService.openRoom(partner.getId(), me.getId(),
+                new ChatMessageSendRequest(ChatMessageType.TEXT, "첫 메시지")));
+
+        results.get(0).get(20, TimeUnit.SECONDS);
+        Optional<ChatRoom> room =
+            chatRoomRepository.findByPairKey(ChatRoom.pairKey(me.getId(), partner.getId()));
+        Throwable openError = failureOf(results.get(1));
+        if (openError == null) {
+          // 생성이 회원 락을 먼저 잡아 커밋한 경우 → 탈퇴가 그 방까지 종료한다.
+          assertThat(room).isPresent();
+          assertThat(room.get().getRoomStatus()).isEqualTo(ChatRoomStatus.CLOSED);
+          assertThat(chatRoomMemberRepository.findMembership(room.get().getId(), me.getId())
+              .orElseThrow().hasLeft()).isTrue();
+        } else {
+          // 탈퇴가 먼저 커밋된 경우 → 생성은 탈퇴 상태를 보고 실패하고 방·메시지가 남지 않는다.
+          assertThat(openError).isInstanceOf(BaseException.class)
+              .hasFieldOrPropertyWithValue("code", MemberErrorCode.MEMBER_INACTIVE.getCode());
+          assertThat(room).isEmpty();
+        }
+      }
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
+  @Test
+  @DisplayName("탈퇴와 상대의 차단이 동시에 일어나도 종료된 방이 BLOCKED로 되살아나지 않는다")
+  void withdrawAndBlockConcurrently_thenRoomStaysClosed() throws Exception {
+    ExecutorService pool = Executors.newFixedThreadPool(2);
+    try {
+      for (int i = 0; i < RACE_TRIALS; i++) {
+        Member me = saveMember("block-me");
+        Member partner = saveMember("block-partner");
+        Long roomId = persistRoom(me, partner, ChatRoomStatus.ACTIVE);
+
+        List<Future<Object>> results = runConcurrently(pool,
+            () -> {
+              withdrawalService.withdraw(me.getId());
+              return "withdrawn";
+            },
+            () -> {
+              blockService.block(partner.getId(), me.getId());
+              return "blocked";
+            });
+
+        results.get(0).get(20, TimeUnit.SECONDS);
+        assertThat(failureOf(results.get(1))).isNull();
+        assertThat(roomStatus(roomId)).isEqualTo(ChatRoomStatus.CLOSED);
+      }
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
+  @Test
+  @DisplayName("탈퇴와 상대의 차단 해제가 동시에 일어나도 종료된 방이 ACTIVE로 되살아나지 않는다")
+  void withdrawAndUnblockConcurrently_thenRoomStaysClosed() throws Exception {
+    ExecutorService pool = Executors.newFixedThreadPool(2);
+    try {
+      for (int i = 0; i < RACE_TRIALS; i++) {
+        Member me = saveMember("unblock-me");
+        Member partner = saveMember("unblock-partner");
+        Long roomId = persistRoom(me, partner, ChatRoomStatus.ACTIVE);
+        blockService.block(partner.getId(), me.getId());
+        assertThat(roomStatus(roomId)).isEqualTo(ChatRoomStatus.BLOCKED);
+
+        List<Future<Object>> results = runConcurrently(pool,
+            () -> {
+              withdrawalService.withdraw(me.getId());
+              return "withdrawn";
+            },
+            () -> {
+              blockService.unblock(partner.getId(), me.getId());
+              return "unblocked";
+            });
+
+        results.get(0).get(20, TimeUnit.SECONDS);
+        assertThat(failureOf(results.get(1))).isNull();
+        assertThat(roomStatus(roomId)).isEqualTo(ChatRoomStatus.CLOSED);
+      }
     } finally {
       pool.shutdownNow();
     }

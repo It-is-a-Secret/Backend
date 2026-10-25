@@ -42,8 +42,18 @@ class ChatRoomCreator {
   @Transactional(propagation = Propagation.REQUIRES_NEW)
   public RoomOpenResult createWithFirstMessage(Long initiatorId, Long partnerId,
       ChatMessageSendRequest firstMessage) {
-    Member initiator = memberService.findActiveMember(initiatorId);
-    Member partner = memberService.findActiveMember(partnerId);
+    // 두 회원 행을 id 오름차순으로 쓰기 락을 잡은 뒤 활성 상태를 확인한다(#107). 탈퇴는 회원 행 락을 먼저 잡고 참여 방을
+    // 조회해 종료하므로, 생성이 먼저 커밋되면 탈퇴가 이 방까지 종료하고, 탈퇴가 먼저면 생성은 락 해제 후 WITHDRAWN을 보고
+    // MEMBER_403_INACTIVE로 실패한다. 오름차순 고정이라 같은 페어의 동시 생성끼리 교착하지 않는다.
+    Member initiator;
+    Member partner;
+    if (initiatorId < partnerId) {
+      initiator = memberService.findActiveMemberForUpdate(initiatorId);
+      partner = memberService.findActiveMemberForUpdate(partnerId);
+    } else {
+      partner = memberService.findActiveMemberForUpdate(partnerId);
+      initiator = memberService.findActiveMemberForUpdate(initiatorId);
+    }
     ChatRoom room = chatRoomRepository.saveAndFlush(
         ChatRoom.createOnMatched(initiatorId, partnerId));
     chatRoomMemberRepository.save(ChatRoomMember.join(room, initiator));

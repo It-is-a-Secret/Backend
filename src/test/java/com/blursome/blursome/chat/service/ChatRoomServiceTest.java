@@ -222,24 +222,57 @@ class ChatRoomServiceTest {
   void freezeRoomOnBlock_whenActiveRoom_thenBlocked() {
     // given
     ChatRoom room = activeRoom(ROOM_ID);
-    given(chatRoomMemberRepository.findActiveOrBlockedRoomBetween(MEMBER_ID, OTHER_ID))
-        .willReturn(Optional.of(room));
+    givenLockedRoomBetweenPair(room);
 
     // when
     chatRoomService.freezeRoomOnBlock(MEMBER_ID, OTHER_ID);
 
     // then — CLOSED/REPORTED가 아닌 BLOCKED로 동결됐는지 직접 검증한다
     assertThat(ReflectionTestUtils.getField(room, "roomStatus")).isEqualTo(ChatRoomStatus.BLOCKED);
+    verify(chatRoomRepository).findByIdForUpdate(ROOM_ID);
   }
 
   @Test
   @DisplayName("차단 동결: 동결할 방이 없으면 멱등하게 무시한다")
   void freezeRoomOnBlock_whenNoRoom_thenNoOp() {
-    given(chatRoomMemberRepository.findActiveOrBlockedRoomBetween(MEMBER_ID, OTHER_ID))
+    given(chatRoomMemberRepository.findActiveOrBlockedRoomIdBetween(MEMBER_ID, OTHER_ID))
         .willReturn(Optional.empty());
 
     chatRoomService.freezeRoomOnBlock(MEMBER_ID, OTHER_ID);
-    // 예외 없이 통과하면 성공(no-op)
+
+    verify(chatRoomRepository, never()).findByIdForUpdate(anyLong());
+  }
+
+  @Test
+  @DisplayName("차단 동결(#107): 락을 얻고 보니 탈퇴로 이미 CLOSED면 BLOCKED로 덮어쓰지 않는다")
+  void freezeRoomOnBlock_whenClosedAfterLock_thenStaysClosed() {
+    ChatRoom room = activeRoom(ROOM_ID);
+    room.closeOnMemberWithdrawal();
+    givenLockedRoomBetweenPair(room);
+
+    chatRoomService.freezeRoomOnBlock(MEMBER_ID, OTHER_ID);
+
+    assertThat(room.getRoomStatus()).isEqualTo(ChatRoomStatus.CLOSED);
+  }
+
+  @Test
+  @DisplayName("차단 해제 복구(#107): 락을 얻고 보니 탈퇴로 이미 CLOSED면 ACTIVE로 되살리지 않는다")
+  void restoreRoomOnUnblock_whenClosedAfterLock_thenStaysClosed() {
+    ChatRoom room = activeRoom(ROOM_ID);
+    room.markBlocked();
+    room.closeOnMemberWithdrawal();
+    givenLockedRoomBetweenPair(room);
+
+    chatRoomService.restoreRoomOnUnblock(MEMBER_ID, OTHER_ID);
+
+    assertThat(room.getRoomStatus()).isEqualTo(ChatRoomStatus.CLOSED);
+  }
+
+  /** 두 회원 사이 방 id 조회 → 방 행 쓰기 락 조회가 {@code room}을 돌려주도록 한다. */
+  private void givenLockedRoomBetweenPair(ChatRoom room) {
+    given(chatRoomMemberRepository.findActiveOrBlockedRoomIdBetween(MEMBER_ID, OTHER_ID))
+        .willReturn(Optional.of(ROOM_ID));
+    given(chatRoomRepository.findByIdForUpdate(ROOM_ID)).willReturn(Optional.of(room));
   }
 
   @Test
@@ -248,8 +281,7 @@ class ChatRoomServiceTest {
     // given
     ChatRoom room = activeRoom(ROOM_ID);
     room.markBlocked();
-    given(chatRoomMemberRepository.findActiveOrBlockedRoomBetween(MEMBER_ID, OTHER_ID))
-        .willReturn(Optional.of(room));
+    givenLockedRoomBetweenPair(room);
 
     // when
     chatRoomService.restoreRoomOnUnblock(MEMBER_ID, OTHER_ID);
