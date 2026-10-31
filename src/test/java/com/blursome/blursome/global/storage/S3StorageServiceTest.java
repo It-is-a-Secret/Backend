@@ -20,6 +20,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import software.amazon.awssdk.http.SdkHttpFullRequest;
 import software.amazon.awssdk.http.SdkHttpMethod;
@@ -57,6 +58,10 @@ class S3StorageServiceTest {
 
   @Mock
   private S3Properties properties;
+
+  // SecretMoa S3 비활성(기본): 요청에 자격증명 override를 붙이지 않는다. 활성 경로는 S3StorageServiceRoutingTest.
+  @Spy
+  private S3CredentialRouting credentials = S3CredentialRouting.disabled();
 
   @InjectMocks
   private S3StorageService s3StorageService;

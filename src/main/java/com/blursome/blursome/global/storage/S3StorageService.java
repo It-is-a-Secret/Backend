@@ -25,6 +25,9 @@ import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignReques
  *
  * <p>Presigned URL 발급은 AWS 호출 없는 서명 계산이라 추가 비용이 없다.
  * (설계: {@code FEED_IMAGE_BLUR_PIPELINE.md} §5)
+ *
+ * <p>모든 요청은 {@link S3CredentialRouting}을 거쳐 버킷에 맞는 자격증명을 지정한다. SecretMoa S3가 꺼져
+ * 있으면 요청이 바뀌지 않고, 켜져 있으면 originals·variants 요청이 각 버킷 전용 임시 자격증명으로 서명된다.
  */
 @Service
 @RequiredArgsConstructor
@@ -42,6 +45,7 @@ public class S3StorageService {
   private final S3Presigner s3Presigner;
   private final S3Client s3Client;
   private final S3Properties properties;
+  private final S3CredentialRouting credentials;
 
   /**
    * 비공개 originals 버킷에 대한 Presigned PUT URL을 발급한다. {@code blurLevel}을 원본 객체 메타데이터로
@@ -55,11 +59,11 @@ public class S3StorageService {
   public PresignedUpload presignOriginalUpload(String objectKey, String contentType, int blurLevel) {
     String blurLevelValue = String.valueOf(blurLevel);
 
-    PutObjectRequest objectRequest = PutObjectRequest.builder()
-        .bucket(properties.originalsBucket())
-        .key(objectKey)
-        .contentType(contentType)
-        .metadata(Map.of(BLUR_LEVEL_METADATA_KEY, blurLevelValue))
+    PutObjectRequest objectRequest = credentials.originals(PutObjectRequest.builder()
+            .bucket(properties.originalsBucket())
+            .key(objectKey)
+            .contentType(contentType)
+            .metadata(Map.of(BLUR_LEVEL_METADATA_KEY, blurLevelValue)))
         .build();
 
     PresignedPutObjectRequest presigned = s3Presigner.presignPutObject(
@@ -88,9 +92,9 @@ public class S3StorageService {
    * @return 만료 전까지 직접 GET할 수 있는 단기 URL
    */
   public String presignOriginalDownload(String objectKey) {
-    GetObjectRequest objectRequest = GetObjectRequest.builder()
-        .bucket(properties.originalsBucket())
-        .key(objectKey)
+    GetObjectRequest objectRequest = credentials.originals(GetObjectRequest.builder()
+            .bucket(properties.originalsBucket())
+            .key(objectKey))
         .build();
 
     PresignedGetObjectRequest presigned = s3Presigner.presignGetObject(
@@ -131,9 +135,9 @@ public class S3StorageService {
    */
   public boolean existsVariant(String variantKey) {
     try {
-      s3Client.headObject(HeadObjectRequest.builder()
-          .bucket(properties.variantsBucket())
-          .key(variantKey)
+      s3Client.headObject(credentials.variants(HeadObjectRequest.builder()
+              .bucket(properties.variantsBucket())
+              .key(variantKey))
           .build());
       return true;
     } catch (S3Exception e) {
@@ -154,9 +158,9 @@ public class S3StorageService {
    */
   public Optional<OriginalObject> findOriginal(String objectKey) {
     try {
-      HeadObjectResponse head = s3Client.headObject(HeadObjectRequest.builder()
-          .bucket(properties.originalsBucket())
-          .key(objectKey)
+      HeadObjectResponse head = s3Client.headObject(credentials.originals(HeadObjectRequest.builder()
+              .bucket(properties.originalsBucket())
+              .key(objectKey))
           .build());
       return Optional.of(new OriginalObject(head.metadata().get(BLUR_LEVEL_METADATA_KEY)));
     } catch (S3Exception e) {
@@ -185,22 +189,22 @@ public class S3StorageService {
    */
   public void reprocessOriginal(String sourceKey, String targetKey, int blurLevel) {
     String bucket = properties.originalsBucket();
-    HeadObjectResponse source = s3Client.headObject(HeadObjectRequest.builder()
-        .bucket(bucket)
-        .key(sourceKey)
+    HeadObjectResponse source = s3Client.headObject(credentials.originals(HeadObjectRequest.builder()
+            .bucket(bucket)
+            .key(sourceKey))
         .build());
 
     Map<String, String> metadata = new LinkedHashMap<>(source.metadata());
     metadata.put(BLUR_LEVEL_METADATA_KEY, String.valueOf(blurLevel));
 
-    s3Client.copyObject(CopyObjectRequest.builder()
-        .sourceBucket(bucket)
-        .sourceKey(sourceKey)
-        .destinationBucket(bucket)
-        .destinationKey(targetKey)
-        .metadataDirective(MetadataDirective.REPLACE)
-        .contentType(source.contentType())
-        .metadata(metadata)
+    s3Client.copyObject(credentials.originals(CopyObjectRequest.builder()
+            .sourceBucket(bucket)
+            .sourceKey(sourceKey)
+            .destinationBucket(bucket)
+            .destinationKey(targetKey)
+            .metadataDirective(MetadataDirective.REPLACE)
+            .contentType(source.contentType())
+            .metadata(metadata))
         .build());
   }
 
