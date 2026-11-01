@@ -155,6 +155,9 @@ BlurSome의 채팅(Chat) 도메인 전체 로직을 정의합니다. WebSocket +
   `ROOM_NOT_FOUND`로 차단된다. **가역**: 양방향 차단이 모두 해제되면 `unblockToActive()`로 `BLOCKED → ACTIVE` 복구. 한쪽만 해제하면 동결
   유지. 종료(`CLOSED`)는 비가역이라 차단 해제로 되살리지 않는다. `openRoom`은 A→B 또는 B→A 차단 관계가 하나라도 존재하면 신규 채팅방
   개설을 `BLOCKED_PARTICIPANT`로 차단한다.
+  - 차단 API(`block` 도메인): 등록 `POST /api/blocks`(`{ targetMemberId }`, 204·멱등), 해제 `DELETE /api/blocks/{targetMemberId}`
+    (204·멱등), **목록 `GET /api/blocks`(#113)** — 내가 차단한 회원을 최근 차단 순으로 `[{ blockedMemberId, nickName, blockedAt }]`
+    반환. 차단 대상은 fetch join으로 한 번에 읽고, 탈퇴 회원은 관리 대상이 아니므로 제외한다. `blockedMemberId`를 해제 요청에 그대로 쓴다.
 - ✅ **`REPORTED`(신고 동결, #75)** — 신고 누적(고유 신고자 3명)으로 `ACTIVE → REPORTED`. 송신·조회 차단(운영자 검토 대기, 비가역).
   신고 누적에 따른 `REPORTED` 전이는 `ACTIVE` 상태의 채팅방에서만 발생한다. `BLOCKED`는 차단으로 인한 가역 동결 상태이며, 신고 누적에
   의해 `REPORTED`로 전이되지 않는다.
@@ -369,6 +372,7 @@ DiscoveryService(ChatStartService).startChat            ChatRoomService.openRoom
 ```
 
 - ✅ **대화 시작 API(이슈 #87)**: `POST /api/discovery/feeds/{feedId}/chat`. feedId→회원 해석·게이트 재검증은 디스커버리 유스케이스(`ChatStartService`)가 맡고(직접 입력이 탐색 필터를 우회하지 못하게), 방 개설·관계 분기는 `openRoom`이 맡는다. 첫 접촉이면 방 생성 + 첫 메시지를 한 트랜잭션으로 처리하고 `created=true`, 이미 ACTIVE면 메시지 없이 기존 방으로 안내(`created=false`) — 둘 다 200.
+- ✅ **탐색에서 기존 방으로 바로 진입(이슈 #112)**: 탐색 카드·상세에 `chatRoom: { roomId, roomStatus } | null`을 내려, 이미 대화 중이면 클라이언트가 시작 API(첫 메시지 필수)를 거치지 않고 `roomId`로 바로 들어간다. 다시 시작할 수 없는 관계(`CLOSED`·`REPORTED`)는 탐색에서 빠지므로, 시작 API의 409 분기는 직접 호출이나 경합에 대한 방어로 남는다. 관계 조회는 `ChatRoomService.findPartnerRooms`(viewer가 참여했던 모든 방, 나간 방 포함)와 `findPartnerRoom`(페어 키 단건)이 제공한다. 설계는 `docs/discovery/DISCOVERY_DOMAIN.md` §2-1.
 - ✅ **방+첫 메시지 원자성(이슈 #87)**: 첫 접촉의 방 생성과 첫 메시지 전송은 `ChatRoomCreator.createWithFirstMessage`의 **하나의 REQUIRES_NEW 트랜잭션**에서 처리된다(`send`는 REQUIRED로 합류). 첫 메시지 전송이 실패하면 방까지 함께 롤백돼 "첫 접촉인데 빈 방만 생성"되는 비원자 상태가 생기지 않는다. REQUIRES_NEW로 격리돼 있어 유니크 위반 시 이 단위만 롤백되고 호출 측은 경합 복구(재조회 흡수)를 이어갈 수 있다.
 - ✅ **관계 단건 분기 (서비스 + DB 이중 방어)**: 페어당 방이 영구히 하나이므로(`pairKey` 유니크) `findByPairKey`로 상태 무관 단건을 조회해 분기한다. ACTIVE는 "이미 채팅 중", CLOSED/REPORTED/BLOCKED는 각 도메인 예외로 막고, 없으면 첫 접촉으로 새로 만든다.
 - ✅ **동시 첫 접촉 경합**: 선조회-후생성은 원자적이지 않으므로 `chat_room.pair_key` **유니크 제약**으로 최종 방어한다.

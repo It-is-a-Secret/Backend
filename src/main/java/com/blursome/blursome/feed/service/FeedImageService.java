@@ -22,6 +22,11 @@ import com.blursome.blursome.global.storage.S3ObjectKeyGenerator;
 import com.blursome.blursome.global.storage.S3StorageService;
 import com.blursome.blursome.global.storage.S3StorageService.OriginalObject;
 import com.blursome.blursome.global.storage.S3StorageService.PresignedUpload;
+import com.blursome.blursome.member.domain.Member;
+import com.blursome.blursome.member.domain.ProfileItem;
+import com.blursome.blursome.member.service.MemberService;
+import java.time.Clock;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -53,6 +58,8 @@ public class FeedImageService {
   private final FeedImageRepository feedImageRepository;
   private final S3ObjectKeyGenerator keyGenerator;
   private final S3StorageService storageService;
+  private final MemberService memberService;
+  private final Clock clock;
 
   /**
    * 요청한 사진들에 대해 originals 버킷 Presigned PUT URL을 사진 순서대로 발급한다.
@@ -103,10 +110,15 @@ public class FeedImageService {
    *     {@code FEED_IMAGE_400_DUPLICATE_REFERENCE}), 원본 key가 회원 소유가 아니거나
    *     ({@code FEED_IMAGE_400_INVALID_OBJECT_KEY}), 원본이 업로드되지 않았거나({@code FEED_IMAGE_400_ORIGINAL_NOT_UPLOADED})
    *     요청 블러 강도가 업로드 값과 다르거나({@code FEED_IMAGE_400_BLUR_LEVEL_MISMATCH}), 기존 사진 id가 이 피드에 없는
-   *     경우({@code FEED_IMAGE_404_NOT_FOUND})
+   *     경우({@code FEED_IMAGE_404_NOT_FOUND}), 원본 교체 30일 제한에 걸린 경우({@code MEMBER_409_PHOTOS_CHANGE_LIMITED},
+   *     {@link #recordOriginalReplacement})
    */
   @Transactional
   public FeedImageResponse replaceImages(Long memberId, FeedImageSaveRequest request) {
+    LocalDateTime now = LocalDateTime.now(clock);
+    // 회원 행 → 피드 행 순서로 잠근다. 프로필 수정(회원 행 락)과 같은 순서라 교착 없이, 30일 변경 이력이 같은 회원 행에
+    // 기록되는 두 경로의 동시 갱신이 서로를 덮어쓰지 않게 직렬화한다(#113).
+    Member member = memberService.findActiveMemberForUpdate(memberId);
     Feed feed = feedRepository.findByMemberIdForUpdate(memberId)
         .orElseThrow(() -> BaseException.from(FeedErrorCode.FEED_NOT_FOUND));
     List<FeedImageSaveRequest.Image> items = request.images();
@@ -122,6 +134,8 @@ public class FeedImageService {
         feedImageRepository.findByFeedIdOrderByDisplayOrderAscForUpdate(feed.getId());
     List<KeptImage> keptImages = resolveKeptImages(items, currentImages);
     validateUploadsNotKept(uploads, keptImages);
+    // S3 조회·복사 전에 30일 제한을 확인해, 막힌 요청이 외부 호출이나 고아 객체를 만들지 않게 한다.
+    recordOriginalReplacement(member, feed, currentImages, keptImages, uploads, now);
     Map<String, Integer> uploadBlurLevels = resolveUploadedBlurLevels(memberId, uploads);
 
     // S3 복사를 DB 변경보다 먼저 끝내, 복사 실패 시 DB가 바뀌지 않게 한다.
@@ -151,6 +165,7 @@ public class FeedImageService {
     List<FeedImage> finalImages = new ArrayList<>(keptImages.size() + saved.size());
     keptImages.forEach(kept -> finalImages.add(kept.image()));
     finalImages.addAll(saved);
+    initializePhotoSetIfCompleted(feed, finalImages, now);
     return new FeedImageResponse(finalImages.stream()
         .sorted(Comparator.comparing(FeedImage::getDisplayOrder))
         .map(image -> FeedImageResponse.Image.of(image,
@@ -180,6 +195,70 @@ public class FeedImageService {
       keptImages.add(new KeptImage(image, item.displayOrder(), blurLevel));
     }
     return keptImages;
+  }
+
+  /**
+   * 이번 저장이 원본 사진 교체이면 30일 제한을 검증하고 교체 시각을 기록한다(#113). 기록은 회원의 프로필 항목별 변경
+   * 이력({@link ProfileItem#PHOTOS})을 재사용하며, 이후 단계가 실패하면 트랜잭션과 함께 롤백된다.
+   *
+   * <p><b>원본 교체</b>는 기존 사진 중 처리 실패({@code FAILED})가 아닌 사진을 요청에서 빼는 것이다. 한 요청에서 여러 장을
+   * 바꿔도 1회로 기록한다. 다음은 교체가 아니다.
+   * <ul>
+   *   <li>빈 자리에 새 사진만 추가(최초 등록, 5장 미만 채우기) — 최대 장수가 정해져 있어 기존 사진을 빼야만 바꿀 수 있다.</li>
+   *   <li>순서 변경, 블러 강도 변경 — 원본은 그대로다.</li>
+   *   <li>처리 실패 사진 빼기 — 업로드 실패 복구까지 막지 않는다.</li>
+   * </ul>
+   *
+   * <p>제한은 사진 최초 구성(5장)을 마친 피드에만 적용한다({@link Feed#isPhotoSetInitialized()}). 최초 구성 중(1~4장)에는
+   * 자유롭게 고칠 수 있고, 처음 5장이 채워진 저장은 완료만 표시하며 교체로 기록하지 않는다
+   * ({@link #initializePhotoSetIfCompleted}). 완료 표시는 지워지지 않으므로, 이후 장수가 줄거나 사진이 {@code FAILED}가
+   * 되어도 다른 정상 사진을 제한 없이 바꿀 수 없다.
+   *
+   * <p>"원본이 빠졌는지"는 사진 id가 아니라 <b>원본 key 집합</b>으로 비교한다. 요청에서 뺀 사진의 key를 새 사진으로 다시
+   * 보내는 경우처럼 실제 원본이 그대로면 교체가 아니다. 유지 사진은 블러 재처리로 key가 바뀌기 <b>전</b>의 현재 key로
+   * 비교해, 블러 변경이 교체로 잡히지 않게 한다.
+   *
+   * @throws BaseException 마지막 교체 후 30일이 지나지 않은 경우({@code MEMBER_409_PHOTOS_CHANGE_LIMITED})
+   */
+  private void recordOriginalReplacement(Member member, Feed feed, List<FeedImage> currentImages,
+      List<KeptImage> keptImages, List<FeedImageSaveRequest.Image> uploads, LocalDateTime now) {
+    if (!isPhotoSetInitialized(feed, currentImages, now)) {
+      return;
+    }
+    Set<String> requestedKeys = new HashSet<>();
+    keptImages.forEach(kept -> requestedKeys.add(kept.image().getOriginalKey()));
+    uploads.forEach(upload -> requestedKeys.add(upload.objectKey()));
+    boolean originalChanged = currentImages.stream()
+        .filter(image -> image.getProcessingStatus() != FeedImageProcessingStatus.FAILED)
+        .anyMatch(image -> !requestedKeys.contains(image.getOriginalKey()));
+    if (originalChanged) {
+      member.recordProfileChange(ProfileItem.PHOTOS, now);
+    }
+  }
+
+  /**
+   * 피드가 사진 최초 구성을 마쳤는지 판정한다. 완료 표시가 없더라도 현재 사진이 이미 5장이면 완료로 보고 그 자리에서
+   * 기록한다. 지금은 5장이 되는 저장이 항상 완료를 기록하므로, 이 분기는 완료 표시 도입(#113) 전에 5장을 올린 피드에만
+   * 해당한다. 이 보정이 없으면 기존 회원은 첫 교체 1회를 제한 없이 할 수 있다.
+   */
+  private boolean isPhotoSetInitialized(Feed feed, List<FeedImage> currentImages,
+      LocalDateTime now) {
+    if (!feed.isPhotoSetInitialized()
+        && currentImages.size() >= FeedImage.REQUIRED_PUBLISH_COUNT) {
+      feed.initializePhotoSet(now);
+    }
+    return feed.isPhotoSetInitialized();
+  }
+
+  /**
+   * 이번 저장으로 사진이 처음 5장이 되면 최초 구성 완료를 기록한다(#113). 저장 트랜잭션 안에서 기록하므로 저장이 실패하면
+   * 함께 롤백된다. 교체 시각(30일 쿨다운)은 기록하지 않아, 최초 업로드 직후 제한에 걸리지 않는다.
+   */
+  private void initializePhotoSetIfCompleted(Feed feed, List<FeedImage> finalImages,
+      LocalDateTime now) {
+    if (finalImages.size() >= FeedImage.REQUIRED_PUBLISH_COUNT) {
+      feed.initializePhotoSet(now);
+    }
   }
 
   /**

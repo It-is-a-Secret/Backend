@@ -1,6 +1,7 @@
 package com.blursome.blursome.member.service;
 
 import com.blursome.blursome.global.exception.BaseException;
+import com.blursome.blursome.global.time.SeoulTime;
 import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.dto.OAuthUserInfo;
 import com.blursome.blursome.member.exception.MemberErrorCode;
@@ -30,6 +31,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class MemberService {
 
   private static final String PROVIDER_UNIQUE_CONSTRAINT = "uk_member_provider";
+  // 오류 메시지는 사용자에게 그대로 보이므로 서버 시간대와 무관하게 한국 시간으로 표시한다(#113).
   private static final DateTimeFormatter REJOIN_AT_FORMAT =
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
 
@@ -148,7 +150,8 @@ public class MemberService {
     if (withdrawn.isRejoinRestricted(now)) {
       throw BaseException.from(MemberErrorCode.MEMBER_REJOIN_RESTRICTED,
           "탈퇴 후 30일 동안은 같은 계정이나 학교 이메일로 다시 가입할 수 없습니다. %s부터 가입할 수 있습니다."
-              .formatted(withdrawn.rejoinAvailableAt().format(REJOIN_AT_FORMAT)));
+              .formatted(SeoulTime.toOffset(withdrawn.rejoinAvailableAt(), clock.getZone())
+                  .format(REJOIN_AT_FORMAT)));
     }
   }
 

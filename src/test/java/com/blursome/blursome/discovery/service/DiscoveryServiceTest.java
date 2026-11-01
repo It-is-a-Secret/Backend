@@ -10,8 +10,12 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 
 import com.blursome.blursome.block.repository.BlockRepository;
+import com.blursome.blursome.chat.domain.ChatRoomStatus;
+import com.blursome.blursome.chat.service.ChatRoomService;
+import com.blursome.blursome.chat.service.PartnerRoom;
 import com.blursome.blursome.discovery.dto.response.DiscoveryCardDetailResponse;
 import com.blursome.blursome.discovery.dto.response.DiscoveryCardResponse;
+import com.blursome.blursome.discovery.dto.response.DiscoveryChatRoomResponse;
 import com.blursome.blursome.discovery.exception.DiscoveryErrorCode;
 import com.blursome.blursome.discovery.repository.DiscoveryRepository;
 import com.blursome.blursome.feed.domain.Feed;
@@ -27,6 +31,7 @@ import com.blursome.blursome.keyword.domain.KeywordCategory;
 import com.blursome.blursome.keyword.domain.KeywordTag;
 import com.blursome.blursome.keyword.domain.MemberKeyword;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -52,6 +57,8 @@ class DiscoveryServiceTest {
   private KeywordRelationCache keywordRelationCache;
   @Mock
   private BlockRepository blockRepository;
+  @Mock
+  private ChatRoomService chatRoomService;
 
   @InjectMocks
   private DiscoveryService discoveryService;
@@ -117,6 +124,56 @@ class DiscoveryServiceTest {
   }
 
   @Test
+  @DisplayName("이미 대화 중인 상대는 점수가 더 높아도 뒤로 가고, 카드에 chatRoom이 붙는다(#112)")
+  void getDiscovery_activeRoomGoesLastWithChatRoom() {
+    Feed viewerFeed = feed(1L, 1L, Gender.MALE, 2000);
+    given(feedService.findFeedByMemberId(1L)).willReturn(Optional.of(viewerFeed));
+    given(memberKeywordRepository.findByMemberIdWithTag(1L)).willReturn(List.of());
+    given(memberKeywordRepository.findByMemberIdInWithTag(anyList())).willReturn(List.of());
+
+    Feed chatting = feed(10L, 10L, Gender.FEMALE, 2001); // 높은 점수지만 이미 대화 중
+    Feed fresh = feed(20L, 20L, Gender.FEMALE, 2000);    // 낮은 점수, 새 상대
+    given(discoveryRepository.findCandidates(eq(Gender.FEMALE), eq(1L), any(Pageable.class)))
+        .willReturn(List.of(chatting, fresh));
+    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 2001), any(), any()))
+        .willReturn(0.9);
+    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 2000), any(), any()))
+        .willReturn(0.3);
+    given(chatRoomService.findPartnerRooms(1L))
+        .willReturn(Map.of(10L, new PartnerRoom(31L, ChatRoomStatus.ACTIVE)));
+
+    List<DiscoveryCardResponse> result = discoveryService.getDiscovery(1L, 0, 20);
+
+    assertThat(result).extracting(DiscoveryCardResponse::feedId).containsExactly(20L, 10L);
+    assertThat(result.get(0).chatRoom()).isNull();
+    assertThat(result.get(1).chatRoom())
+        .isEqualTo(new DiscoveryChatRoomResponse(31L, ChatRoomStatus.ACTIVE));
+  }
+
+  @Test
+  @DisplayName("후보 조회 뒤 종료(CLOSED)·검토 중(REPORTED)이 된 관계도 목록에서 한 번 더 거른다(#112)")
+  void getDiscovery_filtersClosedOrReportedRelationsDefensively() {
+    Feed viewerFeed = feed(1L, 1L, Gender.MALE, 2000);
+    given(feedService.findFeedByMemberId(1L)).willReturn(Optional.of(viewerFeed));
+    given(memberKeywordRepository.findByMemberIdWithTag(1L)).willReturn(List.of());
+    given(memberKeywordRepository.findByMemberIdInWithTag(anyList())).willReturn(List.of());
+
+    Feed closed = feed(10L, 10L, Gender.FEMALE, 2000);
+    Feed reported = feed(11L, 11L, Gender.FEMALE, 2000);
+    Feed visible = feed(12L, 12L, Gender.FEMALE, 2000);
+    given(discoveryRepository.findCandidates(eq(Gender.FEMALE), eq(1L), any(Pageable.class)))
+        .willReturn(List.of(closed, reported, visible));
+    given(discoveryScorer.score(any(), any(), any(), any())).willReturn(0.5);
+    given(chatRoomService.findPartnerRooms(1L)).willReturn(Map.of(
+        10L, new PartnerRoom(31L, ChatRoomStatus.CLOSED),
+        11L, new PartnerRoom(32L, ChatRoomStatus.REPORTED)));
+
+    List<DiscoveryCardResponse> result = discoveryService.getDiscovery(1L, 0, 20);
+
+    assertThat(result).extracting(DiscoveryCardResponse::feedId).containsExactly(12L);
+  }
+
+  @Test
   @DisplayName("viewer가 온보딩(피드)을 완료하지 않았으면 DISCOVERY_ONBOARDING_REQUIRED 예외")
   void getDiscovery_whenViewerHasNoFeed_thenThrows() {
     given(feedService.findFeedByMemberId(99L)).willReturn(Optional.empty());
@@ -170,6 +227,55 @@ class DiscoveryServiceTest {
         .extracting(DiscoveryCardDetailResponse.Keyword::tagId,
             DiscoveryCardDetailResponse.Keyword::matched)
         .containsExactly(tuple(100L, true), tuple(200L, false));
+  }
+
+  @Test
+  @DisplayName("카드 상세: 이미 대화 중인 상대면 chatRoom(roomId, ACTIVE)을 함께 내린다(#112)")
+  void getCardDetail_withActiveRoom_returnsChatRoom() {
+    Feed viewerFeed = onboardedFeed(1L, 1L, Gender.MALE);
+    Feed target = onboardedFeed(20L, 20L, Gender.FEMALE);
+    givenDetailTarget(viewerFeed, target);
+    given(blockRepository.existsBlockBetween(1L, 20L)).willReturn(false);
+    given(feedService.isFeedPublishable(20L)).willReturn(true);
+    given(chatRoomService.findPartnerRoom(1L, 20L))
+        .willReturn(Optional.of(new PartnerRoom(31L, ChatRoomStatus.ACTIVE)));
+
+    DiscoveryCardDetailResponse result = discoveryService.getCardDetail(1L, 20L);
+
+    assertThat(result.chatRoom()).isEqualTo(new DiscoveryChatRoomResponse(31L, ChatRoomStatus.ACTIVE));
+  }
+
+  @Test
+  @DisplayName("카드 상세: 방이 없으면 chatRoom은 null이다(#112)")
+  void getCardDetail_withoutRoom_chatRoomIsNull() {
+    Feed viewerFeed = onboardedFeed(1L, 1L, Gender.MALE);
+    Feed target = onboardedFeed(20L, 20L, Gender.FEMALE);
+    givenDetailTarget(viewerFeed, target);
+    given(blockRepository.existsBlockBetween(1L, 20L)).willReturn(false);
+    given(feedService.isFeedPublishable(20L)).willReturn(true);
+    given(chatRoomService.findPartnerRoom(1L, 20L)).willReturn(Optional.empty());
+
+    assertThat(discoveryService.getCardDetail(1L, 20L).chatRoom()).isNull();
+  }
+
+  @Test
+  @DisplayName("카드 상세: 종료(CLOSED)·검토 중(REPORTED) 관계인 상대는 목록과 같이 404(#112)")
+  void getCardDetail_closedOrReportedRelation_notFound() {
+    Feed viewerFeed = onboardedFeed(1L, 1L, Gender.MALE);
+    Feed target = onboardedFeed(20L, 20L, Gender.FEMALE);
+    given(feedService.findFeedByMemberId(1L)).willReturn(Optional.of(viewerFeed));
+    given(feedService.findFeedById(20L)).willReturn(Optional.of(target));
+    given(blockRepository.existsBlockBetween(1L, 20L)).willReturn(false);
+    given(feedService.isFeedPublishable(20L)).willReturn(true);
+
+    for (ChatRoomStatus status : List.of(ChatRoomStatus.CLOSED, ChatRoomStatus.REPORTED)) {
+      given(chatRoomService.findPartnerRoom(1L, 20L))
+          .willReturn(Optional.of(new PartnerRoom(31L, status)));
+
+      assertThatThrownBy(() -> discoveryService.getCardDetail(1L, 20L))
+          .isInstanceOf(BaseException.class)
+          .hasFieldOrPropertyWithValue("code", DiscoveryErrorCode.DISCOVERY_FEED_NOT_FOUND.getCode());
+    }
   }
 
   @Test
