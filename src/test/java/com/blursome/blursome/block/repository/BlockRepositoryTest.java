@@ -56,6 +56,30 @@ class BlockRepositoryTest {
   }
 
   @Test
+  @DisplayName("차단 목록은 내가 차단한 회원만 최근 차단 순으로 주고, 탈퇴 회원은 제외한다(#113)")
+  void findBlockedMembers_returnsMyBlocksNewestFirstExcludingWithdrawn() {
+    Member me = persistMember("me");
+    Member first = persistMember("first");
+    Member second = persistMember("second");
+    Member withdrawn = persistMember("withdrawn");
+    Member other = persistMember("other");
+    blockRepository.save(Block.of(me, first));
+    blockRepository.save(Block.of(me, second));
+    blockRepository.save(Block.of(me, withdrawn));
+    blockRepository.save(Block.of(other, me)); // 나를 차단한 행은 내 목록이 아니다
+    withdrawn.withdraw();
+    em.flush();
+    em.clear();
+
+    var blocks = blockRepository.findBlockedMembers(me.getId());
+
+    assertThat(blocks)
+        .extracting(block -> block.getBlocked().getId())
+        .containsExactly(second.getId(), first.getId());
+    assertThat(blocks).allSatisfy(block -> assertThat(block.getCreatedAt()).isNotNull());
+  }
+
+  @Test
   @DisplayName("차단 해제는 해당 방향 행만 삭제한다")
   void deleteByPair_removesRow() {
     Member a = persistMember("a");
