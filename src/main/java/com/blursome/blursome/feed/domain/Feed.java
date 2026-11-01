@@ -18,6 +18,7 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.OneToOne;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
+import java.time.LocalDateTime;
 import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
@@ -73,6 +74,12 @@ public class Feed extends BaseEntity {
   @Column(length = 4)
   private Mbti mbti;
 
+  // 사진을 처음으로 5장 모두 채운 저장이 성공한 시각(#113). 원본 교체 30일 제한의 적용 시작점이다. 한 번 기록되면
+  // 이후 장수가 줄거나 사진이 처리 실패(FAILED)가 되어도 지우지 않아, "등록 미완료"로 되돌려 제한을 피하는 우회를 막는다.
+  // 최초 구성 완료 표시일 뿐이므로 교체 시각(member.photos_changed_at)은 기록하지 않는다.
+  @Column(name = "photo_set_initialized_at")
+  private LocalDateTime photoSetInitializedAt;
+
   @Builder(access = AccessLevel.PRIVATE)
   private Feed(Member member, String nickName, Gender gender,
       Integer birthYear, Department department, Mbti mbti) {
@@ -115,5 +122,17 @@ public class Feed extends BaseEntity {
    */
   public void changeMbti(Mbti mbti) {
     this.mbti = mbti;
+  }
+
+  /** 사진 최초 구성(5장)을 마쳤는지 여부(#113). 마친 뒤부터 원본 교체에 30일 제한이 적용된다. */
+  public boolean isPhotoSetInitialized() {
+    return this.photoSetInitializedAt != null;
+  }
+
+  /** 사진 최초 구성 완료를 기록한다(#113). 이미 기록돼 있으면 처음 시각을 유지한다(멱등). */
+  public void initializePhotoSet(LocalDateTime now) {
+    if (this.photoSetInitializedAt == null) {
+      this.photoSetInitializedAt = now;
+    }
   }
 }

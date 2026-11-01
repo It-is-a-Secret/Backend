@@ -1,5 +1,6 @@
 package com.blursome.blursome.block.service;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
@@ -7,6 +8,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 import com.blursome.blursome.block.domain.Block;
+import com.blursome.blursome.block.dto.response.BlockedMemberResponse;
 import com.blursome.blursome.block.exception.BlockErrorCode;
 import com.blursome.blursome.block.repository.BlockRepository;
 import com.blursome.blursome.chat.service.ChatRoomService;
@@ -15,6 +17,8 @@ import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.OAuthProvider;
 import com.blursome.blursome.member.exception.MemberErrorCode;
 import com.blursome.blursome.member.repository.MemberRepository;
+import java.time.LocalDateTime;
+import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -54,6 +58,27 @@ class BlockServiceTest {
     blockService.block(1L, 2L);
 
     verify(blockRepository).save(any(Block.class));
+  }
+
+  @Test
+  @DisplayName("차단 목록은 조회 순서를 유지하며 차단한 회원 id·닉네임·차단 시각을 내려준다(#113)")
+  void getBlockedMembers_mapsRows() {
+    Member blocker = member(1L);
+    Member target = member(2L);
+    target.verifySchoolEmail("t@school.ac.kr");
+    target.completeOnboarding("target");
+    Member notOnboarded = member(3L);
+    Block onboardedBlock = Block.of(blocker, target);
+    Block plainBlock = Block.of(blocker, notOnboarded);
+    LocalDateTime blockedAt = LocalDateTime.of(2026, 11, 1, 12, 0);
+    ReflectionTestUtils.setField(onboardedBlock, "createdAt", blockedAt);
+    given(blockRepository.findBlockedMembers(1L)).willReturn(List.of(onboardedBlock, plainBlock));
+
+    List<BlockedMemberResponse> result = blockService.getBlockedMembers(1L);
+
+    assertThat(result).containsExactly(
+        new BlockedMemberResponse(2L, "target", blockedAt),
+        new BlockedMemberResponse(3L, null, null));
   }
 
   @Test

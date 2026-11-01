@@ -1,19 +1,21 @@
 package com.blursome.blursome.block.service;
 
 import com.blursome.blursome.block.domain.Block;
+import com.blursome.blursome.block.dto.response.BlockedMemberResponse;
 import com.blursome.blursome.block.exception.BlockErrorCode;
 import com.blursome.blursome.block.repository.BlockRepository;
 import com.blursome.blursome.chat.service.ChatRoomService;
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.member.exception.MemberErrorCode;
 import com.blursome.blursome.member.repository.MemberRepository;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * 차단(block) 서비스. 차단 등록·해제를 제공한다. 노출 차단(탐색·채팅 비노출)은 조회 쿼리에서 양방향으로 적용한다.
+ * 차단(block) 서비스. 차단 등록·해제·목록 조회를 제공한다. 노출 차단(탐색·채팅 비노출)은 조회 쿼리에서 양방향으로 적용한다.
  *
  * <p>등록·해제는 모두 멱등이다(중복 차단/없는 차단 해제는 오류 없이 무시). 설계는 마스터 §5.5.
  *
@@ -57,6 +59,18 @@ public class BlockService {
     // 차단이 성립한 상태(신규 저장/이미 차단)에서 진행 중 방을 동결한다(이슈 #77). markBlocked는 ACTIVE일 때만
     // 전이하므로 이미 동결됐거나 동결할 방이 없으면 멱등 no-op이다.
     chatRoomService.freezeRoomOnBlock(blockerId, targetMemberId);
+  }
+
+  /**
+   * 내가 차단한 회원 목록을 최근 차단 순으로 조회한다(#113). 탈퇴한 회원은 관리 대상이 아니므로 제외한다.
+   *
+   * @param blockerId 인증된 회원 id
+   * @return 차단 목록. 차단한 회원이 없으면 빈 목록
+   */
+  public List<BlockedMemberResponse> getBlockedMembers(Long blockerId) {
+    return blockRepository.findBlockedMembers(blockerId).stream()
+        .map(BlockedMemberResponse::from)
+        .toList();
   }
 
   /**

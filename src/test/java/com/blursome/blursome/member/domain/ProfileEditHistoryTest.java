@@ -38,6 +38,22 @@ class ProfileEditHistoryTest {
   }
 
   @Test
+  @DisplayName("사진 교체 기록은 다른 항목 이력을 보존하고, 제한 중이면 사진 전용 에러코드로 실패한다(#113)")
+  void record_photos_keepsOtherItemsAndUsesPhotoError() {
+    ProfileEditHistory history = ProfileEditHistory.empty()
+        .record(ProfileItem.NICKNAME, T0)
+        .record(ProfileItem.PHOTOS, T0.plusDays(1));
+
+    assertThat(history.lastChangedAt(ProfileItem.NICKNAME)).isEqualTo(T0);
+    assertThat(history.lastChangedAt(ProfileItem.PHOTOS)).isEqualTo(T0.plusDays(1));
+    assertThat(history.record(ProfileItem.MBTI, T0).lastChangedAt(ProfileItem.PHOTOS))
+        .isEqualTo(T0.plusDays(1));
+    assertThatThrownBy(() -> history.validateChangeable(ProfileItem.PHOTOS, T0.plusDays(2)))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", MemberErrorCode.MEMBER_PHOTOS_CHANGE_LIMITED.getCode());
+  }
+
+  @Test
   @DisplayName("30일이 지나기 전에는 변경할 수 없고, 정확히 30일이 지나면 변경할 수 있다")
   void isChangeable_boundary() {
     ProfileEditHistory history = ProfileEditHistory.empty().record(ProfileItem.NICKNAME, T0);

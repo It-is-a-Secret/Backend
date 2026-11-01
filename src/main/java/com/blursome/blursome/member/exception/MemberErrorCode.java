@@ -62,6 +62,11 @@ public enum MemberErrorCode implements ErrorCode {
       "관심사는 30일에 한 번만 변경할 수 있습니다.",
       "MEMBER_409_KEYWORDS_CHANGE_LIMITED"
   ),
+  // 이슈 #113: 피드 원본 사진 교체도 30일에 한 번. 순서·블러 변경, 빈 자리 추가, 처리 실패 사진 재업로드는 해당하지 않는다.
+  MEMBER_PHOTOS_CHANGE_LIMITED(HttpStatus.CONFLICT,
+      "사진은 30일에 한 번만 교체할 수 있습니다.",
+      "MEMBER_409_PHOTOS_CHANGE_LIMITED"
+  ),
   MEMBER_ALREADY_WITHDRAWN(HttpStatus.CONFLICT,
       "이미 탈퇴한 회원입니다.",
       "MEMBER_409_ALREADY_WITHDRAWN"
