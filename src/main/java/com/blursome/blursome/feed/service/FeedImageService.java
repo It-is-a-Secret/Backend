@@ -135,7 +135,7 @@ public class FeedImageService {
     List<KeptImage> keptImages = resolveKeptImages(items, currentImages);
     validateUploadsNotKept(uploads, keptImages);
     // S3 조회·복사 전에 30일 제한을 확인해, 막힌 요청이 외부 호출이나 고아 객체를 만들지 않게 한다.
-    recordOriginalReplacement(member, currentImages, keptImages, now);
+    recordOriginalReplacement(member, feed, currentImages, keptImages, uploads, now);
     Map<String, Integer> uploadBlurLevels = resolveUploadedBlurLevels(memberId, uploads);
 
     // S3 복사를 DB 변경보다 먼저 끝내, 복사 실패 시 DB가 바뀌지 않게 한다.
@@ -165,6 +165,7 @@ public class FeedImageService {
     List<FeedImage> finalImages = new ArrayList<>(keptImages.size() + saved.size());
     keptImages.forEach(kept -> finalImages.add(kept.image()));
     finalImages.addAll(saved);
+    initializePhotoSetIfCompleted(feed, finalImages, now);
     return new FeedImageResponse(finalImages.stream()
         .sorted(Comparator.comparing(FeedImage::getDisplayOrder))
         .map(image -> FeedImageResponse.Image.of(image,
@@ -208,30 +209,55 @@ public class FeedImageService {
    *   <li>처리 실패 사진 빼기 — 업로드 실패 복구까지 막지 않는다.</li>
    * </ul>
    *
-   * <p>최초 등록 중에는 자유롭게 고칠 수 있도록, 정상 사진 5장을 모두 등록했거나 이미 한 번 교체한 적이 있을 때만 제한을
-   * 적용한다. 한 번 교체한 뒤에는 장수가 5장 미만이 되어도 계속 제한해, 한 장을 빼 등록 미완료 상태로 만든 뒤 나머지를
-   * 자유롭게 바꾸는 우회를 막는다.
+   * <p>제한은 사진 최초 구성(5장)을 마친 피드에만 적용한다({@link Feed#isPhotoSetInitialized()}). 최초 구성 중(1~4장)에는
+   * 자유롭게 고칠 수 있고, 처음 5장이 채워진 저장은 완료만 표시하며 교체로 기록하지 않는다
+   * ({@link #initializePhotoSetIfCompleted}). 완료 표시는 지워지지 않으므로, 이후 장수가 줄거나 사진이 {@code FAILED}가
+   * 되어도 다른 정상 사진을 제한 없이 바꿀 수 없다.
+   *
+   * <p>"원본이 빠졌는지"는 사진 id가 아니라 <b>원본 key 집합</b>으로 비교한다. 요청에서 뺀 사진의 key를 새 사진으로 다시
+   * 보내는 경우처럼 실제 원본이 그대로면 교체가 아니다. 유지 사진은 블러 재처리로 key가 바뀌기 <b>전</b>의 현재 key로
+   * 비교해, 블러 변경이 교체로 잡히지 않게 한다.
    *
    * @throws BaseException 마지막 교체 후 30일이 지나지 않은 경우({@code MEMBER_409_PHOTOS_CHANGE_LIMITED})
    */
-  private void recordOriginalReplacement(Member member, List<FeedImage> currentImages,
-      List<KeptImage> keptImages, LocalDateTime now) {
-    Set<Long> keptIds = new HashSet<>();
-    keptImages.forEach(kept -> keptIds.add(kept.image().getId()));
-    boolean dropsOriginal = currentImages.stream()
-        .filter(image -> !keptIds.contains(image.getId()))
-        .anyMatch(image -> image.getProcessingStatus() != FeedImageProcessingStatus.FAILED);
-    if (!dropsOriginal) {
+  private void recordOriginalReplacement(Member member, Feed feed, List<FeedImage> currentImages,
+      List<KeptImage> keptImages, List<FeedImageSaveRequest.Image> uploads, LocalDateTime now) {
+    if (!isPhotoSetInitialized(feed, currentImages, now)) {
       return;
     }
-    long registeredCount = currentImages.stream()
+    Set<String> requestedKeys = new HashSet<>();
+    keptImages.forEach(kept -> requestedKeys.add(kept.image().getOriginalKey()));
+    uploads.forEach(upload -> requestedKeys.add(upload.objectKey()));
+    boolean originalChanged = currentImages.stream()
         .filter(image -> image.getProcessingStatus() != FeedImageProcessingStatus.FAILED)
-        .count();
-    boolean registrationCompleted = registeredCount >= FeedImage.REQUIRED_PUBLISH_COUNT;
-    boolean replacedBefore =
-        member.profileEditHistory().lastChangedAt(ProfileItem.PHOTOS) != null;
-    if (registrationCompleted || replacedBefore) {
+        .anyMatch(image -> !requestedKeys.contains(image.getOriginalKey()));
+    if (originalChanged) {
       member.recordProfileChange(ProfileItem.PHOTOS, now);
+    }
+  }
+
+  /**
+   * 피드가 사진 최초 구성을 마쳤는지 판정한다. 완료 표시가 없더라도 현재 사진이 이미 5장이면 완료로 보고 그 자리에서
+   * 기록한다. 지금은 5장이 되는 저장이 항상 완료를 기록하므로, 이 분기는 완료 표시 도입(#113) 전에 5장을 올린 피드에만
+   * 해당한다. 이 보정이 없으면 기존 회원은 첫 교체 1회를 제한 없이 할 수 있다.
+   */
+  private boolean isPhotoSetInitialized(Feed feed, List<FeedImage> currentImages,
+      LocalDateTime now) {
+    if (!feed.isPhotoSetInitialized()
+        && currentImages.size() >= FeedImage.REQUIRED_PUBLISH_COUNT) {
+      feed.initializePhotoSet(now);
+    }
+    return feed.isPhotoSetInitialized();
+  }
+
+  /**
+   * 이번 저장으로 사진이 처음 5장이 되면 최초 구성 완료를 기록한다(#113). 저장 트랜잭션 안에서 기록하므로 저장이 실패하면
+   * 함께 롤백된다. 교체 시각(30일 쿨다운)은 기록하지 않아, 최초 업로드 직후 제한에 걸리지 않는다.
+   */
+  private void initializePhotoSetIfCompleted(Feed feed, List<FeedImage> finalImages,
+      LocalDateTime now) {
+    if (finalImages.size() >= FeedImage.REQUIRED_PUBLISH_COUNT) {
+      feed.initializePhotoSet(now);
     }
   }
 
