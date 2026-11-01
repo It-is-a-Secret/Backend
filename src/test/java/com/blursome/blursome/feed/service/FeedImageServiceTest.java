@@ -32,6 +32,13 @@ import com.blursome.blursome.global.storage.S3ObjectKeyGenerator;
 import com.blursome.blursome.global.storage.S3StorageService;
 import com.blursome.blursome.global.storage.S3StorageService.OriginalObject;
 import com.blursome.blursome.global.storage.S3StorageService.PresignedUpload;
+import com.blursome.blursome.member.domain.Member;
+import com.blursome.blursome.member.domain.OAuthProvider;
+import com.blursome.blursome.member.domain.ProfileItem;
+import com.blursome.blursome.member.service.MemberService;
+import java.time.Clock;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -42,6 +49,7 @@ import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Mockito;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 import software.amazon.awssdk.services.s3.model.S3Exception;
@@ -51,6 +59,8 @@ class FeedImageServiceTest {
 
   private static final long MEMBER_ID = 100L;
   private static final long FEED_ID = 7L;
+  private static final ZoneId ZONE = ZoneId.of("Asia/Seoul");
+  private static final LocalDateTime NOW = LocalDateTime.of(2026, 11, 1, 12, 0);
 
   @Mock
   private FeedRepository feedRepository;
@@ -63,6 +73,15 @@ class FeedImageServiceTest {
 
   @Mock
   private S3StorageService storageService;
+
+  @Mock
+  private MemberService memberService;
+
+  @Spy
+  private Clock clock = Clock.fixed(NOW.atZone(ZONE).toInstant(), ZONE);
+
+  /** 사진 저장 시 잠그는 회원. 온보딩을 마친 상태라 사진 교체 이력을 기록할 수 있다. */
+  private final Member member = onboardedMember();
 
   @InjectMocks
   private FeedImageService feedImageService;
@@ -531,6 +550,7 @@ class FeedImageServiceTest {
   }
 
   private void givenLockedFeed() {
+    lenient().when(memberService.findActiveMemberForUpdate(MEMBER_ID)).thenReturn(member);
     Feed feed = mock(Feed.class);
     lenient().when(feed.getId()).thenReturn(FEED_ID);
     given(feedRepository.findByMemberIdForUpdate(MEMBER_ID)).willReturn(Optional.of(feed));
@@ -558,6 +578,213 @@ class FeedImageServiceTest {
 
   private static FeedImageSaveRequest request(FeedImageSaveRequest.Image... images) {
     return new FeedImageSaveRequest(List.of(images));
+  }
+
+  private static Member onboardedMember() {
+    Member member = Member.createOAuthMember(OAuthProvider.KAKAO, "pid", "name", "e@e.com", null);
+    ReflectionTestUtils.setField(member, "id", MEMBER_ID);
+    member.verifySchoolEmail("blur@school.ac.kr");
+    member.completeOnboarding("blur");
+    return member;
+  }
+
+  /** id 1~5, 순서 1~5인 사진 5장. {@code statuses}로 각 사진 상태를 지정한다. */
+  private static List<FeedImage> fiveImages(FeedImageProcessingStatus... statuses) {
+    return java.util.stream.IntStream.rangeClosed(1, 5)
+        .mapToObj(i -> currentImage((long) i, i,
+            "originals/100/0000000" + i + "-0000-0000-0000-000000000000.png",
+            "variants/100/0000000" + i + "-0000-0000-0000-000000000000.jpg",
+            80, statuses[i - 1]))
+        .toList();
+  }
+
+  private static FeedImageProcessingStatus[] allReady() {
+    return new FeedImageProcessingStatus[] {
+        FeedImageProcessingStatus.READY, FeedImageProcessingStatus.READY,
+        FeedImageProcessingStatus.READY, FeedImageProcessingStatus.READY,
+        FeedImageProcessingStatus.READY};
+  }
+
+  /** 첫 번째 사진(id 1)을 빼고 그 자리에 새 사진(KEY_C)을 넣는 요청. 나머지는 유지한다. */
+  private static FeedImageSaveRequest replaceFirstWithNewUpload(List<FeedImage> current) {
+    List<FeedImageSaveRequest.Image> items = new java.util.ArrayList<>();
+    items.add(FeedImageSaveRequest.Image.upload(KEY_C, 1, null));
+    current.stream()
+        .filter(image -> image.getId() != 1L)
+        .forEach(image -> items.add(
+            FeedImageSaveRequest.Image.existing(image.getId(), image.getDisplayOrder(), null)));
+    return new FeedImageSaveRequest(items);
+  }
+
+  private void givenNewUploadAccepted() {
+    given(keyGenerator.isOwnedOriginalKey(MEMBER_ID, KEY_C)).willReturn(true);
+    given(keyGenerator.toVariantKey(KEY_C)).willReturn(VARIANT_C);
+    givenUploadedOriginal(KEY_C, "80");
+    givenSaveAllReturnsArgument();
+    givenVariantUrls();
+  }
+
+  @Test
+  @DisplayName("사진 교체: 5장 등록 완료 후 기존 사진을 빼고 새 사진을 넣으면 교체로 기록한다")
+  void replaceImages_whenOriginalReplacedAfterRegistration_recordsPhotoChange() {
+    // given
+    givenLockedFeed();
+    List<FeedImage> current = fiveImages(allReady());
+    givenCurrentImages(current.toArray(FeedImage[]::new));
+    givenNewUploadAccepted();
+
+    // when
+    feedImageService.replaceImages(MEMBER_ID, replaceFirstWithNewUpload(current));
+
+    // then
+    assertThat(member.profileEditHistory().lastChangedAt(ProfileItem.PHOTOS)).isEqualTo(NOW);
+    assertThat(member.profileEditHistory().nextChangeableAt(ProfileItem.PHOTOS))
+        .isEqualTo(NOW.plusDays(30));
+  }
+
+  @Test
+  @DisplayName("사진 교체: 마지막 교체 후 30일이 안 됐으면 S3 호출·DB 변경 없이 MEMBER_409_PHOTOS_CHANGE_LIMITED")
+  void replaceImages_whenReplacedWithinThirtyDays_thenRejectsBeforeS3() {
+    // given: 30일 - 1초 전에 교체
+    member.recordProfileChange(ProfileItem.PHOTOS, NOW.minusDays(30).plusSeconds(1));
+    givenLockedFeed();
+    List<FeedImage> current = fiveImages(allReady());
+    givenCurrentImages(current.toArray(FeedImage[]::new));
+    given(keyGenerator.isOwnedOriginalKey(MEMBER_ID, KEY_C)).willReturn(true);
+
+    // when & then
+    assertThatThrownBy(() ->
+        feedImageService.replaceImages(MEMBER_ID, replaceFirstWithNewUpload(current)))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "MEMBER_409_PHOTOS_CHANGE_LIMITED");
+    verify(storageService, never()).findOriginal(anyString());
+    verify(feedImageRepository, never()).deleteAll(any());
+    verify(feedImageRepository, never()).saveAll(any());
+  }
+
+  @Test
+  @DisplayName("사진 교체: 마지막 교체 후 정확히 30일이면 다시 교체할 수 있다")
+  void replaceImages_whenExactlyThirtyDaysPassed_thenAllowsReplacement() {
+    // given
+    member.recordProfileChange(ProfileItem.PHOTOS, NOW.minusDays(30));
+    givenLockedFeed();
+    List<FeedImage> current = fiveImages(allReady());
+    givenCurrentImages(current.toArray(FeedImage[]::new));
+    givenNewUploadAccepted();
+
+    // when
+    feedImageService.replaceImages(MEMBER_ID, replaceFirstWithNewUpload(current));
+
+    // then
+    assertThat(member.profileEditHistory().lastChangedAt(ProfileItem.PHOTOS)).isEqualTo(NOW);
+  }
+
+  @Test
+  @DisplayName("사진 교체: 최초 등록 중(5장 미만, 교체 이력 없음)에는 사진을 바꿔도 제한·기록하지 않는다")
+  void replaceImages_whenRegistrationIncomplete_thenDoesNotRecord() {
+    // given: 2장만 등록된 상태에서 1장을 새 사진으로 바꾼다.
+    givenLockedFeed();
+    FeedImage first = currentImage(10L, 1, KEY_A, VARIANT_A, 80, FeedImageProcessingStatus.READY);
+    FeedImage second = currentImage(12L, 2, KEY_B, VARIANT_B, 80, FeedImageProcessingStatus.PROCESSING);
+    givenCurrentImages(first, second);
+    givenNewUploadAccepted();
+
+    // when
+    feedImageService.replaceImages(MEMBER_ID, request(
+        FeedImageSaveRequest.Image.existing(10L, 1, null),
+        FeedImageSaveRequest.Image.upload(KEY_C, 2, null)));
+
+    // then
+    assertThat(member.profileEditHistory().lastChangedAt(ProfileItem.PHOTOS)).isNull();
+    verify(feedImageRepository).deleteAll(List.of(second));
+  }
+
+  @Test
+  @DisplayName("사진 교체: 처리 실패(FAILED) 사진을 다시 올리는 것은 교체가 아니다")
+  void replaceImages_whenOnlyFailedImageReplaced_thenDoesNotRecord() {
+    // given: 30일 제한 중이어도 FAILED 복구는 허용한다.
+    member.recordProfileChange(ProfileItem.PHOTOS, NOW.minusDays(1));
+    givenLockedFeed();
+    List<FeedImage> current = fiveImages(
+        FeedImageProcessingStatus.FAILED, FeedImageProcessingStatus.READY,
+        FeedImageProcessingStatus.READY, FeedImageProcessingStatus.READY,
+        FeedImageProcessingStatus.READY);
+    givenCurrentImages(current.toArray(FeedImage[]::new));
+    givenNewUploadAccepted();
+
+    // when
+    feedImageService.replaceImages(MEMBER_ID, replaceFirstWithNewUpload(current));
+
+    // then: 기록 시각이 바뀌지 않는다.
+    assertThat(member.profileEditHistory().lastChangedAt(ProfileItem.PHOTOS))
+        .isEqualTo(NOW.minusDays(1));
+  }
+
+  @Test
+  @DisplayName("사진 교체: 5장 순서만 바꾸는 것은 교체가 아니다(30일 제한 중에도 허용)")
+  void replaceImages_whenOnlyReorderedAfterRegistration_thenDoesNotRecord() {
+    // given
+    member.recordProfileChange(ProfileItem.PHOTOS, NOW.minusDays(1));
+    givenLockedFeed();
+    List<FeedImage> current = fiveImages(allReady());
+    givenCurrentImages(current.toArray(FeedImage[]::new));
+    givenSaveAllReturnsArgument();
+    givenVariantUrls();
+
+    // when: 1번과 5번 자리를 맞바꾼다.
+    feedImageService.replaceImages(MEMBER_ID, request(
+        FeedImageSaveRequest.Image.existing(5L, 1, null),
+        FeedImageSaveRequest.Image.existing(2L, 2, null),
+        FeedImageSaveRequest.Image.existing(3L, 3, null),
+        FeedImageSaveRequest.Image.existing(4L, 4, null),
+        FeedImageSaveRequest.Image.existing(1L, 5, null)));
+
+    // then
+    assertThat(member.profileEditHistory().lastChangedAt(ProfileItem.PHOTOS))
+        .isEqualTo(NOW.minusDays(1));
+    verify(feedImageRepository, never()).deleteAll(any());
+  }
+
+  @Test
+  @DisplayName("사진 교체: 한 번 교체한 뒤에는 5장 미만이어도 30일 안에 다시 빼면 막는다(우회 방지)")
+  void replaceImages_whenReplacedBeforeAndBelowFive_thenStillLimited() {
+    // given: 어제 교체했고 지금은 4장
+    member.recordProfileChange(ProfileItem.PHOTOS, NOW.minusDays(1));
+    givenLockedFeed();
+    List<FeedImage> four = fiveImages(allReady()).subList(0, 4);
+    givenCurrentImages(four.toArray(FeedImage[]::new));
+
+    // when & then: 2번 사진을 뺀다.
+    assertThatThrownBy(() -> feedImageService.replaceImages(MEMBER_ID, request(
+        FeedImageSaveRequest.Image.existing(1L, 1, null),
+        FeedImageSaveRequest.Image.existing(3L, 2, null),
+        FeedImageSaveRequest.Image.existing(4L, 3, null))))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "MEMBER_409_PHOTOS_CHANGE_LIMITED");
+    verify(feedImageRepository, never()).deleteAll(any());
+  }
+
+  @Test
+  @DisplayName("사진 교체: 빈 자리에 새 사진만 추가하는 것은 30일 제한 중에도 허용한다")
+  void replaceImages_whenOnlyAddingToEmptySlot_thenAllowedDuringLimit() {
+    // given: 어제 교체했고 지금은 4장
+    member.recordProfileChange(ProfileItem.PHOTOS, NOW.minusDays(1));
+    givenLockedFeed();
+    List<FeedImage> four = fiveImages(allReady()).subList(0, 4);
+    givenCurrentImages(four.toArray(FeedImage[]::new));
+    givenNewUploadAccepted();
+
+    // when
+    feedImageService.replaceImages(MEMBER_ID, request(
+        FeedImageSaveRequest.Image.existing(1L, 1, null),
+        FeedImageSaveRequest.Image.existing(2L, 2, null),
+        FeedImageSaveRequest.Image.existing(3L, 3, null),
+        FeedImageSaveRequest.Image.existing(4L, 4, null),
+        FeedImageSaveRequest.Image.upload(KEY_C, 5, null)));
+
+    // then
+    assertThat(member.profileEditHistory().lastChangedAt(ProfileItem.PHOTOS))
+        .isEqualTo(NOW.minusDays(1));
   }
 
   /** 현재 피드에 저장돼 있는 사진(id 부여)을 만든다. */

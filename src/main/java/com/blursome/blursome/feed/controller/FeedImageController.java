@@ -48,6 +48,10 @@ public class FeedImageController {
           + "응답은 새 variantUrl과 PROCESSING이다. 별도 재처리 API는 없다. blurLevel 생략 시 현재 값 유지.\n"
           + "- 새 사진: objectKey. 원본 업로드가 끝난 key여야 하며 PROCESSING으로 생성된다. blurLevel은 Presigned "
           + "발급 때 지정한 값이 적용되고, 보낸다면 그 값과 같아야 한다(FEED_IMAGE_400_BLUR_LEVEL_MISMATCH).\n\n"
+          + "원본 교체 30일 제한: 기존 사진(처리 실패 FAILED 제외)을 목록에서 빼는 저장은 원본 교체로 보고 30일에 한 번만 "
+          + "허용한다(한 요청에서 여러 장을 바꿔도 1회). 정상 사진 5장을 모두 등록했거나 이미 교체한 적이 있을 때부터 "
+          + "적용하며, 빈 자리 추가·순서 변경·블러 변경·FAILED 사진 교체는 제한하지 않는다. 제한 중이면 "
+          + "409 MEMBER_409_PHOTOS_CHANGE_LIMITED이고, 다음 교체 가능 시각은 내 프로필의 profileEdit.photos에 있다.\n\n"
           + "인증 주체에서 피드를 도출하므로 feedId를 받지 않는다. 다른 회원 사진 id는 FEED_IMAGE_404_NOT_FOUND, "
           + "id/objectKey 조합 오류는 FEED_IMAGE_400_INVALID_REFERENCE, 같은 사진 중복 지정은 "
           + "FEED_IMAGE_400_DUPLICATE_REFERENCE, 업로드되지 않은 objectKey는 FEED_IMAGE_400_ORIGINAL_NOT_UPLOADED다.")

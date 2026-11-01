@@ -10,7 +10,7 @@ import lombok.AllArgsConstructor;
 import lombok.NoArgsConstructor;
 
 /**
- * 프로필 항목별 최근 변경 시각(#95). 항목마다 30일에 한 번만 변경할 수 있다.
+ * 프로필 항목별 최근 변경 시각(#95, 사진 #113). 항목마다 30일에 한 번만 변경할 수 있다.
  *
  * <p>온보딩 입력은 "변경"으로 치지 않으므로 최초 값은 모두 {@code null}이며, {@code null}이면 즉시 변경할 수 있다.
  * 불변 값 객체로, 변경 기록은 새 인스턴스를 반환한다.
@@ -31,8 +31,11 @@ public class ProfileEditHistory {
   @Column(name = "keywords_changed_at")
   private LocalDateTime keywordsChangedAt;
 
+  @Column(name = "photos_changed_at")
+  private LocalDateTime photosChangedAt;
+
   public static ProfileEditHistory empty() {
-    return new ProfileEditHistory(null, null, null);
+    return new ProfileEditHistory(null, null, null, null);
   }
 
   /** 항목의 최근 변경 시각. 온보딩 이후 변경한 적이 없으면 {@code null}. */
@@ -41,6 +44,7 @@ public class ProfileEditHistory {
       case NICKNAME -> nickNameChangedAt;
       case MBTI -> mbtiChangedAt;
       case KEYWORDS -> keywordsChangedAt;
+      case PHOTOS -> photosChangedAt;
     };
   }
 
@@ -69,9 +73,10 @@ public class ProfileEditHistory {
   /** 항목의 변경 시각을 {@code now}로 기록한 새 이력을 반환한다. 제한 검증은 호출 측이 먼저 수행한다. */
   public ProfileEditHistory record(ProfileItem item, LocalDateTime now) {
     return switch (item) {
-      case NICKNAME -> new ProfileEditHistory(now, mbtiChangedAt, keywordsChangedAt);
-      case MBTI -> new ProfileEditHistory(nickNameChangedAt, now, keywordsChangedAt);
-      case KEYWORDS -> new ProfileEditHistory(nickNameChangedAt, mbtiChangedAt, now);
+      case NICKNAME -> new ProfileEditHistory(now, mbtiChangedAt, keywordsChangedAt, photosChangedAt);
+      case MBTI -> new ProfileEditHistory(nickNameChangedAt, now, keywordsChangedAt, photosChangedAt);
+      case KEYWORDS -> new ProfileEditHistory(nickNameChangedAt, mbtiChangedAt, now, photosChangedAt);
+      case PHOTOS -> new ProfileEditHistory(nickNameChangedAt, mbtiChangedAt, keywordsChangedAt, now);
     };
   }
 }
