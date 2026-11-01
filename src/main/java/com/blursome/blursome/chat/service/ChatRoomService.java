@@ -260,6 +260,30 @@ public class ChatRoomService {
   }
 
   /**
+   * 회원이 참여했던 모든 방을 상대 회원 id 기준으로 모아 돌려준다(#112). 탐색 목록이 후보마다 "이미 대화 중"·"다시 시작할
+   * 수 없는 관계"를 한 번의 쿼리로 판정하는 데 쓴다. 본인이 나간 방도 포함한다
+   * ({@link ChatRoomMemberRepository#findPartnerRoomRelations}).
+   *
+   * @return 상대 회원 id → 그 상대와의 방. 회원 쌍당 방이 하나이므로 상대 id는 겹치지 않는다.
+   */
+  public Map<Long, PartnerRoom> findPartnerRooms(Long memberId) {
+    Map<Long, PartnerRoom> rooms = new HashMap<>();
+    chatRoomMemberRepository.findPartnerRoomRelations(memberId).forEach(relation ->
+        rooms.put(relation.getPartnerId(),
+            new PartnerRoom(relation.getRoomId(), relation.getRoomStatus())));
+    return rooms;
+  }
+
+  /**
+   * 두 회원 사이의 방을 상태와 무관하게 단건 조회한다(#112 탐색 카드 상세). 회원 쌍당 방이 하나이므로 페어 키 유니크
+   * 인덱스로 바로 찾는다.
+   */
+  public Optional<PartnerRoom> findPartnerRoom(Long memberId, Long partnerId) {
+    return chatRoomRepository.findByPairKey(ChatRoom.pairKey(memberId, partnerId))
+        .map(room -> new PartnerRoom(room.getId(), room.getRoomStatus()));
+  }
+
+  /**
    * 채팅 단계에 따라 양쪽(본인·상대)의 사진을 조회한다(설계 §3·§4, ④-b, 이슈 #85). 방의 현재 {@code progressStatus}가
    * 정하는 공개 장수 N만큼 각자의 원본이 {@code displayOrder} 순서대로 단기 Presigned GET으로 공개되고, 나머지는
    * 블러본으로 내려온다. 각 사진은 {@code role}({@code ME}/{@code PARTNER})로 소유자를 구분한다. 공개 장수 산출은

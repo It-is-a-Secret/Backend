@@ -128,4 +128,17 @@ public interface ChatRoomMemberRepository extends JpaRepository<ChatRoomMember, 
       + "where crm.chatRoom.id in :roomIds and crm.member.id <> :memberId")
   List<RoomPartnerInfo> findPartnerInfos(@Param("roomIds") Collection<Long> roomIds,
       @Param("memberId") Long memberId);
+
+  /**
+   * 회원이 참여했던 <b>모든</b> 방의 상대 회원 id·방 id·방 상태를 조회한다(#112 탐색의 기존 대화 판정).
+   *
+   * <p>{@link #findActiveMembershipsWithRoom}과 달리 본인이 나간 방({@code leftAt} 세팅)도 포함한다. 본인이 나가 종료된
+   * 방을 빼면 그 상대가 탐색에서 "관계 없음"으로 보이는데 대화 시작은 {@code RELATIONSHIP_CLOSED}로 거절되기 때문이다.
+   * 상대 방향 행도 나갔는지와 무관하게 포함한다. {@code member_id} 보조 인덱스({@code idx_chat_room_member_member})로
+   * 본인 멤버십을 찾은 뒤 같은 방의 상대 행을 조인한다.
+   */
+  @Query("select other.member.id as partnerId, r.id as roomId, r.roomStatus as roomStatus "
+      + "from ChatRoomMember mine join mine.chatRoom r, ChatRoomMember other "
+      + "where other.chatRoom = r and mine.member.id = :memberId and other.member.id <> :memberId")
+  List<PartnerRoomRelation> findPartnerRoomRelations(@Param("memberId") Long memberId);
 }

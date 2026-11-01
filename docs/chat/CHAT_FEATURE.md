@@ -372,6 +372,7 @@ DiscoveryService(ChatStartService).startChat            ChatRoomService.openRoom
 ```
 
 - ✅ **대화 시작 API(이슈 #87)**: `POST /api/discovery/feeds/{feedId}/chat`. feedId→회원 해석·게이트 재검증은 디스커버리 유스케이스(`ChatStartService`)가 맡고(직접 입력이 탐색 필터를 우회하지 못하게), 방 개설·관계 분기는 `openRoom`이 맡는다. 첫 접촉이면 방 생성 + 첫 메시지를 한 트랜잭션으로 처리하고 `created=true`, 이미 ACTIVE면 메시지 없이 기존 방으로 안내(`created=false`) — 둘 다 200.
+- ✅ **탐색에서 기존 방으로 바로 진입(이슈 #112)**: 탐색 카드·상세에 `chatRoom: { roomId, roomStatus } | null`을 내려, 이미 대화 중이면 클라이언트가 시작 API(첫 메시지 필수)를 거치지 않고 `roomId`로 바로 들어간다. 다시 시작할 수 없는 관계(`CLOSED`·`REPORTED`)는 탐색에서 빠지므로, 시작 API의 409 분기는 직접 호출이나 경합에 대한 방어로 남는다. 관계 조회는 `ChatRoomService.findPartnerRooms`(viewer가 참여했던 모든 방, 나간 방 포함)와 `findPartnerRoom`(페어 키 단건)이 제공한다. 설계는 `docs/discovery/DISCOVERY_DOMAIN.md` §2-1.
 - ✅ **방+첫 메시지 원자성(이슈 #87)**: 첫 접촉의 방 생성과 첫 메시지 전송은 `ChatRoomCreator.createWithFirstMessage`의 **하나의 REQUIRES_NEW 트랜잭션**에서 처리된다(`send`는 REQUIRED로 합류). 첫 메시지 전송이 실패하면 방까지 함께 롤백돼 "첫 접촉인데 빈 방만 생성"되는 비원자 상태가 생기지 않는다. REQUIRES_NEW로 격리돼 있어 유니크 위반 시 이 단위만 롤백되고 호출 측은 경합 복구(재조회 흡수)를 이어갈 수 있다.
 - ✅ **관계 단건 분기 (서비스 + DB 이중 방어)**: 페어당 방이 영구히 하나이므로(`pairKey` 유니크) `findByPairKey`로 상태 무관 단건을 조회해 분기한다. ACTIVE는 "이미 채팅 중", CLOSED/REPORTED/BLOCKED는 각 도메인 예외로 막고, 없으면 첫 접촉으로 새로 만든다.
 - ✅ **동시 첫 접촉 경합**: 선조회-후생성은 원자적이지 않으므로 `chat_room.pair_key` **유니크 제약**으로 최종 방어한다.
