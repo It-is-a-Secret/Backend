@@ -1,0 +1,16 @@
+# SecretMoa DB 로테이션을 짧은 TTL로 검증하는 프로필. SecretMoa Credential Role TTL 300초와 함께 쓴다.
+#   ACTIVE=local,rotation-test
+# 기본 타이밍(TTL 3600초, renew-before 20분)은 application.yml을 따른다.
+# 관계: max-lifetime(60초) < renew-before(180초), check-interval(10초) <= renew-before / 3,
+#       drain-alarm-before(30초) < renew-before. 트랜잭션은 30초 이하로 유지한다.
+spring:
+  datasource:
+    hikari:
+      max-lifetime: 60000
+
+app:
+  secretmoa:
+    db:
+      renew-before: 180s
+      drain-alarm-before: 30s
+      check-interval: 10s
