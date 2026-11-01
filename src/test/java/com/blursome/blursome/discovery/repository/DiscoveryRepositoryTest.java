@@ -3,6 +3,8 @@ package com.blursome.blursome.discovery.repository;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.blursome.blursome.block.domain.Block;
+import com.blursome.blursome.chat.domain.ChatRoom;
+import com.blursome.blursome.chat.domain.ChatRoomMember;
 import com.blursome.blursome.feed.domain.Feed;
 import com.blursome.blursome.feed.domain.FeedImage;
 import com.blursome.blursome.global.persistence.JpaAuditingConfig;
@@ -84,6 +86,73 @@ class DiscoveryRepositoryTest {
       }
       em.persist(image);
     }
+  }
+
+  /** 두 회원 사이 방을 만들고 두 사람을 참여시킨다. */
+  private ChatRoom persistRoom(Feed a, Feed b) {
+    ChatRoom room = ChatRoom.createOnMatched(a.getMember().getId(), b.getMember().getId());
+    em.persist(room);
+    em.persist(ChatRoomMember.join(room, a.getMember()));
+    em.persist(ChatRoomMember.join(room, b.getMember()));
+    return room;
+  }
+
+  @Test
+  @DisplayName("viewer와 종료(CLOSED)·검토 중(REPORTED)인 상대는 빼고, 대화 중(ACTIVE)·방 없음 상대는 남긴다(#112)")
+  void findCandidates_excludesClosedAndReportedRelations() {
+    Feed viewer = persistOnboardedFeed("viewer", Gender.MALE);
+    Feed closed = persistOnboardedFeed("closed", Gender.FEMALE);
+    Feed reported = persistOnboardedFeed("reported", Gender.FEMALE);
+    Feed active = persistOnboardedFeed("active", Gender.FEMALE);
+    Feed fresh = persistOnboardedFeed("fresh", Gender.FEMALE);
+    persistRoom(viewer, closed).close();
+    persistRoom(viewer, reported).markReported();
+    persistRoom(viewer, active);
+    em.flush();
+    em.clear();
+
+    List<Feed> result = discoveryRepository.findCandidates(
+        Gender.FEMALE, viewer.getMember().getId(), PageRequest.ofSize(10));
+
+    assertThat(result).extracting(Feed::getId)
+        .containsExactlyInAnyOrder(active.getId(), fresh.getId());
+  }
+
+  @Test
+  @DisplayName("viewer가 직접 나가 종료된 방의 상대도 뺀다(나간 멤버십 포함 판정, #112)")
+  void findCandidates_excludesClosedRelationEvenIfViewerLeft() {
+    Feed viewer = persistOnboardedFeed("viewer", Gender.MALE);
+    Feed partner = persistOnboardedFeed("partner", Gender.FEMALE);
+    ChatRoom room = ChatRoom.createOnMatched(viewer.getMember().getId(), partner.getMember().getId());
+    em.persist(room);
+    ChatRoomMember viewerMembership = ChatRoomMember.join(room, viewer.getMember());
+    em.persist(viewerMembership);
+    em.persist(ChatRoomMember.join(room, partner.getMember()));
+    viewerMembership.leave();
+    room.close();
+    em.flush();
+    em.clear();
+
+    List<Feed> result = discoveryRepository.findCandidates(
+        Gender.FEMALE, viewer.getMember().getId(), PageRequest.ofSize(10));
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  @DisplayName("후보가 다른 회원과 종료된 방이 있어도 viewer와의 관계가 아니면 남긴다(#112)")
+  void findCandidates_ignoresClosedRoomsWithOtherMembers() {
+    Feed viewer = persistOnboardedFeed("viewer", Gender.MALE);
+    Feed someoneElse = persistOnboardedFeed("else", Gender.MALE);
+    Feed candidate = persistOnboardedFeed("cand", Gender.FEMALE);
+    persistRoom(someoneElse, candidate).close();
+    em.flush();
+    em.clear();
+
+    List<Feed> result = discoveryRepository.findCandidates(
+        Gender.FEMALE, viewer.getMember().getId(), PageRequest.ofSize(10));
+
+    assertThat(result).extracting(Feed::getId).containsExactly(candidate.getId());
   }
 
   @Test

@@ -47,11 +47,32 @@ viewer 기준 아래를 **모두** 만족하는 회원만 후보다.
 | 본인 제외 | `member.id <> viewerId` |
 | 차단 없음 | `block`에 (viewer↔후보) 어느 방향도 없음 — ✅ 구현(#41) |
 | 피드 공개 가능 | `feed_image`가 **정확히 5장이고 전부 `READY`** — ✅ 구현(#72) |
-| 이미 채팅 중 | **포함**(탐색에서 다시 보여도 됨, 채팅 시작은 기존 방으로 이동) |
+| 이미 채팅 중(`ACTIVE`) | **포함하되 목록 뒤쪽**, 카드에 `chatRoom` 표시 — ✅ 구현(#112) |
+| 다시 시작할 수 없는 관계 | viewer와의 방이 `CLOSED`(관계 영구 종료)·`REPORTED`(검토 대기)면 **제외** — ✅ 구현(#112) |
 
 > ✅ **#41(차단 도메인) 반영**: 후보 쿼리에 `not exists (block where 양방향)`을 추가해 차단/피차단을 제외한다.
 >
 > ✅ **#72(공개 게이트) 반영**: 온보딩이 `COMPLETED`여도 이미지 파이프라인을 통과하지 못한 피드(0장·`PROCESSING`/`FAILED` 혼입)는 깨진 블러본 노출을 막기 위해 제외한다. 후보 쿼리에 `READY` 개수 = 5(`정확히 5장`)와 비-`READY` 부재(`not exists`)를 함께 강제해 `FeedImage.isPublishable`(공개 피드 조회 게이트)과 동일한 규칙으로 맞춘다. `feed_image(feed_id, processing_status)` 보조 인덱스로 서브쿼리를 뒷받침한다.
+
+### 2-1. 기존 대화 관계 반영 ✅ (#112)
+
+서버는 회원 쌍당 방을 하나로 보장하지만(`chat_room.pair_key` 유니크), 예전 탐색 응답에는 관계 정보가 없었다. 그래서 이미 대화 중인 상대에게도 첫 메시지 입력 UI가 열렸고, 그 메시지는 저장되지 않았다(`created=false`). 다시 시작할 수 없는 상대도 탐색 상단에 계속 나왔다.
+
+| viewer와의 방 상태 | 탐색 노출 | 카드 `chatRoom` | 클릭 시 |
+|---|---|---|---|
+| 없음 | 노출 | `null` | 첫 메시지 입력 → `POST /api/discovery/feeds/{feedId}/chat` |
+| `ACTIVE` | 노출, **목록 뒤쪽** | `{ roomId, roomStatus: ACTIVE }` | 첫 메시지 없이 `roomId`로 기존 방 진입 |
+| `BLOCKED` | 제외 (차단 필터) | — | — |
+| `REPORTED` | **제외** | — | — |
+| `CLOSED` | **제외** (viewer가 나간 방 포함) | — | — |
+
+- **제외는 DB 단계에서 한다.** 점수 계산·페이지 자르기 전에 빼야 후보 상한(500)이 실제 노출 가능한 후보로 채워지고 페이지 경계가 흔들리지 않는다. 후보 쿼리에 `not exists (viewer 멤버십 ⋈ 같은 방의 후보 멤버십, 방 상태 in (CLOSED, REPORTED))`를 추가했다. `pair_key` 문자열을 조립하는 조인은 인덱스를 쓰기 어려워, viewer 멤버십(`idx_chat_room_member_member`)에서 같은 방의 상대 행으로 조인한다.
+- **viewer가 나간 방도 판정에 넣는다.** 채팅 목록용 쿼리(`findActiveMembershipsWithRoom` 등)는 `left_at IS NULL`만 보므로 재사용하지 않는다. 재사용하면 viewer가 나가 종료된 방의 상대가 "관계 없음"으로 보이는데 대화 시작은 409가 된다.
+- **표시·정렬용 관계는 viewer 기준 쿼리 1회로 읽는다.** `ChatRoomService.findPartnerRooms(viewerId)`가 viewer가 참여했던 모든 방의 `상대 id → (roomId, roomStatus)`를 돌려준다. 비용은 후보 수(N≤500)가 아니라 viewer의 방 수에 비례한다. 조회 사이에 상태가 바뀐 경우를 대비해 앱에서도 `CLOSED`·`REPORTED`를 한 번 더 거른다.
+- **정렬 키**: `ACTIVE 방 없음 우선 → 점수 desc → 최근 7일 접속 → last_active_at desc → feedId desc`. 탐색의 목적이 새 상대 발견이므로 이미 대화 중인 상대는 점수와 무관하게 뒤로 보내되, 카드에서 기존 방으로 가는 진입점은 남긴다. 비교 키가 하나 늘 뿐이라 정렬 비용은 그대로 O(N log N)다.
+- **카드 상세**(`GET /api/discovery/feeds/{feedId}`)도 같은 기준이다. 페어 키 유니크 인덱스로 방을 단건 조회해 `CLOSED`·`REPORTED`면 404, `ACTIVE`면 `chatRoom`을 내린다.
+- **대화 시작 API 계약은 유지한다.** `ACTIVE`면 보낸 메시지를 저장하지 않고 `created=false`로 기존 방을 안내한다. 카드에 `chatRoom`이 있으면 정상 흐름에서는 이 분기를 타지 않는다. 시작 API는 첫 메시지가 필수(`@NotBlank`)라 기존 방 입장 용도로 쓸 수 없다.
+- **알려진 한계**: offset 페이지는 매 요청 재계산이므로, 페이지를 넘기는 사이에 새 대화를 시작하면 그 상대가 뒤로 이동해 다음 페이지에서 다시 보이거나 다른 항목이 한 칸 당겨질 수 있다. 필요해지면 점수 스냅샷 커서를 검토한다.
 
 ---
 
