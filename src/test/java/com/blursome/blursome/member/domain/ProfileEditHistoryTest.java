@@ -54,6 +54,25 @@ class ProfileEditHistoryTest {
   }
 
   @Test
+  @DisplayName("블러 강도 기록은 사진 교체와 별도 쿨다운이고, 제한 중이면 블러 전용 에러코드로 실패한다(#118)")
+  void record_blurLevel_isIndependentFromPhotos() {
+    ProfileEditHistory history = ProfileEditHistory.empty()
+        .record(ProfileItem.PHOTOS, T0)
+        .record(ProfileItem.BLUR_LEVEL, T0.plusDays(1));
+
+    assertThat(history.lastChangedAt(ProfileItem.PHOTOS)).isEqualTo(T0);
+    assertThat(history.lastChangedAt(ProfileItem.BLUR_LEVEL)).isEqualTo(T0.plusDays(1));
+    assertThat(history.record(ProfileItem.PHOTOS, T0.plusDays(30)).lastChangedAt(ProfileItem.BLUR_LEVEL))
+        .isEqualTo(T0.plusDays(1));
+    assertThat(ProfileEditHistory.empty().record(ProfileItem.PHOTOS, T0)
+        .isChangeable(ProfileItem.BLUR_LEVEL, T0.plusDays(1))).isTrue();
+    assertThatThrownBy(() -> history.validateChangeable(ProfileItem.BLUR_LEVEL, T0.plusDays(2)))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code",
+            MemberErrorCode.MEMBER_BLUR_LEVEL_CHANGE_LIMITED.getCode());
+  }
+
+  @Test
   @DisplayName("30일이 지나기 전에는 변경할 수 없고, 정확히 30일이 지나면 변경할 수 있다")
   void isChangeable_boundary() {
     ProfileEditHistory history = ProfileEditHistory.empty().record(ProfileItem.NICKNAME, T0);

@@ -110,8 +110,9 @@ public class FeedImageService {
    *     {@code FEED_IMAGE_400_DUPLICATE_REFERENCE}), 원본 key가 회원 소유가 아니거나
    *     ({@code FEED_IMAGE_400_INVALID_OBJECT_KEY}), 원본이 업로드되지 않았거나({@code FEED_IMAGE_400_ORIGINAL_NOT_UPLOADED})
    *     요청 블러 강도가 업로드 값과 다르거나({@code FEED_IMAGE_400_BLUR_LEVEL_MISMATCH}), 기존 사진 id가 이 피드에 없는
-   *     경우({@code FEED_IMAGE_404_NOT_FOUND}), 원본 교체 30일 제한에 걸린 경우({@code MEMBER_409_PHOTOS_CHANGE_LIMITED},
-   *     {@link #recordOriginalReplacement})
+   *     경우({@code FEED_IMAGE_404_NOT_FOUND}), 원본 교체·블러 강도 변경 30일 제한에 걸린 경우
+   *     ({@code MEMBER_409_PHOTOS_CHANGE_LIMITED}, {@code MEMBER_409_BLUR_LEVEL_CHANGE_LIMITED},
+   *     {@link #recordOriginalReplacement}, {@link #recordBlurLevelChange})
    */
   @Transactional
   public FeedImageResponse replaceImages(Long memberId, FeedImageSaveRequest request) {
@@ -135,7 +136,11 @@ public class FeedImageService {
     List<KeptImage> keptImages = resolveKeptImages(items, currentImages);
     validateUploadsNotKept(uploads, keptImages);
     // S3 조회·복사 전에 30일 제한을 확인해, 막힌 요청이 외부 호출이나 고아 객체를 만들지 않게 한다.
-    recordOriginalReplacement(member, feed, currentImages, keptImages, uploads, now);
+    // 사진 교체(#113)와 블러 강도 변경(#118)은 최초 구성을 마친 피드에만, 서로 별도 쿨다운으로 적용한다.
+    if (isPhotoSetInitialized(feed, currentImages, now)) {
+      recordOriginalReplacement(member, currentImages, keptImages, uploads, now);
+      recordBlurLevelChange(member, keptImages, now);
+    }
     Map<String, Integer> uploadBlurLevels = resolveUploadedBlurLevels(memberId, uploads);
 
     // S3 복사를 DB 변경보다 먼저 끝내, 복사 실패 시 DB가 바뀌지 않게 한다.
@@ -220,11 +225,8 @@ public class FeedImageService {
    *
    * @throws BaseException 마지막 교체 후 30일이 지나지 않은 경우({@code MEMBER_409_PHOTOS_CHANGE_LIMITED})
    */
-  private void recordOriginalReplacement(Member member, Feed feed, List<FeedImage> currentImages,
+  private void recordOriginalReplacement(Member member, List<FeedImage> currentImages,
       List<KeptImage> keptImages, List<FeedImageSaveRequest.Image> uploads, LocalDateTime now) {
-    if (!isPhotoSetInitialized(feed, currentImages, now)) {
-      return;
-    }
     Set<String> requestedKeys = new HashSet<>();
     keptImages.forEach(kept -> requestedKeys.add(kept.image().getOriginalKey()));
     uploads.forEach(upload -> requestedKeys.add(upload.objectKey()));
@@ -233,6 +235,31 @@ public class FeedImageService {
         .anyMatch(image -> !requestedKeys.contains(image.getOriginalKey()));
     if (originalChanged) {
       member.recordProfileChange(ProfileItem.PHOTOS, now);
+    }
+  }
+
+  /**
+   * 이번 저장이 블러 강도 변경이면 30일 제한을 검증하고 변경 시각을 기록한다(#118). 사진 교체와 같이 회원의 프로필 항목별
+   * 변경 이력({@link ProfileItem#BLUR_LEVEL})을 재사용하되, 쿨다운은 사진 교체와 따로 둔다. 이후 단계가 실패하면
+   * 트랜잭션과 함께 롤백된다.
+   *
+   * <p><b>블러 강도 변경</b>은 유지하는 기존 사진의 블러 강도를 현재와 다른 값으로 바꿔 재처리가 일어나는 것이다. 한
+   * 요청에서 여러 장을 바꿔도 1회로 기록한다. 다음은 블러 강도 변경이 아니다.
+   * <ul>
+   *   <li>새로 올리는 사진의 블러 강도 — 업로드 시 정하는 값이다. 원본 교체라면 사진 교체 제한이 따로 걸린다.</li>
+   *   <li>{@code blurLevel} 생략 또는 현재와 같은 값 — 재처리가 없다.</li>
+   *   <li>처리 실패({@code FAILED}) 사진의 블러 변경 — 업로드 실패 복구까지 막지 않는다.</li>
+   * </ul>
+   *
+   * @throws BaseException 마지막 블러 강도 변경 후 30일이 지나지 않은 경우({@code MEMBER_409_BLUR_LEVEL_CHANGE_LIMITED})
+   */
+  private void recordBlurLevelChange(Member member, List<KeptImage> keptImages,
+      LocalDateTime now) {
+    boolean blurLevelChanged = keptImages.stream()
+        .filter(kept -> kept.image().getProcessingStatus() != FeedImageProcessingStatus.FAILED)
+        .anyMatch(kept -> kept.image().needsReprocessing(kept.blurLevel()));
+    if (blurLevelChanged) {
+      member.recordProfileChange(ProfileItem.BLUR_LEVEL, now);
     }
   }
 
