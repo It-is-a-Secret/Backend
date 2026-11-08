@@ -928,9 +928,176 @@ class FeedImageServiceTest {
         FeedImageSaveRequest.Image.existing(4L, 4, null),
         FeedImageSaveRequest.Image.existing(5L, 5, null)));
 
-    // then
+    // then: 사진 교체 쿨다운 중에도 블러 변경은 허용하고, 블러 강도 변경으로만 기록한다(#118).
     assertThat(current.get(0).getOriginalKey()).isEqualTo(KEY_A_REPROCESSED);
     assertThat(member.profileEditHistory().lastChangedAt(ProfileItem.PHOTOS))
+        .isEqualTo(NOW.minusDays(1));
+    assertThat(member.profileEditHistory().lastChangedAt(ProfileItem.BLUR_LEVEL)).isEqualTo(NOW);
+  }
+
+  /** 1번 사진의 블러 재처리 key를 준비한다. */
+  private void givenFirstImageReprocessable(List<FeedImage> current) {
+    String firstKey = current.get(0).getOriginalKey();
+    given(keyGenerator.generateReprocessedOriginalKey(MEMBER_ID, firstKey))
+        .willReturn(KEY_A_REPROCESSED);
+    given(keyGenerator.toVariantKey(KEY_A_REPROCESSED)).willReturn(VARIANT_A_REPROCESSED);
+    givenSaveAllReturnsArgument();
+    givenVariantUrls();
+  }
+
+  /** 5장을 유지하고 앞의 두 장 블러 강도를 지정한 값으로 보내는 요청. */
+  private static FeedImageSaveRequest keepFiveWithBlur(Integer first, Integer second) {
+    return request(
+        FeedImageSaveRequest.Image.existing(1L, 1, first),
+        FeedImageSaveRequest.Image.existing(2L, 2, second),
+        FeedImageSaveRequest.Image.existing(3L, 3, null),
+        FeedImageSaveRequest.Image.existing(4L, 4, null),
+        FeedImageSaveRequest.Image.existing(5L, 5, null));
+  }
+
+  @Test
+  @DisplayName("블러 변경: 최초 구성 후 여러 장의 블러를 한 요청에서 바꿔도 블러 강도 변경 1회로 기록한다")
+  void replaceImages_whenBlurChangedAfterInitialization_recordsBlurLevelChangeOnce() {
+    // given
+    givenInitializedFeed();
+    List<FeedImage> current = fiveImages(allReady());
+    givenCurrentImages(current.toArray(FeedImage[]::new));
+    givenFirstImageReprocessable(current);
+    String secondKey = current.get(1).getOriginalKey();
+    given(keyGenerator.generateReprocessedOriginalKey(MEMBER_ID, secondKey)).willReturn(KEY_B);
+    given(keyGenerator.toVariantKey(KEY_B)).willReturn(VARIANT_B);
+
+    // when
+    feedImageService.replaceImages(MEMBER_ID, keepFiveWithBlur(90, 60));
+
+    // then
+    assertThat(member.profileEditHistory().lastChangedAt(ProfileItem.BLUR_LEVEL)).isEqualTo(NOW);
+    assertThat(member.profileEditHistory().nextChangeableAt(ProfileItem.BLUR_LEVEL))
+        .isEqualTo(NOW.plusDays(30));
+    assertThat(member.profileEditHistory().lastChangedAt(ProfileItem.PHOTOS)).isNull();
+  }
+
+  @Test
+  @DisplayName("블러 변경: 마지막 변경 후 30일이 안 됐으면 S3 복사·DB 변경 없이 MEMBER_409_BLUR_LEVEL_CHANGE_LIMITED")
+  void replaceImages_whenBlurChangedWithinThirtyDays_thenRejectsBeforeS3() {
+    // given: 30일 - 1초 전에 블러 변경
+    member.recordProfileChange(ProfileItem.BLUR_LEVEL, NOW.minusDays(30).plusSeconds(1));
+    givenInitializedFeed();
+    List<FeedImage> current = fiveImages(allReady());
+    givenCurrentImages(current.toArray(FeedImage[]::new));
+    String firstKey = current.get(0).getOriginalKey();
+
+    // when & then
+    assertThatThrownBy(() -> feedImageService.replaceImages(MEMBER_ID, keepFiveWithBlur(90, null)))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "MEMBER_409_BLUR_LEVEL_CHANGE_LIMITED");
+    verify(storageService, never()).reprocessOriginal(anyString(), anyString(), anyInt());
+    verify(feedImageRepository, never()).saveAll(any());
+    assertThat(current.get(0).getOriginalKey()).isEqualTo(firstKey);
+    assertThat(current.get(0).getBlurLevel()).isEqualTo(80);
+  }
+
+  @Test
+  @DisplayName("블러 변경: 마지막 변경 후 정확히 30일이면 다시 바꿀 수 있다")
+  void replaceImages_whenBlurExactlyThirtyDaysPassed_thenAllows() {
+    // given
+    member.recordProfileChange(ProfileItem.BLUR_LEVEL, NOW.minusDays(30));
+    givenInitializedFeed();
+    List<FeedImage> current = fiveImages(allReady());
+    givenCurrentImages(current.toArray(FeedImage[]::new));
+    givenFirstImageReprocessable(current);
+
+    // when
+    feedImageService.replaceImages(MEMBER_ID, keepFiveWithBlur(90, null));
+
+    // then
+    assertThat(member.profileEditHistory().lastChangedAt(ProfileItem.BLUR_LEVEL)).isEqualTo(NOW);
+  }
+
+  @Test
+  @DisplayName("블러 변경: blurLevel 생략·같은 값은 블러 강도 변경이 아니다(제한 중에도 허용)")
+  void replaceImages_whenBlurUnchanged_thenNotRecorded() {
+    // given
+    member.recordProfileChange(ProfileItem.BLUR_LEVEL, NOW.minusDays(1));
+    givenInitializedFeed();
+    List<FeedImage> current = fiveImages(allReady());
+    givenCurrentImages(current.toArray(FeedImage[]::new));
+    givenSaveAllReturnsArgument();
+    givenVariantUrls();
+
+    // when: 현재 값(80)을 그대로 보내거나 생략
+    feedImageService.replaceImages(MEMBER_ID, keepFiveWithBlur(80, null));
+
+    // then
+    assertThat(member.profileEditHistory().lastChangedAt(ProfileItem.BLUR_LEVEL))
+        .isEqualTo(NOW.minusDays(1));
+  }
+
+  @Test
+  @DisplayName("블러 변경: 최초 구성 중(1~4장)에는 블러를 바꿔도 제한·기록하지 않는다")
+  void replaceImages_whenBlurChangedDuringRegistration_thenNotRecorded() {
+    // given: 4장 등록 중, 어제 블러를 바꾼 이력이 있어도 제한하지 않는다.
+    member.recordProfileChange(ProfileItem.BLUR_LEVEL, NOW.minusDays(1));
+    givenLockedFeed();
+    List<FeedImage> four = fiveImages(allReady()).subList(0, 4);
+    givenCurrentImages(four.toArray(FeedImage[]::new));
+    givenFirstImageReprocessable(four);
+
+    // when
+    feedImageService.replaceImages(MEMBER_ID, request(
+        FeedImageSaveRequest.Image.existing(1L, 1, 90),
+        FeedImageSaveRequest.Image.existing(2L, 2, null),
+        FeedImageSaveRequest.Image.existing(3L, 3, null),
+        FeedImageSaveRequest.Image.existing(4L, 4, null)));
+
+    // then
+    assertThat(four.get(0).getOriginalKey()).isEqualTo(KEY_A_REPROCESSED);
+    assertThat(member.profileEditHistory().lastChangedAt(ProfileItem.BLUR_LEVEL))
+        .isEqualTo(NOW.minusDays(1));
+  }
+
+  @Test
+  @DisplayName("블러 변경: 처리 실패(FAILED) 사진의 블러 변경은 블러 강도 변경이 아니다(제한 중에도 허용)")
+  void replaceImages_whenFailedImageBlurChanged_thenNotRecorded() {
+    // given: 1번 사진이 FAILED
+    member.recordProfileChange(ProfileItem.BLUR_LEVEL, NOW.minusDays(1));
+    givenInitializedFeed();
+    List<FeedImage> current = fiveImages(
+        FeedImageProcessingStatus.FAILED, FeedImageProcessingStatus.READY,
+        FeedImageProcessingStatus.READY, FeedImageProcessingStatus.READY,
+        FeedImageProcessingStatus.READY);
+    givenCurrentImages(current.toArray(FeedImage[]::new));
+    givenFirstImageReprocessable(current);
+
+    // when
+    feedImageService.replaceImages(MEMBER_ID, keepFiveWithBlur(90, null));
+
+    // then
+    assertThat(current.get(0).getOriginalKey()).isEqualTo(KEY_A_REPROCESSED);
+    assertThat(member.profileEditHistory().lastChangedAt(ProfileItem.BLUR_LEVEL))
+        .isEqualTo(NOW.minusDays(1));
+  }
+
+  @Test
+  @DisplayName("블러 변경: 새로 올리는 사진의 블러 강도는 블러 강도 변경이 아니다(제한 중에도 빈 자리 추가 허용)")
+  void replaceImages_whenNewUploadDuringBlurLimit_thenAllowed() {
+    // given: 어제 블러를 바꿨고 지금은 4장
+    member.recordProfileChange(ProfileItem.BLUR_LEVEL, NOW.minusDays(1));
+    givenInitializedFeed();
+    List<FeedImage> four = fiveImages(allReady()).subList(0, 4);
+    givenCurrentImages(four.toArray(FeedImage[]::new));
+    givenNewUploadAccepted();
+
+    // when
+    feedImageService.replaceImages(MEMBER_ID, request(
+        FeedImageSaveRequest.Image.existing(1L, 1, null),
+        FeedImageSaveRequest.Image.existing(2L, 2, null),
+        FeedImageSaveRequest.Image.existing(3L, 3, null),
+        FeedImageSaveRequest.Image.existing(4L, 4, null),
+        FeedImageSaveRequest.Image.upload(KEY_C, 5, null)));
+
+    // then
+    assertThat(member.profileEditHistory().lastChangedAt(ProfileItem.BLUR_LEVEL))
         .isEqualTo(NOW.minusDays(1));
   }
 

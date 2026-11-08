@@ -5,12 +5,16 @@ import com.blursome.blursome.member.domain.ProfileItem;
 import io.swagger.v3.oas.annotations.media.Schema;
 import java.time.LocalDateTime;
 
-/** 프로필 항목별 30일 변경 제한 상태(#95). {@code photos}는 피드 원본 사진 교체 제한(#113)이다. */
+/**
+ * 프로필 항목별 30일 변경 제한 상태(#95). {@code photos}는 피드 원본 사진 교체 제한(#113), {@code blurLevel}은 유지하는
+ * 사진의 블러 강도 변경 제한(#118)이다.
+ */
 public record ProfileEditStatusResponse(
     ItemStatus nickName,
     ItemStatus mbti,
     ItemStatus keywords,
-    ItemStatus photos
+    ItemStatus photos,
+    ItemStatus blurLevel
 ) {
 
   public static ProfileEditStatusResponse of(ProfileEditHistory history, LocalDateTime now) {
@@ -18,7 +22,8 @@ public record ProfileEditStatusResponse(
         ItemStatus.of(history, ProfileItem.NICKNAME, now),
         ItemStatus.of(history, ProfileItem.MBTI, now),
         ItemStatus.of(history, ProfileItem.KEYWORDS, now),
-        ItemStatus.of(history, ProfileItem.PHOTOS, now)
+        ItemStatus.of(history, ProfileItem.PHOTOS, now),
+        ItemStatus.of(history, ProfileItem.BLUR_LEVEL, now)
     );
   }
 

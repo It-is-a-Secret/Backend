@@ -67,6 +67,12 @@ public enum MemberErrorCode implements ErrorCode {
       "사진은 30일에 한 번만 교체할 수 있습니다.",
       "MEMBER_409_PHOTOS_CHANGE_LIMITED"
   ),
+  // 이슈 #118: 유지하는 사진의 블러 강도 변경도 30일에 한 번. 사진 교체와 별도 쿨다운이며, 새 사진의 블러 강도와
+  // 처리 실패 사진은 해당하지 않는다.
+  MEMBER_BLUR_LEVEL_CHANGE_LIMITED(HttpStatus.CONFLICT,
+      "사진 블러 강도는 30일에 한 번만 변경할 수 있습니다.",
+      "MEMBER_409_BLUR_LEVEL_CHANGE_LIMITED"
+  ),
   MEMBER_ALREADY_WITHDRAWN(HttpStatus.CONFLICT,
       "이미 탈퇴한 회원입니다.",
       "MEMBER_409_ALREADY_WITHDRAWN"

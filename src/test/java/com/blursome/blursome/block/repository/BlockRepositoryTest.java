@@ -4,7 +4,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.blursome.blursome.block.domain.Block;
+import com.blursome.blursome.feed.domain.Feed;
 import com.blursome.blursome.global.persistence.JpaAuditingConfig;
+import com.blursome.blursome.member.domain.Department;
+import com.blursome.blursome.member.domain.Gender;
+import com.blursome.blursome.member.domain.Mbti;
 import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.OAuthProvider;
 import com.blursome.blursome.support.TestcontainersConfiguration;
@@ -74,9 +78,40 @@ class BlockRepositoryTest {
     var blocks = blockRepository.findBlockedMembers(me.getId());
 
     assertThat(blocks)
-        .extracting(block -> block.getBlocked().getId())
+        .extracting(BlockedMemberRow::blockedMemberId)
         .containsExactly(second.getId(), first.getId());
-    assertThat(blocks).allSatisfy(block -> assertThat(block.getCreatedAt()).isNotNull());
+    assertThat(blocks).allSatisfy(row -> assertThat(row.blockedAt()).isNotNull());
+  }
+
+  @Test
+  @DisplayName("차단 목록은 차단 대상의 피드에서 생년·학과·MBTI를 함께 읽고, 피드가 없으면 null이다(#118)")
+  void findBlockedMembers_includesFeedProfile() {
+    Member me = persistMember("me");
+    Member onboarded = persistMember("onboarded");
+    onboarded.verifySchoolEmail("onboarded@school.ac.kr");
+    onboarded.completeOnboarding("blur");
+    em.persist(Feed.createOnOnboarding(
+        onboarded, Gender.FEMALE, 2001, Department.COMPUTER_ENGINEERING, Mbti.INFP));
+    Member notOnboarded = persistMember("plain");
+    blockRepository.save(Block.of(me, notOnboarded));
+    blockRepository.save(Block.of(me, onboarded));
+    em.flush();
+    em.clear();
+
+    var blocks = blockRepository.findBlockedMembers(me.getId());
+
+    assertThat(blocks).hasSize(2);
+    BlockedMemberRow withFeed = blocks.get(0);
+    assertThat(withFeed.blockedMemberId()).isEqualTo(onboarded.getId());
+    assertThat(withFeed.nickName()).isEqualTo("blur");
+    assertThat(withFeed.birthYear()).isEqualTo(2001);
+    assertThat(withFeed.department()).isEqualTo(Department.COMPUTER_ENGINEERING);
+    assertThat(withFeed.mbti()).isEqualTo(Mbti.INFP);
+    BlockedMemberRow withoutFeed = blocks.get(1);
+    assertThat(withoutFeed.blockedMemberId()).isEqualTo(notOnboarded.getId());
+    assertThat(withoutFeed.birthYear()).isNull();
+    assertThat(withoutFeed.department()).isNull();
+    assertThat(withoutFeed.mbti()).isNull();
   }
 
   @Test
