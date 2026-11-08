@@ -295,6 +295,8 @@ Lambda는 S3 `ObjectCreated` 이벤트로 비동기 실행되므로, 사용자�
 4. 새 객체의 `ObjectCreated:Copy` 이벤트가 Lambda를 실행해 새 강도로 새 블러본을 만든다(알림 이벤트가 `s3:ObjectCreated:*`여야 한다, §8-5).
 5. 같은 `FeedImage` 행(ID 유지)의 `original_key`·`variant_key`·`blur_level`을 새 값으로 바꾸고 `PROCESSING`, `processing_started_at = now`로 되돌린다. 응답은 새 `variantUrl`과 `PROCESSING`이다. 스케줄러가 새 블러본을 확인하면 `READY`가 된다.
 
+**변경 주기 제한 (#118)**: 사진 최초 구성(5장)을 마친 뒤에는 블러 강도 변경을 **30일에 한 번**만 허용한다(원본 교체 제한과 별도 쿨다운). 유지 사진(`FAILED` 제외)의 강도를 바꾸는 저장이 대상이고, 제한 중이면 위 1단계 전에(S3 복사 없이) `409 MEMBER_409_BLUR_LEVEL_CHANGE_LIMITED`로 거부한다. 판정 규칙은 [`FEED_IMAGE_DOMAIN.md`](./FEED_IMAGE_DOMAIN.md) §4-5.
+
 **새 사진의 `blur_level` 기준 (#105)**: DB·응답의 `blur_level`이 실제 블러본과 같도록, 새 사진(`objectKey`)은 저장 시 원본 `HeadObject`로 `x-amz-meta-blur-level`을 읽어 Lambda가 적용할 값(누락·비정수 → 80, 범위 밖 → 경계값. Lambda `resolve_blur_level`과 같은 규칙)을 기록한다. 요청에 `blurLevel`을 보냈는데 이 값과 다르면 `FEED_IMAGE_400_BLUR_LEVEL_MISMATCH`, 원본이 없으면 `FEED_IMAGE_400_ORIGINAL_NOT_UPLOADED`로 거부한다. 강도 변경은 기존 사진 `id`로만 가능하며(위 재처리), 뺀 사진의 key를 새 사진으로 다시 보내 강도만 바꾸는 우회는 메타데이터 불일치로 막힌다.
 
 **기존 key에 덮어쓰지 않는 이유**

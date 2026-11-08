@@ -11,8 +11,11 @@ import com.blursome.blursome.block.domain.Block;
 import com.blursome.blursome.block.dto.response.BlockedMemberResponse;
 import com.blursome.blursome.block.exception.BlockErrorCode;
 import com.blursome.blursome.block.repository.BlockRepository;
+import com.blursome.blursome.block.repository.BlockedMemberRow;
 import com.blursome.blursome.chat.service.ChatRoomService;
 import com.blursome.blursome.global.exception.BaseException;
+import com.blursome.blursome.member.domain.Department;
+import com.blursome.blursome.member.domain.Mbti;
 import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.OAuthProvider;
 import com.blursome.blursome.member.exception.MemberErrorCode;
@@ -61,24 +64,22 @@ class BlockServiceTest {
   }
 
   @Test
-  @DisplayName("차단 목록은 조회 순서를 유지하며 차단한 회원 id·닉네임·차단 시각을 내려준다(#113)")
+  @DisplayName("차단 목록은 조회 순서를 유지하며 회원 id·닉네임·생년·학과·MBTI·차단 시각을 내려준다(#113, #118)")
   void getBlockedMembers_mapsRows() {
-    Member blocker = member(1L);
-    Member target = member(2L);
-    target.verifySchoolEmail("t@school.ac.kr");
-    target.completeOnboarding("target");
-    Member notOnboarded = member(3L);
-    Block onboardedBlock = Block.of(blocker, target);
-    Block plainBlock = Block.of(blocker, notOnboarded);
     LocalDateTime blockedAt = LocalDateTime.of(2026, 11, 1, 12, 0);
-    ReflectionTestUtils.setField(onboardedBlock, "createdAt", blockedAt);
-    given(blockRepository.findBlockedMembers(1L)).willReturn(List.of(onboardedBlock, plainBlock));
+    LocalDateTime earlier = blockedAt.minusDays(1);
+    given(blockRepository.findBlockedMembers(1L)).willReturn(List.of(
+        new BlockedMemberRow(2L, "target", 2001, Department.COMPUTER_ENGINEERING, Mbti.INFP,
+            blockedAt),
+        new BlockedMemberRow(3L, null, null, null, null, earlier)));
 
     List<BlockedMemberResponse> result = blockService.getBlockedMembers(1L);
 
     assertThat(result).containsExactly(
-        new BlockedMemberResponse(2L, "target", blockedAt),
-        new BlockedMemberResponse(3L, null, null));
+        new BlockedMemberResponse(2L, "target", 2001, Department.COMPUTER_ENGINEERING,
+            "컴퓨터공학과", Mbti.INFP, blockedAt),
+        // 온보딩 전(피드 없음)이면 프로필 값과 학과 표시명이 모두 null
+        new BlockedMemberResponse(3L, null, null, null, null, null, earlier));
   }
 
   @Test

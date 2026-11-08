@@ -156,8 +156,8 @@ BlurSome의 채팅(Chat) 도메인 전체 로직을 정의합니다. WebSocket +
   유지. 종료(`CLOSED`)는 비가역이라 차단 해제로 되살리지 않는다. `openRoom`은 A→B 또는 B→A 차단 관계가 하나라도 존재하면 신규 채팅방
   개설을 `BLOCKED_PARTICIPANT`로 차단한다.
   - 차단 API(`block` 도메인): 등록 `POST /api/blocks`(`{ targetMemberId }`, 204·멱등), 해제 `DELETE /api/blocks/{targetMemberId}`
-    (204·멱등), **목록 `GET /api/blocks`(#113)** — 내가 차단한 회원을 최근 차단 순으로 `[{ blockedMemberId, nickName, blockedAt }]`
-    반환. 차단 대상은 fetch join으로 한 번에 읽고, 탈퇴 회원은 관리 대상이 아니므로 제외한다. `blockedMemberId`를 해제 요청에 그대로 쓴다.
+    (204·멱등), **목록 `GET /api/blocks`(#113)** — 내가 차단한 회원을 최근 차단 순으로 `[{ blockedMemberId, nickName, birthYear, department, departmentLabel, mbti, blockedAt }]`
+    반환(생년·학과·MBTI는 #118, 온보딩 전이면 null). 차단 대상과 그 피드를 한 쿼리로 읽고(피드는 left join), 탈퇴 회원은 관리 대상이 아니므로 제외한다. `blockedMemberId`를 해제 요청에 그대로 쓴다.
 - ✅ **`REPORTED`(신고 동결, #75)** — 신고 누적(고유 신고자 3명)으로 `ACTIVE → REPORTED`. 송신·조회 차단(운영자 검토 대기, 비가역).
   신고 누적에 따른 `REPORTED` 전이는 `ACTIVE` 상태의 채팅방에서만 발생한다. `BLOCKED`는 차단으로 인한 가역 동결 상태이며, 신고 누적에
   의해 `REPORTED`로 전이되지 않는다.

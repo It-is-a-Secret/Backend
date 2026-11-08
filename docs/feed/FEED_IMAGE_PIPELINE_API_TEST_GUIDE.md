@@ -285,6 +285,17 @@ F-3 이후 화면을 다시 연 상황입니다. F-4 응답의 `id`만 사용하
   - 다른 회원 사진의 `id`, 없는 `id` → `404 FEED_IMAGE_404_NOT_FOUND`(아무것도 바뀌지 않음)
   - 재처리용 S3 복사 실패(IAM 등) → `500 SERVER_ERROR_500_INTERNAL_SERVER_ERROR`(DB 변경 없음, 서버 로그 확인)
 
+> ℹ️ 위 예시는 사진이 3장이라 **최초 구성 중**이므로 30일 제한이 걸리지 않습니다. 5장을 한 번 채운 뒤에는 아래 제한이 적용됩니다.
+
+- **30일 변경 제한 확인 (#113, #118)** — 5장을 채운 뒤 진행
+  1. 유지 사진 1장의 `blurLevel`만 바꿔 저장 → `200`. `GET /api/members/me`의 `profileEdit.blurLevel.changeable=false`,
+     `nextChangeableAt` = 저장 시각 + 30일.
+  2. 바로 다른 사진의 `blurLevel`을 또 바꿔 저장 → `409 MEMBER_409_BLUR_LEVEL_CHANGE_LIMITED`(DB·S3 변경 없음).
+  3. 같은 상태에서 기존 사진 1장을 빼고 새 사진을 넣어 저장 → `200`(사진 교체는 별도 쿨다운).
+     `profileEdit.photos.changeable=false`.
+  4. 다시 사진을 교체 → `409 MEMBER_409_PHOTOS_CHANGE_LIMITED`. 순서만 바꾸거나 `blurLevel`을 생략·같은 값으로
+     보내는 저장은 두 제한 중에도 `200`.
+
 ### 시나리오 F-4. 본인 피드 관리 조회 (#52, PROCESSING 확인)
 
 - **요청**: `GET {{baseUrl}}/api/feeds/me/images` — A 토큰
@@ -379,6 +390,8 @@ F-3 이후 화면을 다시 연 상황입니다. F-4 응답의 `id`만 사용하
 | 새 사진 blurLevel이 업로드 값과 다름 | 400 | `FEED_IMAGE_400_BLUR_LEVEL_MISMATCH` |
 | 업로드 안 된 objectKey | 400 | `FEED_IMAGE_400_ORIGINAL_NOT_UPLOADED` |
 | 다른 회원 사진 id / 없는 id | 404 | `FEED_IMAGE_404_NOT_FOUND` |
+| 최초 구성 후 원본 교체를 30일 안에 다시 시도 | 409 | `MEMBER_409_PHOTOS_CHANGE_LIMITED` |
+| 최초 구성 후 블러 강도 변경을 30일 안에 다시 시도 | 409 | `MEMBER_409_BLUR_LEVEL_CHANGE_LIMITED` |
 | 재블러용 S3 복사 실패 | 500 | `SERVER_ERROR_500_INTERNAL_SERVER_ERROR` |
 | 피드 없음(저장/본인 조회) / 미완·0장 공개 피드 | 404 | `FEED_404_NOT_FOUND` |
 | 단계 조회: 비참여자 | 403 | `CHAT_403_NOT_PARTICIPANT` |
