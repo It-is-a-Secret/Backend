@@ -9,8 +9,9 @@ import org.springframework.http.HttpStatus;
 @RequiredArgsConstructor
 public enum DiscoveryErrorCode implements ErrorCode {
 
+  // 이슈 #122: 탐색 목록·상세는 온보딩 전에도 허용하므로, 지금은 피드로 대화 시작할 때만 쓴다. 코드 값은 호환을 위해 유지한다.
   DISCOVERY_ONBOARDING_REQUIRED(HttpStatus.FORBIDDEN,
-      "온보딩을 완료해야 탐색을 이용할 수 있습니다.",
+      "온보딩을 완료해야 대화를 시작할 수 있습니다.",
       "DISCOVERY_403_ONBOARDING_REQUIRED"
   ),
   // 이슈 #95: 카드 상세 대상이 없거나 탐색 노출 조건(이성·활성·차단 아님·공개 5장 READY)을 충족하지 않는 경우.

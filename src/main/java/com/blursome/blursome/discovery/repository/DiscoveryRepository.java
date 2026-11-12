@@ -17,10 +17,13 @@ public interface DiscoveryRepository extends Repository<Feed, Long> {
   /**
    * viewer 기준 탐색 후보를 조회한다(정렬·페이지네이션은 점수 계산 후 앱 레이어에서 수행 — 설계 §17.4).
    *
-   * <p>조건: 이성({@code gender}) · 온보딩 완료({@code registrationStatus=COMPLETED}) ·
+   * <p>조건: 성별({@code gender}) · 온보딩 완료({@code registrationStatus=COMPLETED}) ·
    * 활성({@code activityStatus=ACTIVE}, {@code withdrawnAt IS NULL}) · 본인 제외 · 차단/피차단
    * 양방향 제외(block, #41) · <b>피드 공개 가능</b>(#72). 점수 계산에 쓰는 {@code member}(활동성 등)는
    * fetch join으로 함께 적재해 N+1을 막는다. {@code pageable}은 후보 수 안전 상한(과부하 방지)으로만 쓴다.
+   *
+   * <p><b>성별 조건(#122)</b>: 온보딩 완료 viewer는 반대 성별을 넘긴다. 온보딩 전 viewer는 자기 성별이 아직 없으므로
+   * {@code null}을 넘기고, 이때는 성별 조건 없이 조회한다.
    *
    * <p><b>공개 게이트(#72)</b>: 사진이 정확히 5장이고 전부 {@code READY}인 피드만 후보가 된다
    * ({@link com.blursome.blursome.feed.domain.FeedImage#isPublishable}와 동일 규칙). 온보딩이
@@ -37,7 +40,7 @@ public interface DiscoveryRepository extends Repository<Feed, Long> {
    */
   @Query("select f from Feed f "
       + "join fetch f.member m "
-      + "where f.gender = :gender "
+      + "where (:gender is null or f.gender = :gender) "
       + "and m.id <> :viewerId "
       + "and m.activityStatus = com.blursome.blursome.member.domain.ActivityStatus.ACTIVE "
       + "and m.withdrawnAt is null "

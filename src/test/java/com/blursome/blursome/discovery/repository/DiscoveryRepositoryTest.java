@@ -172,6 +172,22 @@ class DiscoveryRepositoryTest {
   }
 
   @Test
+  @DisplayName("성별을 null로 넘기면(온보딩 전 viewer, #122) 성별 구분 없이 조회하되 공개 게이트는 그대로 적용한다")
+  void findCandidates_withNullGender_returnsAllGenders() {
+    Feed female = persistOnboardedFeed("f1", Gender.FEMALE);
+    Feed male = persistOnboardedFeed("m1", Gender.MALE);
+    persistFeedOnly("m2", Gender.MALE); // 사진 없음 → 공개 게이트에서 제외
+    em.flush();
+    em.clear();
+
+    List<Feed> result = discoveryRepository.findCandidates(
+        null, NO_VIEWER, PageRequest.ofSize(10));
+
+    assertThat(result).extracting(Feed::getId)
+        .containsExactlyInAnyOrder(female.getId(), male.getId());
+  }
+
+  @Test
   @DisplayName("본인(viewerId)은 후보에서 제외한다")
   void findCandidates_excludesSelf() {
     Feed self = persistOnboardedFeed("self", Gender.FEMALE);

@@ -26,11 +26,11 @@
 | 점수 모델 | `Score = 0.45·K + 0.30·M + 0.15·B + 0.10·D` (각 0~1 정규화) | 키워드 우선, 성향(MBTI)·년생·학과 보조 |
 | 활동성 | 가중치에서 **제외**, **"최근 7일 접속 우선" 타이브레이커**로만 사용 | 신선도 보정이되 점수 왜곡 방지 |
 | MBTI 모름 | 한쪽이라도 모름이면 `M=0`, **30%를 잔여 항목에 비례 재분배**(K 64.3 / B 21.4 / D 14.3) | 결측이 매칭을 부당히 깎지 않게 |
-| 탐색 대상 | **이성**(viewer와 반대 성별)만 | 기획 정책 |
+| 탐색 대상 | **이성**(viewer와 반대 성별)만. 온보딩 전 viewer는 성별 무관(§2-2) | 기획 정책 |
 | MVP 정렬 | **최신순**(`created_at desc`) 후 가중치 도입 | 점진 출시 |
 
 ### 전제
-- viewer는 **온보딩 완료(`COMPLETED`) + 활성** 회원이다(미완료자는 탐색 진입 불가, `Member.canUseService()`).
+- viewer는 **온보딩 완료(`COMPLETED`) + 활성** 회원이 기본이다. 온보딩 전 viewer도 성별 조건·점수 없이 둘러볼 수 있다(§2-2, #122). 대화 시작은 온보딩 완료자만 할 수 있다.
 - 공개 프로필(성별·년생·학과·MBTI)은 [`Feed`](../feed/FEED_DOMAIN.md)가, 관심사는 `MemberKeyword`가 보유한다.
 
 ---
@@ -73,6 +73,21 @@ viewer 기준 아래를 **모두** 만족하는 회원만 후보다.
 - **카드 상세**(`GET /api/discovery/feeds/{feedId}`)도 같은 기준이다. 페어 키 유니크 인덱스로 방을 단건 조회해 `CLOSED`·`REPORTED`면 404, `ACTIVE`면 `chatRoom`을 내린다.
 - **대화 시작 API 계약은 유지한다.** `ACTIVE`면 보낸 메시지를 저장하지 않고 `created=false`로 기존 방을 안내한다. 카드에 `chatRoom`이 있으면 정상 흐름에서는 이 분기를 타지 않는다. 시작 API는 첫 메시지가 필수(`@NotBlank`)라 기존 방 입장 용도로 쓸 수 없다.
 - **알려진 한계**: offset 페이지는 매 요청 재계산이므로, 페이지를 넘기는 사이에 새 대화를 시작하면 그 상대가 뒤로 이동해 다음 페이지에서 다시 보이거나 다른 항목이 한 칸 당겨질 수 있다. 필요해지면 점수 스냅샷 커서를 검토한다.
+
+### 2-2. 온보딩 전 viewer ✅ (#122)
+
+가입 직후 회원도 어떤 사람이 있는지 둘러볼 수 있게 탐색 목록·카드 상세를 온보딩 전에도 허용한다. 온보딩 전 회원은 피드가 없어 성별·관심사·MBTI·년생·학과를 알 수 없으므로 아래처럼 동작한다.
+
+| 항목 | 온보딩 완료 viewer | 온보딩 전 viewer |
+|---|---|---|
+| 성별 조건 | 반대 성별만 | **성별 무관** (`findCandidates`에 `gender=null`) |
+| 나머지 후보 조건 | §2 표 전부 | 같음 (온보딩 완료·활성·본인 제외·차단 없음·공개 가능·재시작 불가 관계 제외) |
+| 점수 | K/M/B/D 가중 점수 | **계산하지 않음(전원 0점)**, 후보 키워드도 읽지 않음 |
+| 정렬 | §2-1 정렬 키 | 점수가 같으므로 **최근 7일 접속 → `last_active_at` desc → feedId desc** (§3 활동성 타이브레이커) |
+| 카드 상세 | 이성 조건 포함 재검증 | 이성 조건만 빼고 재검증, `matched`는 모두 `false` |
+| 대화 시작 | 가능 | **불가** — `403 DISCOVERY_403_ONBOARDING_REQUIRED` (기존 유지) |
+
+- 탐색에 **노출되는** 대상은 여전히 온보딩 완료 회원뿐이다. 바뀐 것은 **보는 쪽**의 조건이다.
 
 ---
 
@@ -128,12 +143,12 @@ K = normalize(raw)                                    // 카테고리당 상한 
 ## 5. API (🧩 제안)
 
 ```
-GET /api/discovery?cursor={opaque}&size={n}     (인증 필요, 온보딩 완료자만)
+GET /api/discovery?cursor={opaque}&size={n}     (인증 필요, 온보딩 전 viewer는 §2-2)
 → 200 { items: [FeedCard...], nextCursor }
 ```
 
 - **FeedCard**: 노출용 공개 프로필(닉네임·년생·학과·MBTI·성별·블러 대표 이미지·선택 키워드 일부). 원본 사진은 채팅 단계 공개 정책을 따른다(탐색에는 블러본만).
-- **카드 상세 (✅ 구현, #95)**: `GET /api/discovery/feeds/{feedId}` → `{ feedId, nickName, birthYear, department, departmentLabel, mbti, gender, keywords[{ categoryCode, categoryName, tagId, tagCode, tagName, matched }] }`. `matched`는 조회자도 같은 태그를 선택했는지 여부다. 사진은 `GET /api/feeds/{feedId}/images`로 따로 받는다. feedId 직접 입력으로 후보 필터(§2)를 우회하지 못하도록 같은 조건(이성·활성·온보딩 완료·차단 양방향 아님·사진 5장 READY)을 단건으로 재검증하고, 미충족은 존재 여부를 드러내지 않도록 없음과 같은 `404 DISCOVERY_404_FEED_NOT_FOUND`로 응답한다. 조회자 온보딩 전이면 `403 DISCOVERY_403_ONBOARDING_REQUIRED`.
+- **카드 상세 (✅ 구현, #95)**: `GET /api/discovery/feeds/{feedId}` → `{ feedId, nickName, birthYear, department, departmentLabel, mbti, gender, keywords[{ categoryCode, categoryName, tagId, tagCode, tagName, matched }] }`. `matched`는 조회자도 같은 태그를 선택했는지 여부다. 사진은 `GET /api/feeds/{feedId}/images`로 따로 받는다. feedId 직접 입력으로 후보 필터(§2)를 우회하지 못하도록 같은 조건(이성·활성·온보딩 완료·차단 양방향 아님·사진 5장 READY)을 단건으로 재검증하고, 미충족은 존재 여부를 드러내지 않도록 없음과 같은 `404 DISCOVERY_404_FEED_NOT_FOUND`로 응답한다. 조회자가 온보딩 전이면 이성 조건 없이 검증하고 `matched`는 모두 `false`다(§2-2, #122).
 - **커서 페이지네이션**: MVP는 `created_at, id` 복합 커서(최신순). 점수 정렬 단계에서는 `(score, last_active_at, id)` 기반 커서 또는 캐시된 순위 인덱스를 쓴다(§6).
 
 ---
