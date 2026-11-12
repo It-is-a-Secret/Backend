@@ -13,6 +13,7 @@ import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.keyword.domain.MemberKeyword;
 import com.blursome.blursome.keyword.repository.MemberKeywordRepository;
 import com.blursome.blursome.keyword.service.MemberKeywordService;
+import com.blursome.blursome.member.domain.Gender;
 import com.blursome.blursome.member.domain.Member;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -21,6 +22,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
@@ -29,6 +31,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * 탐색(Discovery) 서비스. viewer 기준 이성·온보딩 완료·활성 회원을 가중 점수(K/M/B/D)로 정렬해 페이지로 반환한다(Phase B).
+ * 온보딩 전 viewer도 성별 구분 없이 최근 접속순으로 둘러볼 수 있다(#122). 대화 시작은 {@link ChatStartService}가 막는다.
  *
  * <p>설계 §17.4대로 필터 후보를 앱 레이어에서 점수 계산→정렬→페이지네이션(offset)한다. 동점은 "최근 7일 접속
  * 우선 → last_active_at 내림차순 → feedId 내림차순"으로 가른다. 설계는 {@code docs/discovery/DISCOVERY_DOMAIN.md}.
@@ -62,24 +65,30 @@ public class DiscoveryService {
    * 대화 중({@code ACTIVE})인 상대는 목록 뒤쪽으로 보낸 뒤 카드에 {@code chatRoom}을 붙인다. 관계는 viewer 기준 쿼리
    * 1회로 읽는다.
    *
-   * @throws BaseException viewer가 온보딩을 완료하지 않아 피드가 없는 경우
+   * <p>온보딩 전 viewer(#122): 피드가 없어 성별·관심사·MBTI·생년·학과를 알 수 없으므로, 성별 구분 없이 후보를 모으고
+   * 점수를 매기지 않는다(전원 0점). 정렬은 동점 규칙인 "최근 7일 접속 우선 → last_active_at → feedId"가 그대로 결정한다.
    */
   public List<DiscoveryCardResponse> getDiscovery(Long viewerId, int page, int size) {
-    Feed viewerFeed = feedService.findFeedByMemberId(viewerId)
-        .orElseThrow(() -> BaseException.from(DiscoveryErrorCode.DISCOVERY_ONBOARDING_REQUIRED));
+    Optional<Feed> viewerFeed = feedService.findFeedByMemberId(viewerId);
 
     int pageSize = Math.min(Math.max(size, MIN_PAGE_SIZE), MAX_PAGE_SIZE);
     int safePage = Math.max(page, 0);
 
     Map<Long, Long> tagToCategory = new HashMap<>();
-    DiscoveryProfile viewerProfile = buildViewerProfile(viewerId, viewerFeed, tagToCategory);
+    // 온보딩 전이면 null이다. 이 경우 점수 계산과 후보 태그 조회를 건너뛴다.
+    DiscoveryProfile viewerProfile = viewerFeed
+        .map(feed -> buildViewerProfile(viewerId, feed, tagToCategory))
+        .orElse(null);
+    Gender targetGender = viewerFeed.map(feed -> feed.getGender().opposite()).orElse(null);
 
     List<Feed> candidates = discoveryRepository.findCandidates(
-        viewerFeed.getGender().opposite(), viewerId, PageRequest.ofSize(MAX_CANDIDATES));
+        targetGender, viewerId, PageRequest.ofSize(MAX_CANDIDATES));
     if (candidates.isEmpty()) {
       return List.of();
     }
-    Map<Long, Set<Long>> tagsByMember = loadCandidateTags(candidates, tagToCategory);
+    Map<Long, Set<Long>> tagsByMember = viewerProfile == null
+        ? Map.of()
+        : loadCandidateTags(candidates, tagToCategory);
     // viewer가 참여했던 방을 상대 id 기준으로 한 번에 읽는다(#112). 후보 수가 아니라 viewer의 방 수에 비례하는 쿼리 1회다.
     Map<Long, PartnerRoom> roomsByPartner = chatRoomService.findPartnerRooms(viewerId);
 
@@ -91,11 +100,9 @@ public class DiscoveryService {
       if (room != null && room.excludesFromDiscovery()) {
         continue;
       }
-      Set<Long> candTags = tagsByMember.getOrDefault(feed.getMember().getId(), Set.of());
-      DiscoveryProfile candProfile = new DiscoveryProfile(
-          feed.getMbti(), feed.getBirthYear(), feed.getDepartment(), candTags);
-      double score = discoveryScorer.score(
-          viewerProfile, candProfile, tagToCategory, keywordRelationCache);
+      double score = viewerProfile == null
+          ? 0.0
+          : score(viewerProfile, feed, tagsByMember, tagToCategory);
       LocalDateTime lastActive = feed.getMember().getLastActiveAt();
       boolean recent = lastActive != null && lastActive.isAfter(recentThreshold);
       scored.add(new Scored(feed, room, score, lastActive, recent));
@@ -117,13 +124,15 @@ public class DiscoveryService {
    * 양방향 아님·피드 공개 5장 READY·다시 시작할 수 없는 관계 아님)을 재검증한다. 조건 미충족은 피드 존재 여부를
    * 드러내지 않도록 없음과 같은 404로 응답한다. 이미 대화 중이면 그 방을 {@code chatRoom}으로 함께 내린다(#112).
    *
-   * @throws BaseException 조회자가 온보딩 전(403)이거나, 대상이 없거나 노출 조건을 충족하지 않는 경우(404)
+   * <p>온보딩 전 조회자(#122)는 목록과 같이 이성 조건 없이 검증하며, 선택한 키워드가 없어 {@code matched}는 모두
+   * {@code false}다.
+   *
+   * @throws BaseException 대상이 없거나 노출 조건을 충족하지 않는 경우(404)
    */
   public DiscoveryCardDetailResponse getCardDetail(Long viewerId, Long feedId) {
-    Feed viewerFeed = feedService.findFeedByMemberId(viewerId)
-        .orElseThrow(() -> BaseException.from(DiscoveryErrorCode.DISCOVERY_ONBOARDING_REQUIRED));
+    Feed viewerFeed = feedService.findFeedByMemberId(viewerId).orElse(null);
     Feed targetFeed = feedService.findFeedById(feedId)
-        .filter(feed -> isVisibleTo(viewerFeed, feed))
+        .filter(feed -> isVisibleTo(viewerId, viewerFeed, feed))
         .orElseThrow(() -> BaseException.from(DiscoveryErrorCode.DISCOVERY_FEED_NOT_FOUND));
     // 목록과 같은 기준으로 다시 시작할 수 없는 관계(CLOSED·REPORTED)는 404로 가리고, 이미 대화 중이면 방을 함께 내린다(#112).
     PartnerRoom room = chatRoomService.findPartnerRoom(viewerId, targetFeed.getMember().getId())
@@ -132,20 +141,37 @@ public class DiscoveryService {
       throw BaseException.from(DiscoveryErrorCode.DISCOVERY_FEED_NOT_FOUND);
     }
 
-    Set<Long> viewerTagIds = MemberKeywordService.tagIdsOf(
-        memberKeywordRepository.findByMemberIdWithTag(viewerId));
+    // 관심사 키워드는 온보딩에서 저장되므로 온보딩 전 조회자는 겹치는 키워드가 없다.
+    Set<Long> viewerTagIds = viewerFeed == null
+        ? Set.of()
+        : MemberKeywordService.tagIdsOf(memberKeywordRepository.findByMemberIdWithTag(viewerId));
     return DiscoveryCardDetailResponse.of(targetFeed,
         memberKeywordRepository.findByMemberIdWithTag(targetFeed.getMember().getId()), viewerTagIds,
         room);
   }
 
-  /** 탐색 후보 조건({@link DiscoveryRepository#findCandidates})의 단건 판정. 이성이면 본인은 자연히 제외된다. */
-  private boolean isVisibleTo(Feed viewerFeed, Feed targetFeed) {
+  /**
+   * 탐색 후보 조건({@link DiscoveryRepository#findCandidates})의 단건 판정. 온보딩 전 조회자({@code viewerFeed}가
+   * {@code null}, #122)는 성별을 알 수 없어 이성 조건을 빼고 판정한다.
+   */
+  private boolean isVisibleTo(Long viewerId, Feed viewerFeed, Feed targetFeed) {
     Member target = targetFeed.getMember();
-    return targetFeed.getGender() == viewerFeed.getGender().opposite()
+    boolean genderMatches = viewerFeed == null
+        || targetFeed.getGender() == viewerFeed.getGender().opposite();
+    return genderMatches
+        && !target.getId().equals(viewerId)
         && target.canUseService()
-        && !blockRepository.existsBlockBetween(viewerFeed.getMember().getId(), target.getId())
+        && !blockRepository.existsBlockBetween(viewerId, target.getId())
         && feedService.isFeedPublishable(targetFeed.getId());
+  }
+
+  /** 온보딩 완료 viewer 기준으로 후보 한 명의 가중 점수(K/M/B/D)를 계산한다. */
+  private double score(DiscoveryProfile viewerProfile, Feed candidate,
+      Map<Long, Set<Long>> tagsByMember, Map<Long, Long> tagToCategory) {
+    Set<Long> candTags = tagsByMember.getOrDefault(candidate.getMember().getId(), Set.of());
+    DiscoveryProfile candProfile = new DiscoveryProfile(
+        candidate.getMbti(), candidate.getBirthYear(), candidate.getDepartment(), candTags);
+    return discoveryScorer.score(viewerProfile, candProfile, tagToCategory, keywordRelationCache);
   }
 
   private DiscoveryProfile buildViewerProfile(Long viewerId, Feed viewerFeed,

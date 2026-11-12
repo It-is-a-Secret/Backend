@@ -92,9 +92,12 @@ public class MemberController {
           + "모든 방에서 나가며, 상대는 지난 이력만 볼 수 있고 새 메시지를 보낼 수 없다.\n"
           + "- 서버의 Refresh Token과 진행 중인 학교 이메일 인증 코드를 지운다. 기존 Access Token으로 보호 API를 호출하거나 "
           + "STOMP에 연결하면 403 MEMBER_403_INACTIVE다(다시 탈퇴를 요청해도 같다).\n"
-          + "- 탈퇴 후 30일 동안 같은 카카오 계정으로 로그인하거나 같은 학교 이메일을 인증하면 409 "
-          + "MEMBER_409_REJOIN_RESTRICTED이며, 메시지에 가입 가능 시각이 담긴다. 정확히 30일이 지난 시점부터 새 회원으로 "
-          + "다시 가입할 수 있다(학교 인증·온보딩부터 다시).\n"
+          // 재가입 제한 임시 해제(#124). 제한을 다시 켜면 아래 두 줄을 지우고 그 아래 주석의 30일 안내로 되돌린다.
+          + "- 재가입 제한은 현재 해제되어 있다(#124). 탈퇴 직후에도 같은 카카오 계정으로 로그인하면 새 회원으로 가입되고"
+          + "(학교 인증·온보딩부터 다시), 같은 학교 이메일도 바로 다시 인증할 수 있다.\n"
+          // + "- 탈퇴 후 30일 동안 같은 카카오 계정으로 로그인하거나 같은 학교 이메일을 인증하면 409 "
+          // + "MEMBER_409_REJOIN_RESTRICTED이며, 메시지에 가입 가능 시각이 담긴다. 정확히 30일이 지난 시점부터 새 회원으로 "
+          // + "다시 가입할 수 있다(학교 인증·온보딩부터 다시).\n"
           + "- 신고 누적으로 정지된 회원은 탈퇴할 수 없다(403 MEMBER_403_INACTIVE).")
   @ResponseStatus(HttpStatus.NO_CONTENT)
   @DeleteMapping
@@ -107,8 +110,11 @@ public class MemberController {
 
   @Operation(summary = "학교 이메일 인증 코드 발송",
       description = "안양대학교 이메일(@gs.anyang.ac.kr)로 6자리 인증 코드를 발송한다. 이메일은 공백을 지우고 소문자로 "
-          + "비교·저장한다. 다른 회원이 사용 중이면 409 SCHOOL_EMAIL_DUPLICATED, 탈퇴 후 30일이 지나지 않은 회원의 "
-          + "이메일이면 409 REJOIN_RESTRICTED다.")
+          + "비교·저장한다. 다른 회원이 사용 중이면 409 SCHOOL_EMAIL_DUPLICATED다. 탈퇴 회원의 이메일은 바로 다시 "
+          + "인증할 수 있다(재가입 제한 임시 해제, #124).")
+      // 제한을 다시 켜면 위 마지막 두 줄을 아래로 되돌린다.
+      // + "비교·저장한다. 다른 회원이 사용 중이면 409 SCHOOL_EMAIL_DUPLICATED, 탈퇴 후 30일이 지나지 않은 회원의 "
+      // + "이메일이면 409 REJOIN_RESTRICTED다.")
   @ResponseStatus(HttpStatus.NO_CONTENT)
   @PostMapping("/school-email/verification-codes")
   public ResponseEntity<Void> sendSchoolEmailCode(

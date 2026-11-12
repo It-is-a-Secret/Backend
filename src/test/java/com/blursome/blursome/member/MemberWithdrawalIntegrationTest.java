@@ -54,6 +54,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.sql.DataSource;
 import org.hamcrest.Matchers;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -229,6 +230,7 @@ class MemberWithdrawalIntegrationTest {
   }
 
   @Test
+  @Disabled("#124 재가입 제한 임시 해제. Member.REJOIN_RESTRICTION을 30일로 되돌릴 때 다시 켠다")
   @DisplayName("같은 카카오 계정은 탈퇴 후 30일 미만이면 토큰 없이 거부되고, 30일이 지나면 새 회원으로 가입된다")
   void kakaoRejoin_isRestrictedForThirtyDays() {
     String providerId = "kakao-" + SEQ.incrementAndGet() + "-" + System.nanoTime();
@@ -255,6 +257,7 @@ class MemberWithdrawalIntegrationTest {
   }
 
   @Test
+  @Disabled("#124 재가입 제한 임시 해제. Member.REJOIN_RESTRICTION을 30일로 되돌릴 때 다시 켠다")
   @DisplayName("탈퇴 회원의 학교 이메일은 다른 카카오 계정에서도 30일 미만이면 거부되고, 30일이 지나면 인증할 수 있다")
   void schoolEmailReuse_fromOtherKakaoAccount_isRestrictedForThirtyDays() {
     String email = "rejoin" + SEQ.incrementAndGet() + "@gs.anyang.ac.kr";
@@ -280,6 +283,28 @@ class MemberWithdrawalIntegrationTest {
     assertThat(memberRepository.findById(other.getId()).orElseThrow().getSchoolEmail())
         .isEqualTo(email);
     assertThat(memberRepository.findById(original.getId()).orElseThrow().getSchoolEmail()).isNull();
+  }
+
+  @Test
+  @DisplayName("재가입 제한 임시 해제(#124): 탈퇴 직후 같은 카카오 계정은 새 회원으로, 같은 학교 이메일은 다시 인증된다")
+  void rejoin_rightAfterWithdrawal_whenRestrictionLifted() {
+    String providerId = "kakao-" + SEQ.incrementAndGet() + "-" + System.nanoTime();
+    String email = "lifted" + SEQ.incrementAndGet() + "@gs.anyang.ac.kr";
+    Member original = memberService.findOrCreateByOAuth(kakaoUser(providerId));
+    verifyEmail(original.getId(), email);
+    withdrawalService.withdraw(original.getId());
+
+    Member rejoined = memberService.findOrCreateByOAuth(kakaoUser(providerId));
+    onboardingService.sendSchoolEmailVerificationCode(rejoined.getId(), email);
+    verifyEmail(rejoined.getId(), email);
+
+    assertThat(rejoined.getId()).isNotEqualTo(original.getId());
+    assertThat(memberRepository.findById(rejoined.getId()).orElseThrow().getSchoolEmail())
+        .isEqualTo(email);
+    Member released = memberRepository.findById(original.getId()).orElseThrow();
+    assertThat(released.isWithdrawn()).isTrue();
+    assertThat(released.getProviderId()).isEqualTo("withdrawn:" + original.getId());
+    assertThat(released.getSchoolEmail()).isNull();
   }
 
   @Test

@@ -7,7 +7,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 import com.blursome.blursome.block.repository.BlockRepository;
 import com.blursome.blursome.chat.domain.ChatRoomStatus;
@@ -30,6 +32,7 @@ import com.blursome.blursome.member.domain.RegistrationStatus;
 import com.blursome.blursome.keyword.domain.KeywordCategory;
 import com.blursome.blursome.keyword.domain.KeywordTag;
 import com.blursome.blursome.keyword.domain.MemberKeyword;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -174,14 +177,27 @@ class DiscoveryServiceTest {
   }
 
   @Test
-  @DisplayName("viewer가 온보딩(피드)을 완료하지 않았으면 DISCOVERY_ONBOARDING_REQUIRED 예외")
-  void getDiscovery_whenViewerHasNoFeed_thenThrows() {
+  @DisplayName("온보딩 전 viewer(피드 없음)는 성별 구분 없이 후보를 받고, 점수 없이 최근 접속순으로 정렬된다(#122)")
+  void getDiscovery_whenViewerNotOnboarded_returnsAllGendersByRecentActivity() {
     given(feedService.findFeedByMemberId(99L)).willReturn(Optional.empty());
 
-    assertThatThrownBy(() -> discoveryService.getDiscovery(99L, 0, 20))
-        .isInstanceOf(BaseException.class)
-        .hasFieldOrPropertyWithValue("code",
-            DiscoveryErrorCode.DISCOVERY_ONBOARDING_REQUIRED.getCode());
+    LocalDateTime now = LocalDateTime.now();
+    Feed old = feed(10L, 10L, Gender.FEMALE, 2000);        // 7일 넘게 미접속
+    Feed latest = feed(20L, 20L, Gender.MALE, 2000);       // 1시간 전 접속
+    Feed recentLow = feed(30L, 30L, Gender.FEMALE, 2000);  // 2일 전 접속, feedId 작음
+    Feed recentHigh = feed(40L, 40L, Gender.MALE, 2000);   // 2일 전 접속(동시각), feedId 큼
+    ReflectionTestUtils.setField(old.getMember(), "lastActiveAt", now.minusDays(10));
+    ReflectionTestUtils.setField(latest.getMember(), "lastActiveAt", now.minusHours(1));
+    ReflectionTestUtils.setField(recentLow.getMember(), "lastActiveAt", now.minusDays(2));
+    ReflectionTestUtils.setField(recentHigh.getMember(), "lastActiveAt", now.minusDays(2));
+    given(discoveryRepository.findCandidates(isNull(), eq(99L), any(Pageable.class)))
+        .willReturn(List.of(old, latest, recentLow, recentHigh));
+
+    List<DiscoveryCardResponse> result = discoveryService.getDiscovery(99L, 0, 20);
+
+    assertThat(result).extracting(DiscoveryCardResponse::feedId)
+        .containsExactly(20L, 40L, 30L, 10L);
+    verifyNoInteractions(discoveryScorer, memberKeywordRepository);
   }
 
   // ===== 카드 상세(#95) =====
@@ -331,17 +347,52 @@ class DiscoveryServiceTest {
   }
 
   @Test
-  @DisplayName("존재하지 않는 피드 상세는 404, 조회자가 온보딩 전이면 403")
-  void getCardDetail_missingFeedOrViewerNotOnboarded() {
+  @DisplayName("존재하지 않는 피드 상세는 404")
+  void getCardDetail_missingFeed_notFound() {
     Feed viewerFeed = onboardedFeed(1L, 1L, Gender.MALE);
     given(feedService.findFeedByMemberId(1L)).willReturn(Optional.of(viewerFeed));
     given(feedService.findFeedById(999L)).willReturn(Optional.empty());
-    given(feedService.findFeedByMemberId(2L)).willReturn(Optional.empty());
 
     assertThatThrownBy(() -> discoveryService.getCardDetail(1L, 999L))
         .hasFieldOrPropertyWithValue("code", DiscoveryErrorCode.DISCOVERY_FEED_NOT_FOUND.getCode());
-    assertThatThrownBy(() -> discoveryService.getCardDetail(2L, 20L))
-        .hasFieldOrPropertyWithValue("code",
-            DiscoveryErrorCode.DISCOVERY_ONBOARDING_REQUIRED.getCode());
+  }
+
+  @Test
+  @DisplayName("온보딩 전 조회자는 성별과 무관하게 카드 상세를 보고, 겹치는 키워드가 없어 matched는 모두 false다(#122)")
+  void getCardDetail_viewerNotOnboarded_returnsDetailWithoutMatched() {
+    Feed target = onboardedFeed(20L, 20L, Gender.MALE);
+    given(feedService.findFeedByMemberId(2L)).willReturn(Optional.empty());
+    given(feedService.findFeedById(20L)).willReturn(Optional.of(target));
+    given(blockRepository.existsBlockBetween(2L, 20L)).willReturn(false);
+    given(feedService.isFeedPublishable(20L)).willReturn(true);
+    given(memberKeywordRepository.findByMemberIdWithTag(20L))
+        .willReturn(List.of(keyword(target.getMember(), 100L)));
+
+    DiscoveryCardDetailResponse result = discoveryService.getCardDetail(2L, 20L);
+
+    assertThat(result.feedId()).isEqualTo(20L);
+    assertThat(result.keywords())
+        .extracting(DiscoveryCardDetailResponse.Keyword::tagId,
+            DiscoveryCardDetailResponse.Keyword::matched)
+        .containsExactly(tuple(100L, false));
+  }
+
+  @Test
+  @DisplayName("온보딩 전 조회자도 차단 관계·사진 미완성 피드의 상세는 404(#122)")
+  void getCardDetail_viewerNotOnboarded_stillAppliesVisibilityRules() {
+    Feed blocked = onboardedFeed(20L, 20L, Gender.FEMALE);
+    Feed notPublishable = onboardedFeed(30L, 30L, Gender.MALE);
+    given(feedService.findFeedByMemberId(2L)).willReturn(Optional.empty());
+    given(feedService.findFeedById(20L)).willReturn(Optional.of(blocked));
+    given(feedService.findFeedById(30L)).willReturn(Optional.of(notPublishable));
+    given(blockRepository.existsBlockBetween(2L, 20L)).willReturn(true);
+    given(blockRepository.existsBlockBetween(2L, 30L)).willReturn(false);
+    given(feedService.isFeedPublishable(30L)).willReturn(false);
+
+    for (long feedId : List.of(20L, 30L)) {
+      assertThatThrownBy(() -> discoveryService.getCardDetail(2L, feedId))
+          .hasFieldOrPropertyWithValue("code",
+              DiscoveryErrorCode.DISCOVERY_FEED_NOT_FOUND.getCode());
+    }
   }
 }
