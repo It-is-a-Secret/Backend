@@ -22,6 +22,31 @@ app:
     access-key: ${S3_ACCESS_KEY:dummy}
     secret-key: ${S3_SECRET_KEY:dummy}
 
+  # SecretMoa 임시 자격증명 연동. 기본은 모두 꺼져 있어 기존 동작과 같다.
+  # 기능을 켜면 API Key와 해당 ID가 비어 있을 때 기동이 실패한다.
+  secretmoa:
+    url: ${SECRETMOA_URL:http://127.0.0.1:8081}
+    api-key: ${SECRETMOA_API_KEY:}
+    instance-id: ${SECRETMOA_INSTANCE_ID:${ACTIVE:local}-${HOSTNAME:unknown}}
+    s3:
+      enabled: ${SECRETMOA_S3_ENABLED:false}
+      min-ttl: 30m
+      prefetch-before: 15m
+      stale-before: 8m
+      originals:
+        target-id: ${SECRETMOA_S3_ORIG_TARGET:}
+        role-id: ${SECRETMOA_S3_ORIG_ROLE:}
+      variants:
+        target-id: ${SECRETMOA_S3_VAR_TARGET:}
+        role-id: ${SECRETMOA_S3_VAR_ROLE:}
+    db:
+      enabled: ${SECRETMOA_DB_ENABLED:false}
+      database-id: ${SECRETMOA_DB_ID:}
+      role-id: ${SECRETMOA_DB_ROLE_ID:}
+      renew-before: ${SECRETMOA_DB_RENEW_BEFORE:20m}
+      drain-alarm-before: ${SECRETMOA_DB_DRAIN_ALARM_BEFORE:3m}
+      check-interval: ${SECRETMOA_DB_CHECK_INTERVAL:60s}
+
 server:
   port: 8080
   servlet:
