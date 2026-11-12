@@ -59,8 +59,15 @@ import org.hibernate.annotations.DynamicUpdate;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Member extends BaseEntity {
 
-  /** 탈퇴 후 같은 카카오 계정·학교 이메일로 다시 가입할 수 없는 기간(#107). */
-  public static final Duration REJOIN_RESTRICTION = Duration.ofDays(30);
+  /**
+   * 탈퇴 후 같은 카카오 계정·학교 이메일로 다시 가입할 수 없는 기간(#107).
+   *
+   * <p>재가입 제한 임시 해제(#124): {@code ZERO}면 탈퇴 직후 바로 새 회원으로 재가입할 수 있고, 정리 배치가 탈퇴 회원 식별자를
+   * 다음 주기에 해제한다. 다시 적용하려면 {@code ZERO} 줄을 지우고 30일 줄의 주석을 푼 뒤, 테스트의 {@code @Disabled("#124 ...")}도
+   * 함께 지운다.
+   */
+  // public static final Duration REJOIN_RESTRICTION = Duration.ofDays(30);
+  public static final Duration REJOIN_RESTRICTION = Duration.ZERO;
 
   /** 식별자를 해제한 탈퇴 회원의 {@code providerId} 접두사. 원래 공급자 ID와 겹치지 않는 값으로 유니크를 유지한다. */
   static final String RELEASED_PROVIDER_ID_PREFIX = "withdrawn:";

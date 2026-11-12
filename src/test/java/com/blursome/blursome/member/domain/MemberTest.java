@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.member.exception.MemberErrorCode;
 import java.time.LocalDateTime;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -175,6 +176,7 @@ class MemberTest {
   }
 
   @Test
+  @Disabled("#124 재가입 제한 임시 해제. Member.REJOIN_RESTRICTION을 30일로 되돌릴 때 다시 켠다")
   @DisplayName("탈퇴 시각을 주입하면 그 시각이 withdrawnAt으로 기록되고 재가입 가능 시각은 +30일이다(#107)")
   void withdraw_withTime_recordsWithdrawnAtAndRejoinAvailableAt() {
     // given
@@ -190,6 +192,7 @@ class MemberTest {
   }
 
   @Test
+  @Disabled("#124 재가입 제한 임시 해제. Member.REJOIN_RESTRICTION을 30일로 되돌릴 때 다시 켠다")
   @DisplayName("재가입 제한은 withdrawnAt+30일 미만이면 참이고 정확히 그 시각부터 거짓이다(#107)")
   void isRejoinRestricted_boundary() {
     // given
@@ -202,6 +205,21 @@ class MemberTest {
     assertThat(member.isRejoinRestricted(availableAt.minusSeconds(1))).isTrue();
     assertThat(member.isRejoinRestricted(availableAt)).isFalse();
     assertThat(member.isRejoinRestricted(availableAt.plusDays(1))).isFalse();
+  }
+
+  @Test
+  @DisplayName("재가입 제한 임시 해제(#124): 탈퇴 시각부터 바로 재가입할 수 있고 식별자도 즉시 해제할 수 있다")
+  void rejoin_isAllowedRightAfterWithdrawal_whenRestrictionLifted() {
+    // given
+    Member member = newMember();
+    LocalDateTime withdrawnAt = LocalDateTime.of(2026, 10, 1, 9, 30);
+    member.withdraw(withdrawnAt);
+
+    // when & then
+    assertThat(member.rejoinAvailableAt()).isEqualTo(withdrawnAt);
+    assertThat(member.isRejoinRestricted(withdrawnAt)).isFalse();
+    member.releaseIdentifiers(withdrawnAt);
+    assertThat(member.isIdentifiersReleased()).isTrue();
   }
 
   @Test
@@ -243,6 +261,7 @@ class MemberTest {
   }
 
   @Test
+  @Disabled("#124 재가입 제한 임시 해제. Member.REJOIN_RESTRICTION을 30일로 되돌릴 때 다시 켠다")
   @DisplayName("재가입 제한 중이거나 활성 회원이면 식별자를 해제할 수 없다(#107)")
   void releaseIdentifiers_whenRestrictedOrActive_thenThrows() {
     // given

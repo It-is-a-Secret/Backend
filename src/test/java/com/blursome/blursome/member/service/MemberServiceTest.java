@@ -23,6 +23,7 @@ import java.time.ZoneId;
 import java.util.Optional;
 import org.hibernate.exception.ConstraintViolationException;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -133,6 +134,7 @@ class MemberServiceTest {
   }
 
   @Test
+  @Disabled("#124 재가입 제한 임시 해제. Member.REJOIN_RESTRICTION을 30일로 되돌릴 때 다시 켠다")
   @DisplayName("탈퇴 후 30일 미만(30일-1초)이면 재활성화·가입 없이 MEMBER_409_REJOIN_RESTRICTED로 거부하고 가입 가능 시각을 알린다")
   void findOrCreateByOAuth_whenWithdrawnWithinRestriction_thenRejects() {
     // given
@@ -185,6 +187,7 @@ class MemberServiceTest {
   }
 
   @Test
+  @Disabled("#124 재가입 제한 임시 해제. Member.REJOIN_RESTRICTION을 30일로 되돌릴 때 다시 켠다")
   @DisplayName("탈퇴 후 30일 미만인 다른 회원의 학교 이메일은 다른 카카오 계정에서도 MEMBER_409_REJOIN_RESTRICTED다")
   void validateSchoolEmailAvailable_whenWithdrawnHolderWithinRestriction_thenRestricted() {
     // given
@@ -226,6 +229,7 @@ class MemberServiceTest {
   }
 
   @Test
+  @Disabled("#124 재가입 제한 임시 해제. Member.REJOIN_RESTRICTION을 30일로 되돌릴 때 다시 켠다")
   @DisplayName("저장 직전 확인에서 보유자가 아직 30일 미만이면 해제하지 않고 거부한다")
   void releaseSchoolEmailForReuse_whenHolderWithinRestriction_thenRejects() {
     // given
@@ -241,6 +245,7 @@ class MemberServiceTest {
   }
 
   @Test
+  @Disabled("#124 재가입 제한 임시 해제. Member.REJOIN_RESTRICTION을 30일로 되돌릴 때 다시 켠다")
   @DisplayName("정리 배치는 30일 지난 탈퇴 회원만 해제하고, 아직 제한 중이면 건너뛴다")
   void releaseExpiredWithdrawnMember_releasesOnlyExpired() {
     // given
