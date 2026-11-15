@@ -34,6 +34,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -147,7 +148,7 @@ class AuthControllerTest {
         .andExpect(header().exists("Set-Cookie"))
         .andExpect(cookie().maxAge("refreshToken", 0));
 
-    verify(authService).logout("refresh-old");
+    verify(authService).logout("refresh-old", null);
   }
 
   @Test
@@ -158,7 +159,20 @@ class AuthControllerTest {
         .andExpect(header().exists("Set-Cookie"))
         .andExpect(cookie().maxAge("refreshToken", 0));
 
-    verify(authService).logout(null);
+    verify(authService).logout(null, null);
+  }
+
+  @Test
+  @DisplayName("로그아웃 body의 endpoint를 서비스로 넘겨 그 기기 구독도 함께 해제한다")
+  void handleLogoutWithPushEndpoint() throws Exception {
+    mockMvc.perform(post("/api/auth/logout")
+            .cookie(new Cookie("refreshToken", "refresh-old"))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"endpoint\":\"https://web.push.apple.com/abc\"}"))
+        .andExpect(status().isNoContent())
+        .andExpect(cookie().maxAge("refreshToken", 0));
+
+    verify(authService).logout("refresh-old", "https://web.push.apple.com/abc");
   }
 
   @TestConfiguration

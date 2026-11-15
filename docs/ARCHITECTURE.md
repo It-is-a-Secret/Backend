@@ -39,10 +39,11 @@ OAuth 제공자(현재 Kakao)와의 인증·인가, JWT 발급·검증, 리프�
 
 ### 알림 (Notification)
 
-채팅 메시지, 친구 요청 등 이벤트 기반 알림을 관리합니다.
+PWA Web Push(VAPID) 기기 구독과 채팅 푸시 발송을 담당합니다(#121). 실시간 화면 갱신은 채팅 도메인의 STOMP가 맡고, 이 도메인은 앱이 닫혀 있어도 받는 시스템 알림만 맡습니다. 상세: `docs/notification/PUSH_NOTIFICATION.md`
 
-- 핵심 불변 조건: 알림은 생성 후 수신자만 읽음 처리 가능
-- 주요 도메인 메서드: `markAsRead()`
+- 핵심 불변 조건: 구독은 `endpoint` 기준으로 유일하다(`endpoint_hash` 유니크). 같은 endpoint를 다른 계정이 등록하면 소유 회원이 바뀐다
+- 핵심 불변 조건: 커밋된 채팅 메시지 하나당 수신자 기기마다 푸시는 최대 한 번(`NEW_MESSAGE`만 발송, `NEW_ROOM` 무시)
+- 주요 도메인 메서드: `PushSubscription.register(...)`, `renew(member, p256dh, auth, userAgent)`
 
 ### 채팅 (Chat)
 
@@ -101,8 +102,13 @@ com.blursome
 │   └── exception/
 │       └── MemberErrorCode.java       # ErrorCode 구현 Enum
 │
-├── notification/                      # (예정)
-│   └── ...
+├── notification/                      # PWA Web Push 구독·채팅 푸시(#121)
+│   ├── config/                        # WebPushProperties(VAPID), PushAsyncConfig(발송 전용 실행기)
+│   ├── controller/PushController.java # 공개 키·구독 등록/해제 API
+│   ├── domain/PushSubscription.java   # 기기 구독 Entity
+│   ├── event/                         # ChatPushListener(채팅 알림 → 푸시), 탈퇴 시 구독 삭제
+│   ├── sender/WebPushSender.java      # 암호화·VAPID 서명 후 푸시 서비스로 전송
+│   └── service/                       # PushSubscriptionService, ChatPushService
 │
 ├── chat/                              # (예정)
 │   └── ...

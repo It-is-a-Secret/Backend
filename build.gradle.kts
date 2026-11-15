@@ -30,6 +30,15 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-web")
 	implementation("org.springframework.boot:spring-boot-starter-websocket")
 	implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.6")
+	// 표준 Web Push(VAPID) 발송. 페이로드 암호화(aes128gcm)·VAPID 서명을 처리한다(이슈 #121).
+	// 동기 PushService만 쓰므로 비동기 클라이언트(Netty)와 CLI 의존성은 뺀다. BouncyCastle은 provided라 직접 추가하고,
+	// 오래된 jose4j(0.7.0)는 보안 패치 버전으로 올린다.
+	implementation("nl.martijndwars:web-push:5.1.1") {
+		exclude(group = "org.asynchttpclient")
+		exclude(group = "com.beust")
+	}
+	implementation("org.bitbucket.b_c:jose4j:0.9.6")
+	implementation("org.bouncycastle:bcprov-jdk18on:1.80")
 	implementation("io.jsonwebtoken:jjwt-api:0.12.6")
 	runtimeOnly("io.jsonwebtoken:jjwt-impl:0.12.6")
 	runtimeOnly("io.jsonwebtoken:jjwt-jackson:0.12.6")

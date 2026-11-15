@@ -216,6 +216,11 @@ public class MemberService {
     return requireActive(memberRepository.findByIdForUpdate(id));
   }
 
+  /** 회원 닉네임을 상태와 무관하게 조회한다(#121 푸시 알림 제목). 회원이 없으면 비어 있다. */
+  public Optional<String> findNickName(Long id) {
+    return memberRepository.findById(id).map(Member::getNickName);
+  }
+
   /** 본인을 제외하고 닉네임이 이미 사용 중인지 확인한다(#95). */
   public boolean isNickNameTaken(String nickName, Long excludeMemberId) {
     return memberRepository.existsByNickNameAndIdNot(nickName, excludeMemberId);

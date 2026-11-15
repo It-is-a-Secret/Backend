@@ -2,6 +2,7 @@ package com.blursome.blursome.auth.controller;
 
 import com.blursome.blursome.auth.cookie.RefreshTokenCookieFactory;
 import com.blursome.blursome.auth.dto.TokenPair;
+import com.blursome.blursome.auth.dto.request.LogoutRequest;
 import com.blursome.blursome.auth.dto.response.AuthTokenResponse;
 import com.blursome.blursome.auth.exception.AuthErrorCode;
 import com.blursome.blursome.auth.oauth.kakao.KakaoOAuthProperties;
@@ -10,6 +11,7 @@ import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.global.response.DataResponse;
 import com.blursome.blursome.member.domain.OAuthProvider;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import lombok.RequiredArgsConstructor;
@@ -20,6 +22,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CookieValue;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -88,14 +91,22 @@ public class AuthController {
     return tokenResponse(tokens);
   }
 
-  /** RT 쿠키 기반 로그아웃(멱등). 부재·만료·위조 RT여도 204를 반환하고 쿠키를 만료시킨다. */
+  /**
+   * RT 쿠키 기반 로그아웃(멱등). 부재·만료·위조 RT여도 204를 반환하고 쿠키를 만료시킨다. 선택 body로 이 기기의 Web Push
+   * endpoint를 받으면 그 기기 구독도 함께 해제한다(#121).
+   */
+  @Operation(summary = "로그아웃",
+      description = "RT 쿠키를 무효화하고 만료시킨다. 선택 body { \"endpoint\": \"...\" }를 보내면 이 기기의 푸시 구독도 "
+          + "함께 해제한다. body가 없거나 RT가 없어도 204(멱등).")
+  @ApiResponse(responseCode = "204", description = "로그아웃 완료(바디 없음)")
   @ResponseStatus(HttpStatus.NO_CONTENT)
   @PostMapping("/logout")
   public ResponseEntity<Void> logout(
       @CookieValue(name = RefreshTokenCookieFactory.COOKIE_NAME, required = false)
-      String refreshToken
+      String refreshToken,
+      @RequestBody(required = false) LogoutRequest request
   ) {
-    authService.logout(refreshToken);
+    authService.logout(refreshToken, request == null ? null : request.endpoint());
     return ResponseEntity.noContent()
         .header(HttpHeaders.SET_COOKIE, cookieFactory.delete().toString())
         .build();
