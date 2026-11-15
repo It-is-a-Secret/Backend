@@ -14,7 +14,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
+import com.blursome.blursome.block.service.BlockLookupService;
 import com.blursome.blursome.feed.domain.Feed;
 import com.blursome.blursome.feed.domain.FeedImage;
 import com.blursome.blursome.feed.domain.FeedImageProcessingStatus;
@@ -37,6 +39,7 @@ import com.blursome.blursome.member.domain.Gender;
 import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.OAuthProvider;
 import com.blursome.blursome.member.domain.ProfileItem;
+import com.blursome.blursome.member.exception.MemberErrorCode;
 import com.blursome.blursome.member.service.MemberService;
 import java.time.Clock;
 import java.time.LocalDateTime;
@@ -61,6 +64,8 @@ class FeedImageServiceTest {
 
   private static final long MEMBER_ID = 100L;
   private static final long FEED_ID = 7L;
+  private static final long VIEWER_ID = 300L;
+  private static final long OWNER_ID = 200L;
   private static final ZoneId ZONE = ZoneId.of("Asia/Seoul");
   private static final LocalDateTime NOW = LocalDateTime.of(2026, 11, 1, 12, 0);
 
@@ -78,6 +83,9 @@ class FeedImageServiceTest {
 
   @Mock
   private MemberService memberService;
+
+  @Mock
+  private BlockLookupService blockLookupService;
 
   @Spy
   private Clock clock = Clock.fixed(NOW.atZone(ZONE).toInstant(), ZONE);
@@ -1167,7 +1175,7 @@ class FeedImageServiceTest {
     given(storageService.toPublicVariantUrl(anyString()))
         .willAnswer(invocation -> "https://cdn/" + invocation.getArgument(0));
 
-    var response = feedImageService.getPublicFeedImages(FEED_ID);
+    var response = feedImageService.getPublicFeedImages(VIEWER_ID, FEED_ID);
 
     assertThat(response.images())
         .extracting(image -> image.displayOrder())
@@ -1187,7 +1195,7 @@ class FeedImageServiceTest {
     images.add(feedImage(5, VARIANT_A, FeedImageProcessingStatus.PROCESSING));
     given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(images);
 
-    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(FEED_ID))
+    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(VIEWER_ID, FEED_ID))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", "FEED_404_NOT_FOUND");
   }
@@ -1198,7 +1206,7 @@ class FeedImageServiceTest {
     givenPublicFeedOwner(true);
     given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(readyImages(4));
 
-    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(FEED_ID))
+    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(VIEWER_ID, FEED_ID))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", "FEED_404_NOT_FOUND");
   }
@@ -1209,7 +1217,7 @@ class FeedImageServiceTest {
     givenPublicFeedOwner(true);
     given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(List.of());
 
-    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(FEED_ID))
+    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(VIEWER_ID, FEED_ID))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", "FEED_404_NOT_FOUND");
   }
@@ -1218,21 +1226,93 @@ class FeedImageServiceTest {
   @DisplayName("공개 조회: 사진이 정확히 5장 전부 READY여도 피드 주인이 탈퇴했으면 FEED_404_NOT_FOUND로 비노출한다(#107)")
   void getPublicFeedImages_whenOwnerWithdrawn_hidesFeed() {
     givenPublicFeedOwner(false);
-    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(readyImages(5));
 
-    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(FEED_ID))
+    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(VIEWER_ID, FEED_ID))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", "FEED_404_NOT_FOUND");
   }
 
-  /** 공개 조회 대상 피드와 그 주인 회원의 활성 여부를 준비한다. */
-  private void givenPublicFeedOwner(boolean active) {
+  @Test
+  @DisplayName("공개 조회: 학교 인증 전 조회자는 403이고 대상 피드·이미지를 읽지 않는다(#129)")
+  void getPublicFeedImages_whenViewerNotSchoolVerified_forbidden() {
+    // given
+    willThrow(BaseException.from(MemberErrorCode.MEMBER_SCHOOL_VERIFICATION_REQUIRED_TO_VIEW))
+        .given(memberService).requireSchoolVerified(VIEWER_ID);
+
+    // when & then
+    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(VIEWER_ID, FEED_ID))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "MEMBER_403_SCHOOL_VERIFICATION_REQUIRED");
+    verifyNoInteractions(feedRepository, feedImageRepository, blockLookupService);
+  }
+
+  @Test
+  @DisplayName("공개 조회: 조회자와 차단 관계(양방향)면 사진이 5장 READY여도 404이고 이미지를 읽지 않는다(#129)")
+  void getPublicFeedImages_whenBlocked_hidesFeed() {
+    // given
+    givenPublicFeedOwner(true);
+    given(blockLookupService.isBlockedBetween(VIEWER_ID, OWNER_ID)).willReturn(true);
+
+    // when & then
+    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(VIEWER_ID, FEED_ID))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "FEED_404_NOT_FOUND");
+    verifyNoInteractions(feedImageRepository);
+  }
+
+  @Test
+  @DisplayName("공개 조회: 피드 주인이 온보딩 미완료면 404다(#129)")
+  void getPublicFeedImages_whenOwnerNotOnboarded_hidesFeed() {
+    // given
+    givenPublicFeedOwner(false);
+
+    // when & then
+    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(VIEWER_ID, FEED_ID))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "FEED_404_NOT_FOUND");
+    verifyNoInteractions(blockLookupService);
+  }
+
+  @Test
+  @DisplayName("공개 조회: 피드가 없으면 404이고 이미지를 읽지 않는다")
+  void getPublicFeedImages_whenFeedMissing_notFound() {
+    // given
+    given(feedRepository.findWithMemberById(FEED_ID)).willReturn(Optional.empty());
+
+    // when & then
+    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(VIEWER_ID, FEED_ID))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "FEED_404_NOT_FOUND");
+    verifyNoInteractions(feedImageRepository);
+  }
+
+  @Test
+  @DisplayName("공개 조회: 본인 피드는 차단 조회 없이 노출한다")
+  void getPublicFeedImages_whenOwnFeed_skipsBlockCheck() {
+    // given
+    givenPublicFeedOwner(true);
+    given(feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(FEED_ID)).willReturn(readyImages(5));
+    given(storageService.toPublicVariantUrl(anyString())).willReturn("https://cdn/x.jpg");
+
+    // when
+    var response = feedImageService.getPublicFeedImages(OWNER_ID, FEED_ID);
+
+    // then
+    assertThat(response.images()).hasSize(5);
+    verifyNoInteractions(blockLookupService);
+  }
+
+  /**
+   * 공개 조회 대상 피드와 그 주인 회원을 준비한다. {@code serviceUsable}은 주인이 활성·온보딩 완료인지다
+   * ({@link Member#canUseService()}).
+   */
+  private void givenPublicFeedOwner(boolean serviceUsable) {
     Feed feed = mock(Feed.class);
-    com.blursome.blursome.member.domain.Member owner =
-        mock(com.blursome.blursome.member.domain.Member.class);
-    given(owner.isActive()).willReturn(active);
+    Member owner = mock(Member.class);
+    given(owner.canUseService()).willReturn(serviceUsable);
+    lenient().when(owner.getId()).thenReturn(OWNER_ID);
     given(feed.getMember()).willReturn(owner);
-    given(feedRepository.findById(FEED_ID)).willReturn(Optional.of(feed));
+    given(feedRepository.findWithMemberById(FEED_ID)).willReturn(Optional.of(feed));
   }
 
   @Test

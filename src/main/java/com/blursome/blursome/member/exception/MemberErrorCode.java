@@ -45,6 +45,11 @@ public enum MemberErrorCode implements ErrorCode {
       "이미 온보딩을 완료한 회원입니다.",
       "MEMBER_409_ALREADY_ONBOARDED"
   ),
+  // 탐색 목록·카드 상세·공개 피드 사진은 학교 이메일 인증을 마친 회원만 조회할 수 있다(#129). 온보딩 저장 시의 409와 구분한다.
+  MEMBER_SCHOOL_VERIFICATION_REQUIRED_TO_VIEW(HttpStatus.FORBIDDEN,
+      "학교 이메일 인증을 완료해야 다른 회원의 피드를 볼 수 있습니다.",
+      "MEMBER_403_SCHOOL_VERIFICATION_REQUIRED"
+  ),
   MEMBER_ONBOARDING_REQUIRED(HttpStatus.FORBIDDEN,
       "온보딩을 완료해야 프로필을 수정할 수 있습니다.",
       "MEMBER_403_ONBOARDING_REQUIRED"

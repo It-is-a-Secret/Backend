@@ -20,7 +20,9 @@ import java.sql.SQLException;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.EnumSet;
 import java.util.Optional;
+import java.util.Set;
 import org.hibernate.exception.ConstraintViolationException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
@@ -315,5 +317,21 @@ class MemberServiceTest {
     member.verifySchoolEmail(SCHOOL_EMAIL);
     member.withdraw(withdrawnAt);
     return member;
+  }
+
+  @Test
+  @DisplayName("학교 인증 게이트: VERIFIED·COMPLETED 회원이면 통과하고, 아니면 403(#129)")
+  void requireSchoolVerified_whenVerifiedOrNot() {
+    // given
+    Set<RegistrationStatus> verified =
+        EnumSet.of(RegistrationStatus.VERIFIED, RegistrationStatus.COMPLETED);
+    given(memberRepository.existsByIdAndRegistrationStatusIn(1L, verified)).willReturn(true);
+    given(memberRepository.existsByIdAndRegistrationStatusIn(2L, verified)).willReturn(false);
+
+    // when & then
+    memberService.requireSchoolVerified(1L);
+    assertThatThrownBy(() -> memberService.requireSchoolVerified(2L))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "MEMBER_403_SCHOOL_VERIFICATION_REQUIRED");
   }
 }
