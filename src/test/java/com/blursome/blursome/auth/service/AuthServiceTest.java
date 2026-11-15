@@ -23,6 +23,7 @@ import com.blursome.blursome.member.domain.MemberRole;
 import com.blursome.blursome.member.domain.OAuthProvider;
 import com.blursome.blursome.member.dto.OAuthUserInfo;
 import com.blursome.blursome.member.service.MemberService;
+import com.blursome.blursome.notification.service.PushSubscriptionService;
 import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -45,6 +46,8 @@ class AuthServiceTest {
   private RefreshTokenStore refreshTokenStore;
   @Mock
   private OAuthClient kakaoClient;
+  @Mock
+  private PushSubscriptionService pushSubscriptionService;
 
   @InjectMocks
   private AuthService authService;
@@ -147,7 +150,7 @@ class AuthServiceTest {
     given(jwtTokenProvider.parseRefresh("refresh")).willReturn(1L);
 
     // when
-    authService.logout("refresh");
+    authService.logout("refresh", null);
 
     // then
     verify(refreshTokenStore).delete(1L);
@@ -157,8 +160,8 @@ class AuthServiceTest {
   @DisplayName("RefreshToken 쿠키가 없으면 저장소를 조작하지 않고 정상 종료한다")
   void logout_whenTokenAbsent_thenNoOp() {
     // when
-    authService.logout(null);
-    authService.logout("  ");
+    authService.logout(null, null);
+    authService.logout("  ", null);
 
     // then
     verifyNoInteractions(refreshTokenStore, jwtTokenProvider);
@@ -172,7 +175,22 @@ class AuthServiceTest {
         .willThrow(new JwtAuthenticationException(JwtErrorCode.EXPIRED_TOKEN));
 
     // when & then (예외가 전파되지 않아야 한다)
-    authService.logout("invalid");
+    authService.logout("invalid", null);
+    verify(refreshTokenStore, never()).delete(anyLong());
+  }
+
+  @Test
+  @DisplayName("로그아웃 시 endpoint를 받으면 RT가 만료·위조여도 그 기기의 푸시 구독을 해제한다")
+  void logout_whenEndpointGiven_thenUnsubscribesDeviceEvenIfTokenInvalid() {
+    // given
+    given(jwtTokenProvider.parseRefresh("invalid"))
+        .willThrow(new JwtAuthenticationException(JwtErrorCode.EXPIRED_TOKEN));
+
+    // when
+    authService.logout("invalid", "https://web.push.apple.com/abc");
+
+    // then
+    verify(pushSubscriptionService).unsubscribeDevice("https://web.push.apple.com/abc");
     verify(refreshTokenStore, never()).delete(anyLong());
   }
 }
