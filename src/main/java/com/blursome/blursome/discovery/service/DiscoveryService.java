@@ -15,6 +15,7 @@ import com.blursome.blursome.keyword.repository.MemberKeywordRepository;
 import com.blursome.blursome.keyword.service.MemberKeywordService;
 import com.blursome.blursome.member.domain.Gender;
 import com.blursome.blursome.member.domain.Member;
+import com.blursome.blursome.member.service.MemberService;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -54,6 +55,7 @@ public class DiscoveryService {
   private final KeywordRelationCache keywordRelationCache;
   private final BlockRepository blockRepository;
   private final ChatRoomService chatRoomService;
+  private final MemberService memberService;
 
   /**
    * viewer에게 보여줄 탐색 카드를 점수순으로 조회한다.
@@ -67,9 +69,16 @@ public class DiscoveryService {
    *
    * <p>온보딩 전 viewer(#122): 피드가 없어 성별·관심사·MBTI·생년·학과를 알 수 없으므로, 성별 구분 없이 후보를 모으고
    * 점수를 매기지 않는다(전원 0점). 정렬은 동점 규칙인 "최근 7일 접속 우선 → last_active_at → feedId"가 그대로 결정한다.
+   *
+   * <p>학교 인증 게이트(#129): 온보딩 전 viewer도 학교 이메일 인증은 마쳐야 한다.
+   *
+   * @throws BaseException viewer가 학교 인증 전이면 {@code MEMBER_403_SCHOOL_VERIFICATION_REQUIRED}
    */
   public List<DiscoveryCardResponse> getDiscovery(Long viewerId, int page, int size) {
     Optional<Feed> viewerFeed = feedService.findFeedByMemberId(viewerId);
+    if (viewerFeed.isEmpty()) {
+      requireSchoolVerified(viewerId);
+    }
 
     int pageSize = Math.min(Math.max(size, MIN_PAGE_SIZE), MAX_PAGE_SIZE);
     int safePage = Math.max(page, 0);
@@ -127,10 +136,15 @@ public class DiscoveryService {
    * <p>온보딩 전 조회자(#122)는 목록과 같이 이성 조건 없이 검증하며, 선택한 키워드가 없어 {@code matched}는 모두
    * {@code false}다.
    *
-   * @throws BaseException 대상이 없거나 노출 조건을 충족하지 않는 경우(404)
+   * @throws BaseException viewer가 학교 인증 전이면 {@code MEMBER_403_SCHOOL_VERIFICATION_REQUIRED}(#129), 대상이 없거나
+   *     노출 조건을 충족하지 않는 경우(404)
    */
   public DiscoveryCardDetailResponse getCardDetail(Long viewerId, Long feedId) {
     Feed viewerFeed = feedService.findFeedByMemberId(viewerId).orElse(null);
+    if (viewerFeed == null) {
+      // 대상을 읽기 전에 막아, 미인증 조회자가 403/404 차이로 피드 존재 여부를 떠볼 수 없게 한다.
+      requireSchoolVerified(viewerId);
+    }
     Feed targetFeed = feedService.findFeedById(feedId)
         .filter(feed -> isVisibleTo(viewerId, viewerFeed, feed))
         .orElseThrow(() -> BaseException.from(DiscoveryErrorCode.DISCOVERY_FEED_NOT_FOUND));
@@ -148,6 +162,14 @@ public class DiscoveryService {
     return DiscoveryCardDetailResponse.of(targetFeed,
         memberKeywordRepository.findByMemberIdWithTag(targetFeed.getMember().getId()), viewerTagIds,
         room);
+  }
+
+  /**
+   * 피드가 없는(온보딩 전) viewer만 학교 인증을 확인한다(#129). 피드는 온보딩 완료 시 생기고 온보딩은 학교 인증 뒤에만 할 수
+   * 있으므로, 피드가 있는 viewer는 이미 인증된 것이다 — 대다수인 온보딩 완료 viewer에게는 추가 쿼리가 없다.
+   */
+  private void requireSchoolVerified(Long viewerId) {
+    memberService.requireSchoolVerified(viewerId);
   }
 
   /**

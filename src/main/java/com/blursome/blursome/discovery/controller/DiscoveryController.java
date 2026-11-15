@@ -40,6 +40,8 @@ public class DiscoveryController {
           + "온보딩 전 조회자(#122): 성별·관심사가 아직 없어 성별 구분 없이 공개 피드(활성·온보딩 완료·사진 5장 READY·"
           + "차단 아님)를 점수 없이 최근 접속순(최근 7일 접속 우선 → 마지막 접속 → feedId 내림차순)으로 보여준다. "
           + "대화 시작은 온보딩 완료 후에만 가능하다.\n\n"
+          + "학교 인증 게이트(#129): 조회자는 학교 이메일 인증을 마쳐야 한다(온보딩은 불필요). 카카오 로그인만 한 "
+          + "회원은 403(MEMBER_403_SCHOOL_VERIFICATION_REQUIRED).\n\n"
           + "기존 대화(#112): 이미 대화 중인 상대는 점수와 무관하게 목록 뒤쪽에 오고, 카드의 chatRoom(roomId, roomStatus)이 "
           + "채워진다. 이 경우 첫 메시지 입력 없이 roomId로 기존 채팅방에 바로 들어간다. 종료(CLOSED)·검토 중(REPORTED) "
           + "관계인 상대는 다시 대화할 수 없으므로 목록에 나오지 않는다. 채팅방이 없으면 chatRoom은 null.")
@@ -60,7 +62,7 @@ public class DiscoveryController {
           + "탐색 목록과 같은 노출 조건(이성·활성·차단 아님·사진 5장 READY)을 재검증하며, 대상이 없거나 조건을 "
           + "충족하지 않으면 사유 구분 없이 404. 종료(CLOSED)·검토 중(REPORTED) 관계인 상대도 404. 이미 대화 중이면 "
           + "chatRoom(roomId, roomStatus)이 채워진다(#112). 온보딩 전 조회자는 이성 조건 없이 검증하고 matched는 "
-          + "모두 false다(#122).")
+          + "모두 false다(#122). 학교 이메일 인증 전 조회자는 403(MEMBER_403_SCHOOL_VERIFICATION_REQUIRED, #129).")
   @GetMapping("/feeds/{feedId}")
   public ResponseEntity<DataResponse<DiscoveryCardDetailResponse>> getCardDetail(
       @AuthenticationPrincipal Long memberId,

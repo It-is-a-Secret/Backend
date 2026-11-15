@@ -12,6 +12,10 @@ public interface FeedRepository extends JpaRepository<Feed, Long> {
 
   Optional<Feed> findByMemberId(Long memberId);
 
+  /** 피드와 주인 회원을 한 쿼리로 읽는다(#129 공개 사진 조회에서 회원 지연 로딩 쿼리를 없앤다). */
+  @Query("select f from Feed f join fetch f.member where f.id = :feedId")
+  Optional<Feed> findWithMemberById(@Param("feedId") Long feedId);
+
   /**
    * 회원의 피드 행을 비관적 쓰기 락({@code SELECT ... FOR UPDATE})으로 조회한다(#105).
    *

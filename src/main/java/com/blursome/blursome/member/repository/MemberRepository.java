@@ -3,8 +3,10 @@ package com.blursome.blursome.member.repository;
 import com.blursome.blursome.member.domain.ActivityStatus;
 import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.OAuthProvider;
+import com.blursome.blursome.member.domain.RegistrationStatus;
 import jakarta.persistence.LockModeType;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.domain.Limit;
@@ -41,6 +43,9 @@ public interface MemberRepository extends JpaRepository<Member, Long> {
 
   /** 회원이 주어진 활동 상태인지 확인한다(#107 탈퇴 회원의 기존 토큰 차단용). 회원 행이 없으면 {@code false}. */
   boolean existsByIdAndActivityStatus(Long id, ActivityStatus activityStatus);
+
+  /** 회원이 주어진 가입 단계 중 하나인지 PK로 확인한다(#129). 엔티티를 로딩하지 않는다. */
+  boolean existsByIdAndRegistrationStatusIn(Long id, Collection<RegistrationStatus> statuses);
 
   /**
    * 회원을 쓰기 락으로 조회한다. 프로필 동시 수정(#95), 탈퇴·학교 인증·로그인·신고 정지(#107)처럼 같은 회원 행을

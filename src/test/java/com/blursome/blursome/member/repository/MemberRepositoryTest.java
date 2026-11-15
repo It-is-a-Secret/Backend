@@ -6,9 +6,12 @@ import com.blursome.blursome.global.persistence.JpaAuditingConfig;
 import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.OAuthProvider;
 import com.blursome.blursome.member.domain.ProfileItem;
+import com.blursome.blursome.member.domain.RegistrationStatus;
 import com.blursome.blursome.support.TestcontainersConfiguration;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.EnumSet;
+import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -82,5 +85,29 @@ class MemberRepositoryTest {
     assertThat(memberRepository.existsByNickNameAndIdNot("nick-c", a.getId())).isFalse();
     assertThat(memberRepository.existsByNickNameAndIdNot("nick-c", b.getId())).isTrue();
     assertThat(memberRepository.existsByNickNameAndIdNot("unused", b.getId())).isFalse();
+  }
+
+  @Test
+  @DisplayName("가입 단계 존재 조회: 학교 인증 전은 false, 인증 완료·온보딩 완료는 true(#129)")
+  void existsByIdAndRegistrationStatusIn_byStage() {
+    Set<RegistrationStatus> verified =
+        EnumSet.of(RegistrationStatus.VERIFIED, RegistrationStatus.COMPLETED);
+    Member unverified = em.persist(Member.createOAuthMember(
+        OAuthProvider.KAKAO, "pid-u", "name", "u@test.com", null));
+    Member schoolVerified = Member.createOAuthMember(
+        OAuthProvider.KAKAO, "pid-v", "name", "v@test.com", null);
+    schoolVerified.verifySchoolEmail("v@univ.ac.kr");
+    em.persist(schoolVerified);
+    Member onboarded = persistOnboarded("c");
+    em.flush();
+    em.clear();
+
+    assertThat(memberRepository.existsByIdAndRegistrationStatusIn(unverified.getId(), verified))
+        .isFalse();
+    assertThat(memberRepository.existsByIdAndRegistrationStatusIn(schoolVerified.getId(), verified))
+        .isTrue();
+    assertThat(memberRepository.existsByIdAndRegistrationStatusIn(onboarded.getId(), verified))
+        .isTrue();
+    assertThat(memberRepository.existsByIdAndRegistrationStatusIn(-1L, verified)).isFalse();
   }
 }
