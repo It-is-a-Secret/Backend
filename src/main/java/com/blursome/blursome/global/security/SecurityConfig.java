@@ -47,6 +47,8 @@ public class SecurityConfig {
             .requestMatchers(HttpMethod.GET, "/api/ping").permitAll()
             // 키워드 카탈로그(공개 참조 데이터 — 온보딩 선택 화면용)
             .requestMatchers(HttpMethod.GET, "/api/keywords").permitAll()
+            // Web Push VAPID 공개 키(공개 값 — 로그인 전 서비스 워커 준비용, #121)
+            .requestMatchers(HttpMethod.GET, "/api/push/public-key").permitAll()
             .requestMatchers("/error").permitAll()
             // STOMP 핸드셰이크. 실제 인증은 STOMP CONNECT 단계의 ChannelInterceptor가 담당한다(설계 §6-1, §6-3).
             .requestMatchers("/ws/**").permitAll()

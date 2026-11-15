@@ -3,13 +3,16 @@ package com.blursome.blursome.member.service;
 import com.blursome.blursome.global.exception.BaseException;
 import com.blursome.blursome.global.time.SeoulTime;
 import com.blursome.blursome.member.domain.Member;
+import com.blursome.blursome.member.domain.RegistrationStatus;
 import com.blursome.blursome.member.dto.OAuthUserInfo;
 import com.blursome.blursome.member.exception.MemberErrorCode;
 import com.blursome.blursome.member.repository.MemberRepository;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.EnumSet;
 import java.util.Optional;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.hibernate.exception.ConstraintViolationException;
@@ -34,6 +37,9 @@ public class MemberService {
   // 오류 메시지는 사용자에게 그대로 보이므로 서버 시간대와 무관하게 한국 시간으로 표시한다(#113).
   private static final DateTimeFormatter REJOIN_AT_FORMAT =
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+  // 학교 인증을 마친 단계(#129). 단계는 단조 증가하므로 VERIFIED 이상 = 이 둘이다.
+  private static final Set<RegistrationStatus> SCHOOL_VERIFIED_STATUSES =
+      EnumSet.of(RegistrationStatus.VERIFIED, RegistrationStatus.COMPLETED);
 
   private final MemberRepository memberRepository;
   private final Clock clock;
@@ -214,6 +220,25 @@ public class MemberService {
    */
   public Member findActiveMemberForUpdate(Long id) {
     return requireActive(memberRepository.findByIdForUpdate(id));
+  }
+
+  /** 회원 닉네임을 상태와 무관하게 조회한다(#121 푸시 알림 제목). 회원이 없으면 비어 있다. */
+  public Optional<String> findNickName(Long id) {
+    return memberRepository.findById(id).map(Member::getNickName);
+  }
+
+  /**
+   * 학교 이메일 인증을 마친 회원({@code VERIFIED} 이상)인지 확인한다(#129). 다른 회원의 피드를 보는 탐색 목록·카드 상세·
+   * 공개 사진 조회의 게이트다. 온보딩 완료는 요구하지 않는다(#122). 요청마다 호출되므로 엔티티를 읽지 않고 PK 존재 조회 한 번으로
+   * 판정한다.
+   *
+   * @throws BaseException 학교 인증 전이거나 회원이 없는 경우
+   *     ({@link MemberErrorCode#MEMBER_SCHOOL_VERIFICATION_REQUIRED_TO_VIEW})
+   */
+  public void requireSchoolVerified(Long memberId) {
+    if (!memberRepository.existsByIdAndRegistrationStatusIn(memberId, SCHOOL_VERIFIED_STATUSES)) {
+      throw BaseException.from(MemberErrorCode.MEMBER_SCHOOL_VERIFICATION_REQUIRED_TO_VIEW);
+    }
   }
 
   /** 본인을 제외하고 닉네임이 이미 사용 중인지 확인한다(#95). */

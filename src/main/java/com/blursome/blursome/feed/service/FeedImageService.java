@@ -1,5 +1,6 @@
 package com.blursome.blursome.feed.service;
 
+import com.blursome.blursome.block.service.BlockLookupService;
 import com.blursome.blursome.feed.domain.Feed;
 import com.blursome.blursome.feed.domain.FeedImage;
 import com.blursome.blursome.feed.domain.FeedImageProcessingStatus;
@@ -59,6 +60,7 @@ public class FeedImageService {
   private final S3ObjectKeyGenerator keyGenerator;
   private final S3StorageService storageService;
   private final MemberService memberService;
+  private final BlockLookupService blockLookupService;
   private final Clock clock;
 
   /**
@@ -388,18 +390,29 @@ public class FeedImageService {
    * 자연히 비노출되며("정확히 5장" ≠ 0), 탐색 후보 질의({@code DiscoveryRepository})와 같은 규칙이다.
    * (설계: {@code FEED_IMAGE_DOMAIN.md} §2-5, 이슈 #72 정확히-5장 게이트)
    *
+   * <p>조회자·대상 게이트(#129): 조회자는 학교 이메일 인증을 마쳐야 한다(온보딩은 불필요, #122). 대상은 탐색 카드 상세와
+   * 같은 기준으로 활성·온보딩 완료이고 조회자와 어느 방향으로도 차단 관계가 아니어야 한다. 판정은 싼 것부터 한다 — 조회자
+   * 인증(PK 존재 조회) → 피드·주인(fetch join 1회) → 차단 → 이미지. 미인증 조회자는 대상을 읽기 전에 403으로 끝나 피드 존재
+   * 여부를 떠볼 수 없고, 대상 조건 미충족은 사유를 숨기고 피드 없음과 같은 404다.
+   *
+   * @param viewerId 조회하는 회원 id
    * @param feedId 조회 대상 피드 id
    * @return 정확히 5장 전부 {@code READY}인 경우 노출 순서대로 담은 공개 응답
-   * @throws BaseException 게이트 미통과 시 {@code FEED_404_NOT_FOUND}
+   * @throws BaseException 조회자가 학교 인증 전이면 {@code MEMBER_403_SCHOOL_VERIFICATION_REQUIRED}, 게이트 미통과 시
+   *     {@code FEED_404_NOT_FOUND}
    */
   @Transactional(readOnly = true)
-  public PublicFeedImagesResponse getPublicFeedImages(Long feedId) {
-    // 탈퇴·정지 회원의 피드는 사진이 남아 있어도 공개하지 않는다(#107). 사유는 드러내지 않고 피드 없음과 같게 응답한다.
-    boolean ownerActive = feedRepository.findById(feedId)
-        .map(feed -> feed.getMember().isActive())
-        .orElse(false);
+  public PublicFeedImagesResponse getPublicFeedImages(Long viewerId, Long feedId) {
+    memberService.requireSchoolVerified(viewerId);
+    // 탈퇴·정지(#107)·온보딩 미완료 회원의 피드와 차단 관계(#129)는 사유를 드러내지 않고 피드 없음과 같게 응답한다.
+    feedRepository.findWithMemberById(feedId)
+        .map(Feed::getMember)
+        .filter(Member::canUseService)
+        .filter(member -> member.getId().equals(viewerId)
+            || !blockLookupService.isBlockedBetween(viewerId, member.getId()))
+        .orElseThrow(() -> BaseException.from(FeedErrorCode.FEED_NOT_FOUND));
     List<FeedImage> images = feedImageRepository.findByFeedIdOrderByDisplayOrderAsc(feedId);
-    if (!ownerActive || !FeedImage.isPublishable(images)) {
+    if (!FeedImage.isPublishable(images)) {
       throw BaseException.from(FeedErrorCode.FEED_NOT_FOUND);
     }
     return new PublicFeedImagesResponse(images.stream()

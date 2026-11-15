@@ -275,6 +275,18 @@ public class ChatRoomService {
   }
 
   /**
+   * 이 회원이 이 방의 새 메시지 푸시를 받을 수 있는지 판정한다(#121). 방에 참여 중이고(나가지 않음) 방이 {@code ACTIVE}일
+   * 때만 받는다 — 차단·신고로 동결됐거나 종료(탈퇴 포함)된 방에는 보내지 않는다. 푸시는 커밋 이후 비동기로 나가므로 그사이
+   * 바뀐 상태를 다시 확인하는 용도다.
+   */
+  public boolean canReceiveMessagePush(Long roomId, Long memberId) {
+    return chatRoomMemberRepository.findMembership(roomId, memberId)
+        .filter(membership -> !membership.hasLeft())
+        .map(membership -> membership.getChatRoom().isActive())
+        .orElse(false);
+  }
+
+  /**
    * 두 회원 사이의 방을 상태와 무관하게 단건 조회한다(#112 탐색 카드 상세). 회원 쌍당 방이 하나이므로 페어 키 유니크
    * 인덱스로 바로 찾는다.
    */

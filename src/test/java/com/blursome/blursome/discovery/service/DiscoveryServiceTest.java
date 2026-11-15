@@ -9,6 +9,9 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willThrow;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 import com.blursome.blursome.block.repository.BlockRepository;
@@ -40,6 +43,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
+import com.blursome.blursome.member.exception.MemberErrorCode;
+import com.blursome.blursome.member.service.MemberService;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.Pageable;
@@ -62,6 +67,8 @@ class DiscoveryServiceTest {
   private BlockRepository blockRepository;
   @Mock
   private ChatRoomService chatRoomService;
+  @Mock
+  private MemberService memberService;
 
   @InjectMocks
   private DiscoveryService discoveryService;
@@ -394,5 +401,69 @@ class DiscoveryServiceTest {
           .hasFieldOrPropertyWithValue("code",
               DiscoveryErrorCode.DISCOVERY_FEED_NOT_FOUND.getCode());
     }
+  }
+
+  // ---------- 학교 인증 게이트(#129) ----------
+
+  @Test
+  @DisplayName("학교 인증 전(피드 없음) viewer의 탐색 목록은 403이고 후보를 조회하지 않는다(#129)")
+  void getDiscovery_whenViewerNotSchoolVerified_forbidden() {
+    // given
+    given(feedService.findFeedByMemberId(99L)).willReturn(Optional.empty());
+    willThrow(BaseException.from(MemberErrorCode.MEMBER_SCHOOL_VERIFICATION_REQUIRED_TO_VIEW))
+        .given(memberService).requireSchoolVerified(99L);
+
+    // when & then
+    assertThatThrownBy(() -> discoveryService.getDiscovery(99L, 0, 20))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "MEMBER_403_SCHOOL_VERIFICATION_REQUIRED");
+    verifyNoInteractions(discoveryRepository, chatRoomService);
+  }
+
+  @Test
+  @DisplayName("학교 인증만 마친(온보딩 전) viewer는 인증 확인 후 탐색 목록을 받는다(#122 유지)")
+  void getDiscovery_whenViewerSchoolVerifiedButNotOnboarded_allowed() {
+    // given
+    given(feedService.findFeedByMemberId(99L)).willReturn(Optional.empty());
+    given(discoveryRepository.findCandidates(isNull(), eq(99L), any(Pageable.class)))
+        .willReturn(List.of());
+
+    // when
+    List<DiscoveryCardResponse> result = discoveryService.getDiscovery(99L, 0, 20);
+
+    // then
+    assertThat(result).isEmpty();
+    verify(memberService).requireSchoolVerified(99L);
+  }
+
+  @Test
+  @DisplayName("온보딩 완료(피드 보유) viewer는 학교 인증 조회를 하지 않는다 — 추가 쿼리 없음(#129)")
+  void getDiscovery_whenViewerOnboarded_skipsVerificationQuery() {
+    // given
+    Feed viewer = feed(1L, 1L, Gender.MALE, 2000);
+    given(feedService.findFeedByMemberId(1L)).willReturn(Optional.of(viewer));
+    given(discoveryRepository.findCandidates(eq(Gender.FEMALE), eq(1L), any(Pageable.class)))
+        .willReturn(List.of());
+
+    // when
+    discoveryService.getDiscovery(1L, 0, 20);
+
+    // then
+    verify(memberService, never()).requireSchoolVerified(any());
+  }
+
+  @Test
+  @DisplayName("학교 인증 전 viewer의 카드 상세는 대상 피드를 읽기 전에 403이다(#129)")
+  void getCardDetail_whenViewerNotSchoolVerified_forbiddenBeforeTargetLookup() {
+    // given
+    given(feedService.findFeedByMemberId(99L)).willReturn(Optional.empty());
+    willThrow(BaseException.from(MemberErrorCode.MEMBER_SCHOOL_VERIFICATION_REQUIRED_TO_VIEW))
+        .given(memberService).requireSchoolVerified(99L);
+
+    // when & then
+    assertThatThrownBy(() -> discoveryService.getCardDetail(99L, 20L))
+        .isInstanceOf(BaseException.class)
+        .hasFieldOrPropertyWithValue("code", "MEMBER_403_SCHOOL_VERIFICATION_REQUIRED");
+    verify(feedService, never()).findFeedById(any());
   }
 }

@@ -37,6 +37,7 @@ import com.blursome.blursome.global.storage.S3Properties;
 import com.blursome.blursome.member.domain.Department;
 import com.blursome.blursome.member.domain.Gender;
 import com.blursome.blursome.member.domain.Mbti;
+import com.blursome.blursome.member.domain.RegistrationStatus;
 import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.OAuthProvider;
 import com.blursome.blursome.member.repository.MemberRepository;
@@ -221,7 +222,7 @@ class FeedImagePipelineIntegrationTest {
 
     // (#72) 아직 블러본이 READY가 아니므로 공개 피드는 정확히-5장-전부-READY 게이트에 막혀 404다.
     Long feedId = feedRepository.findByMemberId(memberId).orElseThrow().getId();
-    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(feedId))
+    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(memberId, feedId))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", "FEED_404_NOT_FOUND");
 
@@ -235,7 +236,7 @@ class FeedImagePipelineIntegrationTest {
         .containsOnly(FeedImageProcessingStatus.READY);
 
     // (#72) 정확히 5장 전부 READY가 되면 공개 피드가 displayOrder 순서로 블러본 URL을 노출한다.
-    PublicFeedImagesResponse publicFeed = feedImageService.getPublicFeedImages(feedId);
+    PublicFeedImagesResponse publicFeed = feedImageService.getPublicFeedImages(memberId, feedId);
     assertThat(publicFeed.images())
         .extracting(PublicFeedImagesResponse.Image::displayOrder)
         .containsExactly(1, 2, 3, 4, 5);
@@ -263,7 +264,7 @@ class FeedImagePipelineIntegrationTest {
     MyFeedImagesResponse mine = feedImageService.getMyFeedImages(memberId);
     assertThat(mine.reuploadRequired()).isTrue();
     // 공개 피드는 FAILED가 있어 비노출(#52).
-    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(feedId))
+    assertThatThrownBy(() -> feedImageService.getPublicFeedImages(memberId, feedId))
         .isInstanceOf(BaseException.class)
         .hasFieldOrPropertyWithValue("code", "FEED_404_NOT_FOUND");
   }
@@ -661,6 +662,8 @@ class FeedImagePipelineIntegrationTest {
     Member member = Member.createOAuthMember(
         OAuthProvider.KAKAO, unique, "name", unique + "@example.com", null);
     ReflectionTestUtils.setField(member, "nickName", "닉네임-" + unique);
+    // 피드는 온보딩 완료 시 생기므로 주인도 온보딩 완료 상태로 둔다(#129 공개 조회는 주인의 온보딩 완료를 확인한다).
+    ReflectionTestUtils.setField(member, "registrationStatus", RegistrationStatus.COMPLETED);
     Member saved = memberRepository.save(member);
     feedRepository.save(Feed.createOnOnboarding(
         saved, Gender.MALE, 2000, Department.ENGLISH, Mbti.ISTJ));

@@ -12,6 +12,7 @@ import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.domain.OAuthProvider;
 import com.blursome.blursome.member.dto.OAuthUserInfo;
 import com.blursome.blursome.member.service.MemberService;
+import com.blursome.blursome.notification.service.PushSubscriptionService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,6 +26,7 @@ public class AuthService {
   private final MemberService memberService;
   private final JwtTokenProvider jwtTokenProvider;
   private final RefreshTokenStore refreshTokenStore;
+  private final PushSubscriptionService pushSubscriptionService;
 
   /**
    * OAuth 인가 코드로 로그인하고 새 토큰 쌍을 발급한다.
@@ -91,12 +93,15 @@ public class AuthService {
    * 사용자를 로그아웃 처리한다(멱등).
    *
    * <p>RT가 부재·만료·위조 어느 경우에도 예외 없이 정상 종료한다.
-   * 유효한 RT일 때만 Redis에서 해당 회원의 RT 키를 삭제한다.
+   * 유효한 RT일 때만 Redis에서 해당 회원의 RT 키를 삭제한다. {@code pushEndpoint}가 있으면 RT 유효성과 무관하게 그 기기의
+   * Web Push 구독을 해제한다(#121) — 로그아웃한 기기로 알림이 계속 가지 않게 하는 것이 우선이다.
    *
    * @param refreshToken HttpOnly 쿠키의 RT 값 (null/blank/만료/위조 모두 허용)
+   * @param pushEndpoint 이 기기의 Web Push endpoint (선택, null/blank 허용)
    */
   @Transactional
-  public void logout(String refreshToken) {
+  public void logout(String refreshToken, String pushEndpoint) {
+    pushSubscriptionService.unsubscribeDevice(pushEndpoint);
     if (refreshToken == null || refreshToken.isBlank()) {
       return;
     }
