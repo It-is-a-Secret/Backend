@@ -96,9 +96,9 @@ class DiscoveryServiceTest {
     Feed high = feed(20L, 20L, Gender.FEMALE, 2001);  // 높은 점수
     given(discoveryRepository.findCandidates(eq(Gender.FEMALE), eq(1L), any(Pageable.class)))
         .willReturn(List.of(low, high));
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 2000), any(), any()))
+    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 2000), any(), any(), any(), any()))
         .willReturn(0.3);
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 2001), any(), any()))
+    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 2001), any(), any(), any(), any()))
         .willReturn(0.9);
 
     List<DiscoveryCardResponse> result = discoveryService.getDiscovery(1L, 0, 20);
@@ -120,11 +120,11 @@ class DiscoveryServiceTest {
     Feed c3 = feed(13L, 13L, Gender.MALE, 1993); // score 0.3
     given(discoveryRepository.findCandidates(eq(Gender.MALE), eq(1L), any(Pageable.class)))
         .willReturn(List.of(c1, c2, c3));
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1991), any(), any()))
+    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1991), any(), any(), any(), any()))
         .willReturn(0.1);
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1992), any(), any()))
+    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1992), any(), any(), any(), any()))
         .willReturn(0.2);
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1993), any(), any()))
+    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1993), any(), any(), any(), any()))
         .willReturn(0.3);
 
     // 정렬: c3(0.3), c2(0.2), c1(0.1) → page=1,size=2 → 세 번째인 c1만
@@ -145,9 +145,9 @@ class DiscoveryServiceTest {
     Feed fresh = feed(20L, 20L, Gender.FEMALE, 2000);    // 낮은 점수, 새 상대
     given(discoveryRepository.findCandidates(eq(Gender.FEMALE), eq(1L), any(Pageable.class)))
         .willReturn(List.of(chatting, fresh));
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 2001), any(), any()))
+    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 2001), any(), any(), any(), any()))
         .willReturn(0.9);
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 2000), any(), any()))
+    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 2000), any(), any(), any(), any()))
         .willReturn(0.3);
     given(chatRoomService.findPartnerRooms(1L))
         .willReturn(Map.of(10L, new PartnerRoom(31L, ChatRoomStatus.ACTIVE)));
@@ -173,7 +173,7 @@ class DiscoveryServiceTest {
     Feed visible = feed(12L, 12L, Gender.FEMALE, 2000);
     given(discoveryRepository.findCandidates(eq(Gender.FEMALE), eq(1L), any(Pageable.class)))
         .willReturn(List.of(closed, reported, visible));
-    given(discoveryScorer.score(any(), any(), any(), any())).willReturn(0.5);
+    given(discoveryScorer.score(any(), any(), any(), any(), any(), any())).willReturn(0.5);
     given(chatRoomService.findPartnerRooms(1L)).willReturn(Map.of(
         10L, new PartnerRoom(31L, ChatRoomStatus.CLOSED),
         11L, new PartnerRoom(32L, ChatRoomStatus.REPORTED)));
@@ -184,34 +184,83 @@ class DiscoveryServiceTest {
   }
 
   @Test
-  @DisplayName("최근 접속일이 점수보다 우선하고, 같은 날 접속자끼리는 점수 내림차순이다(#136)")
-  void getDiscovery_sortsByLastActiveDateThenScore() {
+  @DisplayName("온보딩 완료 viewer는 후보의 마지막 접속 시각을 점수 계산(R)에 넘긴다(#139)")
+  void getDiscovery_passesCandidateLastActiveAtToScorer() {
     Feed viewerFeed = feed(1L, 1L, Gender.MALE, 2000);
     given(feedService.findFeedByMemberId(1L)).willReturn(Optional.of(viewerFeed));
     given(memberKeywordRepository.findByMemberIdWithTag(1L)).willReturn(List.of());
     given(memberKeywordRepository.findByMemberIdInWithTag(anyList())).willReturn(List.of());
 
-    LocalDateTime today = LocalDateTime.now().withHour(12).withMinute(0);
-    Feed oldHigh = feed(10L, 10L, Gender.FEMALE, 1990);     // 3일 전 접속, 점수 0.9
-    Feed todayLow = feed(20L, 20L, Gender.FEMALE, 1991);    // 오늘 12시 접속, 점수 0.1
-    Feed todayHigh = feed(30L, 30L, Gender.FEMALE, 1992);   // 오늘 0시 접속, 점수 0.5
-    ReflectionTestUtils.setField(oldHigh.getMember(), "lastActiveAt", today.minusDays(3));
-    ReflectionTestUtils.setField(todayLow.getMember(), "lastActiveAt", today);
-    ReflectionTestUtils.setField(todayHigh.getMember(), "lastActiveAt", today.withHour(0));
+    LocalDateTime lastActiveAt = LocalDateTime.now().minusHours(3);
+    Feed candidate = feed(10L, 10L, Gender.FEMALE, 2000);
+    ReflectionTestUtils.setField(candidate.getMember(), "lastActiveAt", lastActiveAt);
     given(discoveryRepository.findCandidates(eq(Gender.FEMALE), eq(1L), any(Pageable.class)))
-        .willReturn(List.of(oldHigh, todayLow, todayHigh));
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1990), any(), any()))
-        .willReturn(0.9);
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1991), any(), any()))
-        .willReturn(0.1);
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1992), any(), any()))
+        .willReturn(List.of(candidate));
+
+    discoveryService.getDiscovery(1L, 0, 20);
+
+    verify(discoveryScorer).score(any(), any(), eq(lastActiveAt),
+        argThat(now -> now != null && now.isAfter(lastActiveAt)), any(), any());
+  }
+
+  @Test
+  @DisplayName("회원 id 1001~1020은 점수가 가장 높아도 대화 중인 상대보다 뒤, 목록 맨 뒤에 온다(#139)")
+  void getDiscovery_putsDeprioritizedMembersLast() {
+    Feed viewerFeed = feed(1L, 1L, Gender.MALE, 2000);
+    given(feedService.findFeedByMemberId(1L)).willReturn(Optional.of(viewerFeed));
+    given(memberKeywordRepository.findByMemberIdWithTag(1L)).willReturn(List.of());
+    given(memberKeywordRepository.findByMemberIdInWithTag(anyList())).willReturn(List.of());
+
+    Feed pinnedFirst = feed(100L, 1001L, Gender.FEMALE, 1990);  // 후순위 고정, 점수 0.99
+    Feed pinnedLast = feed(200L, 1020L, Gender.FEMALE, 1991);   // 후순위 고정, 점수 0.95
+    Feed chatting = feed(300L, 30L, Gender.FEMALE, 1992);       // 대화 중, 점수 0.5
+    Feed normal = feed(400L, 1021L, Gender.FEMALE, 1993);       // 범위 밖, 점수 0.1
+    given(discoveryRepository.findCandidates(eq(Gender.FEMALE), eq(1L), any(Pageable.class)))
+        .willReturn(List.of(pinnedFirst, pinnedLast, chatting, normal));
+    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1990), any(), any(), any(), any()))
+        .willReturn(0.99);
+    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1991), any(), any(), any(), any()))
+        .willReturn(0.95);
+    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1992), any(), any(), any(), any()))
         .willReturn(0.5);
+    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1993), any(), any(), any(), any()))
+        .willReturn(0.1);
+    given(chatRoomService.findPartnerRooms(1L)).willReturn(Map.of(
+        30L, new PartnerRoom(31L, ChatRoomStatus.ACTIVE)));
 
     List<DiscoveryCardResponse> result = discoveryService.getDiscovery(1L, 0, 20);
 
-    // 오늘 접속자(점수순: 30 → 20) → 3일 전 접속자(10)
+    // 일반(400) → 대화 중(300) → 후순위 고정끼리는 점수순(100 → 200)
     assertThat(result).extracting(DiscoveryCardResponse::feedId)
-        .containsExactly(30L, 20L, 10L);
+        .containsExactly(400L, 300L, 100L, 200L);
+  }
+
+  @Test
+  @DisplayName("온보딩 전 viewer에게도 회원 id 1001~1020은 최근 접속과 무관하게 맨 뒤에 온다(#139)")
+  void getDiscovery_whenViewerNotOnboarded_putsDeprioritizedMembersLast() {
+    given(feedService.findFeedByMemberId(99L)).willReturn(Optional.empty());
+
+    LocalDateTime now = LocalDateTime.now();
+    Feed pinned = feed(10L, 1010L, Gender.FEMALE, 2000);  // 방금 접속, 후순위 고정
+    Feed stale = feed(20L, 20L, Gender.MALE, 2000);       // 30일 전 접속
+    ReflectionTestUtils.setField(pinned.getMember(), "lastActiveAt", now);
+    ReflectionTestUtils.setField(stale.getMember(), "lastActiveAt", now.minusDays(30));
+    given(discoveryRepository.findCandidates(isNull(), eq(99L), any(Pageable.class)))
+        .willReturn(List.of(pinned, stale));
+
+    List<DiscoveryCardResponse> result = discoveryService.getDiscovery(99L, 0, 20);
+
+    assertThat(result).extracting(DiscoveryCardResponse::feedId).containsExactly(20L, 10L);
+  }
+
+  @Test
+  @DisplayName("후순위 고정 범위는 회원 id 1001~1020(양 끝 포함)이다(#139)")
+  void isDeprioritized_range() {
+    assertThat(DiscoveryService.isDeprioritized(1000L)).isFalse();
+    assertThat(DiscoveryService.isDeprioritized(1001L)).isTrue();
+    assertThat(DiscoveryService.isDeprioritized(1020L)).isTrue();
+    assertThat(DiscoveryService.isDeprioritized(1021L)).isFalse();
+    assertThat(DiscoveryService.isDeprioritized(null)).isFalse();
   }
 
   @Test

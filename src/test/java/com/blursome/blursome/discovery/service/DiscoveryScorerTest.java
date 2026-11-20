@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.blursome.blursome.keyword.domain.RelationType;
 import com.blursome.blursome.member.domain.Department;
 import com.blursome.blursome.member.domain.Mbti;
+import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
@@ -14,6 +15,7 @@ class DiscoveryScorerTest {
 
   private static final double EPS = 1e-6;
   private static final RelationLookup NO_RELATION = (a, b) -> null;
+  private static final LocalDateTime NOW = LocalDateTime.of(2026, 11, 20, 12, 0);
 
   private final DiscoveryScorer scorer = new DiscoveryScorer();
 
@@ -91,34 +93,84 @@ class DiscoveryScorerTest {
         Department.COMPUTER_ENGINEERING, Department.THEOLOGY)).isEqualTo(0.0);
   }
 
+  // ---- R: 활동성(#136) ----
+
+  @Test
+  @DisplayName("R: 방금 접속=1.0, 3.5일 전=0.5, 7일 이상·기록 없음=0")
+  void activityScore() {
+    assertThat(scorer.activityScore(NOW, NOW)).isEqualTo(1.0);
+    assertThat(scorer.activityScore(NOW.minusHours(84), NOW))
+        .isCloseTo(0.5, org.assertj.core.api.Assertions.offset(EPS));
+    assertThat(scorer.activityScore(NOW.minusDays(7), NOW)).isEqualTo(0.0);
+    assertThat(scorer.activityScore(NOW.minusDays(30), NOW)).isEqualTo(0.0);
+    assertThat(scorer.activityScore(null, NOW)).isEqualTo(0.0);
+  }
+
+  @Test
+  @DisplayName("R: 접속 시각이 기준보다 미래(시계 오차)면 1.0으로 본다")
+  void activityScore_futureClampedToOne() {
+    assertThat(scorer.activityScore(NOW.plusMinutes(5), NOW)).isEqualTo(1.0);
+  }
+
   // ---- 종합 점수 ----
 
   @Test
-  @DisplayName("종합: MBTI 알면 0.45K+0.30M+0.15B+0.10D")
+  @DisplayName("종합: 활동성 가중치가 관심사 키워드보다 크다")
+  void activityWeightOutranksKeyword() {
+    assertThat(DiscoveryScorer.WEIGHT_ACTIVITY).isGreaterThan(DiscoveryScorer.WEIGHT_KEYWORD);
+    assertThat(DiscoveryScorer.WEIGHT_ACTIVITY + DiscoveryScorer.WEIGHT_KEYWORD
+        + DiscoveryScorer.WEIGHT_MBTI + DiscoveryScorer.WEIGHT_BIRTH_YEAR
+        + DiscoveryScorer.WEIGHT_DEPARTMENT)
+        .isCloseTo(1.0, org.assertj.core.api.Assertions.offset(EPS));
+  }
+
+  @Test
+  @DisplayName("종합: 다른 조건이 같으면 키워드가 완전히 맞는 7일 미접속자보다 방금 접속한 키워드 불일치자가 앞선다")
+  void score_recentActivityBeatsKeywordMatch() {
+    DiscoveryProfile viewer = new DiscoveryProfile(
+        Mbti.INTJ, 2000, Department.COMPUTER_ENGINEERING, Set.of(1L, 2L, 3L));
+    DiscoveryProfile keywordMatch = new DiscoveryProfile(
+        Mbti.INTJ, 2000, Department.COMPUTER_ENGINEERING, Set.of(1L, 2L, 3L));
+    DiscoveryProfile noKeyword = new DiscoveryProfile(
+        Mbti.INTJ, 2000, Department.COMPUTER_ENGINEERING, Set.of(9L));
+    Map<Long, Long> categories = Map.of(1L, 100L, 2L, 200L, 3L, 300L, 9L, 900L);
+
+    // K=0.7, R=0
+    double stale = scorer.score(viewer, keywordMatch, NOW.minusDays(8), NOW, categories,
+        NO_RELATION);
+    // K=0, R=1.0
+    double recent = scorer.score(viewer, noKeyword, NOW, NOW, categories, NO_RELATION);
+
+    assertThat(recent).isGreaterThan(stale);
+  }
+
+  @Test
+  @DisplayName("종합: MBTI 알면 0.35R+0.30K+0.20M+0.10B+0.05D")
   void score_withMbti() {
     DiscoveryProfile viewer = new DiscoveryProfile(
         Mbti.INTJ, 2000, Department.COMPUTER_ENGINEERING, Set.of(1L));
     DiscoveryProfile candidate = new DiscoveryProfile(
         Mbti.INTJ, 2000, Department.COMPUTER_ENGINEERING, Set.of(1L));
-    // K=0.2, M=1.0, B=1.0, D=1.0
-    double expected = 0.45 * 0.2 + 0.30 * 1.0 + 0.15 * 1.0 + 0.10 * 1.0;
+    // R=0.5(3.5일 전), K=0.2, M=1.0, B=1.0, D=1.0
+    double expected = 0.35 * 0.5 + 0.30 * 0.2 + 0.20 * 1.0 + 0.10 * 1.0 + 0.05 * 1.0;
 
-    double score = scorer.score(viewer, candidate, Map.of(1L, 100L), NO_RELATION);
+    double score = scorer.score(viewer, candidate, NOW.minusHours(84), NOW, Map.of(1L, 100L),
+        NO_RELATION);
 
     assertThat(score).isCloseTo(expected, org.assertj.core.api.Assertions.offset(EPS));
   }
 
   @Test
-  @DisplayName("종합: 한쪽 MBTI 모름이면 M 제외 후 30% 재분배")
+  @DisplayName("종합: 한쪽 MBTI 모름이면 M 제외 후 20% 재분배")
   void score_redistributesWhenMbtiUnknown() {
     DiscoveryProfile viewer = new DiscoveryProfile(
         null, 2000, Department.COMPUTER_ENGINEERING, Set.of(1L));
     DiscoveryProfile candidate = new DiscoveryProfile(
         Mbti.INTJ, 2000, Department.COMPUTER_ENGINEERING, Set.of(1L));
-    // K=0.2, B=1.0, D=1.0 → (0.45*0.2 + 0.15*1 + 0.10*1)/0.70
-    double expected = (0.45 * 0.2 + 0.15 * 1.0 + 0.10 * 1.0) / 0.70;
+    // R=1.0, K=0.2, B=1.0, D=1.0 → (0.35*1 + 0.30*0.2 + 0.10*1 + 0.05*1)/0.80
+    double expected = (0.35 * 1.0 + 0.30 * 0.2 + 0.10 * 1.0 + 0.05 * 1.0) / 0.80;
 
-    double score = scorer.score(viewer, candidate, Map.of(1L, 100L), NO_RELATION);
+    double score = scorer.score(viewer, candidate, NOW, NOW, Map.of(1L, 100L), NO_RELATION);
 
     assertThat(score).isCloseTo(expected, org.assertj.core.api.Assertions.offset(EPS));
   }
