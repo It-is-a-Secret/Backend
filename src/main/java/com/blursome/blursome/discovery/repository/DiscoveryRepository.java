@@ -37,6 +37,10 @@ public interface DiscoveryRepository extends Repository<Feed, Long> {
    * 포함해 판정한다. {@code pair_key}는 문자열 조립이 필요해 인덱스를 쓰기 어려우므로, viewer 멤버십({@code member_id}
    * 인덱스)에서 같은 방의 상대 행으로 조인한다. 이미 대화 중({@code ACTIVE})인 후보는 남기고 정렬에서 뒤로 보낸다
    * ({@code DiscoveryService}).
+   *
+   * <p><b>후보 상한 순서(#136)</b>: 후보가 상한을 넘으면 최근 접속자부터 채운다({@code last_active_at desc, feedId desc}).
+   * 점수에서 활동성(R) 가중치가 가장 크므로, 상한에 잘린 쪽이 오래 미접속한 회원이 되게 한다. 최종 순서는 서비스가 점수로
+   * 다시 정한다.
    */
   @Query("select f from Feed f "
       + "join fetch f.member m "
@@ -56,7 +60,8 @@ public interface DiscoveryRepository extends Repository<Feed, Long> {
       + "where mine.member.id = :viewerId and other.member = m and other.chatRoom = mine.chatRoom "
       + "and mine.chatRoom.roomStatus in ("
       + "com.blursome.blursome.chat.domain.ChatRoomStatus.CLOSED, "
-      + "com.blursome.blursome.chat.domain.ChatRoomStatus.REPORTED))")
+      + "com.blursome.blursome.chat.domain.ChatRoomStatus.REPORTED)) "
+      + "order by m.lastActiveAt desc, f.id desc")
   List<Feed> findCandidates(@Param("gender") Gender gender,
       @Param("viewerId") Long viewerId,
       Pageable pageable);

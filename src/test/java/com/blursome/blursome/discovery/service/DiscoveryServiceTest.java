@@ -184,6 +184,37 @@ class DiscoveryServiceTest {
   }
 
   @Test
+  @DisplayName("최근 접속일이 점수보다 우선하고, 같은 날 접속자끼리는 점수 내림차순이다(#136)")
+  void getDiscovery_sortsByLastActiveDateThenScore() {
+    Feed viewerFeed = feed(1L, 1L, Gender.MALE, 2000);
+    given(feedService.findFeedByMemberId(1L)).willReturn(Optional.of(viewerFeed));
+    given(memberKeywordRepository.findByMemberIdWithTag(1L)).willReturn(List.of());
+    given(memberKeywordRepository.findByMemberIdInWithTag(anyList())).willReturn(List.of());
+
+    LocalDateTime today = LocalDateTime.now().withHour(12).withMinute(0);
+    Feed oldHigh = feed(10L, 10L, Gender.FEMALE, 1990);     // 3일 전 접속, 점수 0.9
+    Feed todayLow = feed(20L, 20L, Gender.FEMALE, 1991);    // 오늘 12시 접속, 점수 0.1
+    Feed todayHigh = feed(30L, 30L, Gender.FEMALE, 1992);   // 오늘 0시 접속, 점수 0.5
+    ReflectionTestUtils.setField(oldHigh.getMember(), "lastActiveAt", today.minusDays(3));
+    ReflectionTestUtils.setField(todayLow.getMember(), "lastActiveAt", today);
+    ReflectionTestUtils.setField(todayHigh.getMember(), "lastActiveAt", today.withHour(0));
+    given(discoveryRepository.findCandidates(eq(Gender.FEMALE), eq(1L), any(Pageable.class)))
+        .willReturn(List.of(oldHigh, todayLow, todayHigh));
+    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1990), any(), any()))
+        .willReturn(0.9);
+    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1991), any(), any()))
+        .willReturn(0.1);
+    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1992), any(), any()))
+        .willReturn(0.5);
+
+    List<DiscoveryCardResponse> result = discoveryService.getDiscovery(1L, 0, 20);
+
+    // 오늘 접속자(점수순: 30 → 20) → 3일 전 접속자(10)
+    assertThat(result).extracting(DiscoveryCardResponse::feedId)
+        .containsExactly(30L, 20L, 10L);
+  }
+
+  @Test
   @DisplayName("온보딩 전 viewer(피드 없음)는 성별 구분 없이 후보를 받고, 점수 없이 최근 접속순으로 정렬된다(#122)")
   void getDiscovery_whenViewerNotOnboarded_returnsAllGendersByRecentActivity() {
     given(feedService.findFeedByMemberId(99L)).willReturn(Optional.empty());
