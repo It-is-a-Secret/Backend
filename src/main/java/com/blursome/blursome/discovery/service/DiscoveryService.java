@@ -16,6 +16,7 @@ import com.blursome.blursome.keyword.service.MemberKeywordService;
 import com.blursome.blursome.member.domain.Gender;
 import com.blursome.blursome.member.domain.Member;
 import com.blursome.blursome.member.service.MemberService;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -31,11 +32,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * 탐색(Discovery) 서비스. viewer 기준 이성·온보딩 완료·활성 회원을 가중 점수(K/M/B/D)로 정렬해 페이지로 반환한다(Phase B).
+ * 탐색(Discovery) 서비스. viewer 기준 이성·온보딩 완료·활성 회원을 최근 접속일 우선, 같은 날이면 가중 점수(K/M/B/D)로
+ * 정렬해 페이지로 반환한다(#136).
  * 온보딩 전 viewer도 성별 구분 없이 최근 접속순으로 둘러볼 수 있다(#122). 대화 시작은 {@link ChatStartService}가 막는다.
  *
- * <p>설계 §17.4대로 필터 후보를 앱 레이어에서 점수 계산→정렬→페이지네이션(offset)한다. 동점은 "최근 7일 접속
- * 우선 → last_active_at 내림차순 → feedId 내림차순"으로 가른다. 설계는 {@code docs/discovery/DISCOVERY_DOMAIN.md}.
+ * <p>설계 §17.4대로 필터 후보를 앱 레이어에서 점수 계산→정렬→페이지네이션(offset)한다. 정렬은 "대화 중 아닌 상대 우선
+ * → 최근 접속일 내림차순 → 점수 내림차순 → last_active_at 내림차순 → feedId 내림차순"이다. 설계는 {@code docs/discovery/DISCOVERY_DOMAIN.md}.
  */
 @Service
 @RequiredArgsConstructor
@@ -46,7 +48,6 @@ public class DiscoveryService {
   private static final int MAX_PAGE_SIZE = 50;
   /** 앱 레이어 점수 계산 대상 후보 안전 상한(과부하 방지). MVP 규모에서 충분하다. */
   private static final int MAX_CANDIDATES = 500;
-  private static final int RECENT_ACTIVE_DAYS = 7;
 
   private final DiscoveryRepository discoveryRepository;
   private final FeedService feedService;
@@ -60,7 +61,7 @@ public class DiscoveryService {
   /**
    * viewer에게 보여줄 탐색 카드를 점수순으로 조회한다.
    *
-   * <p>viewer 성별의 반대 성별 후보를 필터링한 뒤 K/M/B/D 가중 점수로 정렬해 {@code page}/{@code size}로
+   * <p>viewer 성별의 반대 성별 후보를 필터링한 뒤 최근 접속일 우선, 같은 날이면 K/M/B/D 가중 점수로 정렬해 {@code page}/{@code size}로
    * 잘라 반환한다. {@code size}는 {@code [1,50]}, {@code page}는 0 이상으로 보정한다.
    *
    * <p>기존 대화 관계(#112): 다시 시작할 수 없는 관계({@code CLOSED}·{@code REPORTED})는 후보 쿼리에서 빠지고, 이미
@@ -68,7 +69,7 @@ public class DiscoveryService {
    * 1회로 읽는다.
    *
    * <p>온보딩 전 viewer(#122): 피드가 없어 성별·관심사·MBTI·생년·학과를 알 수 없으므로, 성별 구분 없이 후보를 모으고
-   * 점수를 매기지 않는다(전원 0점). 정렬은 동점 규칙인 "최근 7일 접속 우선 → last_active_at → feedId"가 그대로 결정한다.
+   * 점수를 매기지 않는다(전원 0점). 정렬은 "최근 접속일 → last_active_at → feedId"가 그대로 결정한다.
    *
    * <p>학교 인증 게이트(#129): 온보딩 전 viewer도 학교 이메일 인증은 마쳐야 한다.
    *
@@ -101,7 +102,6 @@ public class DiscoveryService {
     // viewer가 참여했던 방을 상대 id 기준으로 한 번에 읽는다(#112). 후보 수가 아니라 viewer의 방 수에 비례하는 쿼리 1회다.
     Map<Long, PartnerRoom> roomsByPartner = chatRoomService.findPartnerRooms(viewerId);
 
-    LocalDateTime recentThreshold = LocalDateTime.now().minusDays(RECENT_ACTIVE_DAYS);
     List<Scored> scored = new ArrayList<>(candidates.size());
     for (Feed feed : candidates) {
       PartnerRoom room = roomsByPartner.get(feed.getMember().getId());
@@ -113,8 +113,7 @@ public class DiscoveryService {
           ? 0.0
           : score(viewerProfile, feed, tagsByMember, tagToCategory);
       LocalDateTime lastActive = feed.getMember().getLastActiveAt();
-      boolean recent = lastActive != null && lastActive.isAfter(recentThreshold);
-      scored.add(new Scored(feed, room, score, lastActive, recent));
+      scored.add(new Scored(feed, room, score, lastActive));
     }
 
     return scored.stream()
@@ -224,20 +223,26 @@ public class DiscoveryService {
   }
 
   /**
-   * 이미 대화 중이 아닌 상대 우선(#112) → 점수 내림차순 → 최근 7일 접속 우선 → last_active_at 내림차순 → feedId 내림차순.
+   * 이미 대화 중이 아닌 상대 우선(#112) → 최근 접속일 내림차순(#136) → 점수 내림차순 → last_active_at 내림차순 → feedId
+   * 내림차순. 최근 접속자를 가장 먼저 보여주되, 같은 날 접속한 후보끼리는 매칭 점수로 가른다.
    * 탐색의 목적은 새 상대 발견이므로, 이미 대화 중인 상대는 점수와 무관하게 뒤로 보내되 카드의 기존 방 진입점은 남긴다.
    */
   private static final Comparator<Scored> SCORE_ORDER =
       Comparator.comparing(Scored::hasActiveRoom)
+          .thenComparing(Scored::lastActiveDate, Comparator.nullsLast(Comparator.reverseOrder()))
           .thenComparing(Comparator.comparingDouble(Scored::score).reversed())
-          .thenComparing(Scored::recentActive, Comparator.reverseOrder())
           .thenComparing(Scored::lastActiveAt,
               Comparator.nullsLast(Comparator.reverseOrder()))
           .thenComparing(s -> s.feed().getId(), Comparator.reverseOrder());
 
   /** @param room 이 후보와 이미 있는 채팅방. 없으면 null */
-  private record Scored(Feed feed, PartnerRoom room, double score, LocalDateTime lastActiveAt,
-      boolean recentActive) {
+  private record Scored(Feed feed, PartnerRoom room, double score,
+      LocalDateTime lastActiveAt) {
+
+    /** 최근 접속일(날짜 단위). 같은 날 접속한 후보끼리는 매칭 점수로 가른다. */
+    LocalDate lastActiveDate() {
+      return lastActiveAt == null ? null : lastActiveAt.toLocalDate();
+    }
 
     boolean hasActiveRoom() {
       return room != null && room.isActive();
