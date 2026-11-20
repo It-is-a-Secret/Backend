@@ -96,9 +96,11 @@ class DiscoveryServiceTest {
     Feed high = feed(20L, 20L, Gender.FEMALE, 2001);  // 높은 점수
     given(discoveryRepository.findCandidates(eq(Gender.FEMALE), eq(1L), any(Pageable.class)))
         .willReturn(List.of(low, high));
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 2000), any(), any(), any(), any()))
+    given(discoveryScorer.score(
+        any(), argThat(c -> c != null && c.birthYear() == 2000), any(), any(), any(), any()))
         .willReturn(0.3);
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 2001), any(), any(), any(), any()))
+    given(discoveryScorer.score(
+        any(), argThat(c -> c != null && c.birthYear() == 2001), any(), any(), any(), any()))
         .willReturn(0.9);
 
     List<DiscoveryCardResponse> result = discoveryService.getDiscovery(1L, 0, 20);
@@ -120,11 +122,14 @@ class DiscoveryServiceTest {
     Feed c3 = feed(13L, 13L, Gender.MALE, 1993); // score 0.3
     given(discoveryRepository.findCandidates(eq(Gender.MALE), eq(1L), any(Pageable.class)))
         .willReturn(List.of(c1, c2, c3));
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1991), any(), any(), any(), any()))
+    given(discoveryScorer.score(
+        any(), argThat(c -> c != null && c.birthYear() == 1991), any(), any(), any(), any()))
         .willReturn(0.1);
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1992), any(), any(), any(), any()))
+    given(discoveryScorer.score(
+        any(), argThat(c -> c != null && c.birthYear() == 1992), any(), any(), any(), any()))
         .willReturn(0.2);
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1993), any(), any(), any(), any()))
+    given(discoveryScorer.score(
+        any(), argThat(c -> c != null && c.birthYear() == 1993), any(), any(), any(), any()))
         .willReturn(0.3);
 
     // 정렬: c3(0.3), c2(0.2), c1(0.1) → page=1,size=2 → 세 번째인 c1만
@@ -145,9 +150,11 @@ class DiscoveryServiceTest {
     Feed fresh = feed(20L, 20L, Gender.FEMALE, 2000);    // 낮은 점수, 새 상대
     given(discoveryRepository.findCandidates(eq(Gender.FEMALE), eq(1L), any(Pageable.class)))
         .willReturn(List.of(chatting, fresh));
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 2001), any(), any(), any(), any()))
+    given(discoveryScorer.score(
+        any(), argThat(c -> c != null && c.birthYear() == 2001), any(), any(), any(), any()))
         .willReturn(0.9);
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 2000), any(), any(), any(), any()))
+    given(discoveryScorer.score(
+        any(), argThat(c -> c != null && c.birthYear() == 2000), any(), any(), any(), any()))
         .willReturn(0.3);
     given(chatRoomService.findPartnerRooms(1L))
         .willReturn(Map.of(10L, new PartnerRoom(31L, ChatRoomStatus.ACTIVE)));
@@ -217,13 +224,17 @@ class DiscoveryServiceTest {
     Feed normal = feed(400L, 1021L, Gender.FEMALE, 1993);       // 범위 밖, 점수 0.1
     given(discoveryRepository.findCandidates(eq(Gender.FEMALE), eq(1L), any(Pageable.class)))
         .willReturn(List.of(pinnedFirst, pinnedLast, chatting, normal));
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1990), any(), any(), any(), any()))
+    given(discoveryScorer.score(
+        any(), argThat(c -> c != null && c.birthYear() == 1990), any(), any(), any(), any()))
         .willReturn(0.99);
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1991), any(), any(), any(), any()))
+    given(discoveryScorer.score(
+        any(), argThat(c -> c != null && c.birthYear() == 1991), any(), any(), any(), any()))
         .willReturn(0.95);
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1992), any(), any(), any(), any()))
+    given(discoveryScorer.score(
+        any(), argThat(c -> c != null && c.birthYear() == 1992), any(), any(), any(), any()))
         .willReturn(0.5);
-    given(discoveryScorer.score(any(), argThat(c -> c != null && c.birthYear() == 1993), any(), any(), any(), any()))
+    given(discoveryScorer.score(
+        any(), argThat(c -> c != null && c.birthYear() == 1993), any(), any(), any(), any()))
         .willReturn(0.1);
     given(chatRoomService.findPartnerRooms(1L)).willReturn(Map.of(
         30L, new PartnerRoom(31L, ChatRoomStatus.ACTIVE)));

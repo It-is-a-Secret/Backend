@@ -74,8 +74,9 @@ public class DiscoveryService {
    * <p>온보딩 전 viewer(#122): 피드가 없어 성별·관심사·MBTI·생년·학과를 알 수 없으므로, 성별 구분 없이 후보를 모으고
    * 점수를 매기지 않는다(전원 0점). 정렬은 동점 규칙인 "최근 7일 접속 우선 → last_active_at → feedId"가 그대로 결정한다.
    *
-   * <p>후순위 고정 회원(#139): 회원 id {@value #DEPRIORITIZED_MEMBER_ID_FROM}~{@value #DEPRIORITIZED_MEMBER_ID_TO}는
-   * 점수·대화 여부와 무관하게 항상 목록 맨 뒤에 둔다. 온보딩 전 viewer에게도 같다.
+   * <p>후순위 고정 회원(#139): 회원 id {@value #DEPRIORITIZED_MEMBER_ID_FROM}~
+   * {@value #DEPRIORITIZED_MEMBER_ID_TO}는 점수·대화 여부와 무관하게 항상 목록 맨 뒤에 둔다. 온보딩 전 viewer에게도
+   * 같다.
    *
    * <p>학교 인증 게이트(#129): 온보딩 전 viewer도 학교 이메일 인증은 마쳐야 한다.
    *
@@ -196,7 +197,10 @@ public class DiscoveryService {
         && feedService.isFeedPublishable(targetFeed.getId());
   }
 
-  /** 회원 id가 후순위 고정 범위({@value #DEPRIORITIZED_MEMBER_ID_FROM}~{@value #DEPRIORITIZED_MEMBER_ID_TO})인지. */
+  /**
+   * 회원 id가 후순위 고정 범위({@value #DEPRIORITIZED_MEMBER_ID_FROM}~{@value #DEPRIORITIZED_MEMBER_ID_TO},
+   * 양 끝 포함)인지 판정한다.
+   */
   static boolean isDeprioritized(Long memberId) {
     return memberId != null
         && memberId >= DEPRIORITIZED_MEMBER_ID_FROM
